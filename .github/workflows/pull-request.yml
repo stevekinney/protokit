@@ -26,6 +26,17 @@ jobs:
       - name: Lint
         run: bun turbo lint
 
+      - name: Test
+        run: bun turbo test
+
+      - name: Build
+        run: bun turbo build
+        env:
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
+          NEON_AUTH_URL: "https://ci.neon.tech"
+          PUBLIC_APP_URL: "http://localhost:3000"
+          LOG_LEVEL: "info"
+
   validate-database:
     name: Validate Database
     runs-on: ubuntu-latest

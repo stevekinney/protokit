@@ -1,6 +1,18 @@
 {
 	"$schema": "https://turbo.build/schema.json",
 	"ui": "tui",
+	"globalEnv": [
+		"DATABASE_URL",
+		"DATABASE_URL_UNPOOLED",
+		"NEON_AUTH_URL",
+		"GOOGLE_CLIENT_ID",
+		"GOOGLE_CLIENT_SECRET",
+		"PUBLIC_APP_URL",
+		"MCP_TOKEN_TTL_SECONDS",
+		"LOG_LEVEL",
+		"NODE_ENV",
+		"SKIP_ENV_VALIDATION"
+	],
 	"tasks": {
 		"build": {
 			"dependsOn": ["^build"],

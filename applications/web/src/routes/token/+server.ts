@@ -31,11 +31,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 
-	// Atomically claim the authorization code (prevents TOCTOU race condition)
-	// Include client_id in WHERE so only the correct client can consume the code
+	// Phase 1: SELECT — fetch the code row without consuming it
 	const [authorizationCode] = await database
-		.update(schema.oauthCodes)
-		.set({ usedAt: new Date() })
+		.select()
+		.from(schema.oauthCodes)
 		.where(
 			and(
 				eq(schema.oauthCodes.code, code),
@@ -44,7 +43,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				gt(schema.oauthCodes.expiresAt, new Date()),
 			),
 		)
-		.returning();
+		.limit(1);
 
 	if (!authorizationCode) {
 		return json(
@@ -56,6 +55,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 
+	// Phase 2: Validate — check redirect_uri, client_secret, and PKCE before consuming
 	if (authorizationCode.redirectUri !== redirect_uri) {
 		return json(
 			{ error: 'invalid_grant', error_description: 'Redirect URI mismatch' },
@@ -63,7 +63,6 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 
-	// Verify client secret if provided (timing-safe comparison)
 	if (client_secret) {
 		const [client] = await database
 			.select()
@@ -82,12 +81,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
 
-	// PKCE validation (critical)
 	const challenge = createHash('sha256').update(code_verifier).digest('base64url');
 
 	if (challenge !== authorizationCode.codeChallenge) {
 		return json(
 			{ error: 'invalid_grant', error_description: 'PKCE verification failed' },
+			{ status: 400 },
+		);
+	}
+
+	// Phase 3: Atomic UPDATE — consume the code; usedAt IS NULL guard handles races
+	const [consumedCode] = await database
+		.update(schema.oauthCodes)
+		.set({ usedAt: new Date() })
+		.where(and(eq(schema.oauthCodes.code, code), isNull(schema.oauthCodes.usedAt)))
+		.returning();
+
+	if (!consumedCode) {
+		return json(
+			{
+				error: 'invalid_grant',
+				error_description: 'Authorization code already used',
+			},
 			{ status: 400 },
 		);
 	}
