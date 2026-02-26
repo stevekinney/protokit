@@ -32,12 +32,14 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	// Atomically claim the authorization code (prevents TOCTOU race condition)
+	// Include client_id in WHERE so only the correct client can consume the code
 	const [authorizationCode] = await database
 		.update(schema.oauthCodes)
 		.set({ usedAt: new Date() })
 		.where(
 			and(
 				eq(schema.oauthCodes.code, code),
+				eq(schema.oauthCodes.clientId, client_id),
 				isNull(schema.oauthCodes.usedAt),
 				gt(schema.oauthCodes.expiresAt, new Date()),
 			),
@@ -50,13 +52,6 @@ export const POST: RequestHandler = async ({ request }) => {
 				error: 'invalid_grant',
 				error_description: 'Authorization code not found, already used, or expired',
 			},
-			{ status: 400 },
-		);
-	}
-
-	if (authorizationCode.clientId !== client_id) {
-		return json(
-			{ error: 'invalid_grant', error_description: 'Client ID mismatch' },
 			{ status: 400 },
 		);
 	}
@@ -110,10 +105,17 @@ export const POST: RequestHandler = async ({ request }) => {
 		expiresAt,
 	});
 
-	return json({
-		access_token: accessToken,
-		token_type: 'bearer',
-		expires_in: tokenTtlSeconds,
-		scope: authorizationCode.scope || '',
-	});
+	return json(
+		{
+			access_token: accessToken,
+			token_type: 'bearer',
+			expires_in: tokenTtlSeconds,
+			scope: authorizationCode.scope || '',
+		},
+		{
+			headers: {
+				'Cache-Control': 'no-store',
+			},
+		},
+	);
 };

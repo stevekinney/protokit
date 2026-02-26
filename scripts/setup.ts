@@ -170,7 +170,20 @@ async function main() {
 		try {
 			execute(`gh secret set NEON_PROJECT_ID --body "${neonProjectId}"`);
 			execute(`gh secret set DATABASE_URL --body "${connectionString}"`);
+			execute(`gh secret set DATABASE_URL_UNPOOLED --body "${directConnectionString}"`);
 			execute('gh secret set SKIP_ENV_VALIDATION --body "true"');
+
+			const neonApiKey = await prompt(
+				'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip): ',
+			);
+			if (neonApiKey) {
+				execute(`gh secret set NEON_API_KEY --body "${neonApiKey}"`);
+			} else {
+				console.warn(
+					'Skipping NEON_API_KEY — PR database validation workflow will not work without it.',
+				);
+			}
+
 			console.log('GitHub secrets configured.\n');
 		} catch {
 			console.warn('Failed to set GitHub secrets. Make sure gh is authenticated.\n');

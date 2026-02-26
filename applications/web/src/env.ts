@@ -4,8 +4,8 @@ import { z } from 'zod';
 export const environment = createEnv({
 	server: {
 		NEON_AUTH_URL: z.string().url(),
-		GOOGLE_CLIENT_ID: z.string().min(1),
-		GOOGLE_CLIENT_SECRET: z.string().min(1),
+		GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+		GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
 	},
 	clientPrefix: 'PUBLIC_',
 	client: {

@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import type { Actions, PageServerLoad } from './$types';
 import { database, schema } from '@template/database';
 import { eq } from 'drizzle-orm';
+import { isValidRedirectUri } from '$lib/validate-redirect-uri';
 
 export const load: PageServerLoad = async ({ url, locals }) => {
 	if (!locals.user) {
@@ -62,6 +63,8 @@ function getFormString(formData: FormData, key: string): string | null {
 }
 
 async function validateRedirectUri(clientId: string, redirectUri: string): Promise<boolean> {
+	if (!isValidRedirectUri(redirectUri)) return false;
+
 	const [client] = await database
 		.select()
 		.from(schema.oauthClients)

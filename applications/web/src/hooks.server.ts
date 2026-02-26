@@ -10,7 +10,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 	if (event.url.pathname.startsWith('/mcp')) {
 		const authorizationHeader = event.request.headers.get('authorization');
 		if (!authorizationHeader?.startsWith('Bearer ')) {
-			return new Response('Missing or invalid Authorization header', { status: 401 });
+			return new Response('Missing or invalid Authorization header', {
+				status: 401,
+				headers: { 'WWW-Authenticate': 'Bearer' },
+			});
 		}
 
 		const accessToken = authorizationHeader.slice(7);
@@ -28,7 +31,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 			.limit(1);
 
 		if (!token) {
-			return new Response('Invalid or expired token', { status: 401 });
+			return new Response('Invalid or expired token', {
+				status: 401,
+				headers: { 'WWW-Authenticate': 'Bearer error="invalid_token"' },
+			});
 		}
 
 		event.locals.user = { id: token.userId };

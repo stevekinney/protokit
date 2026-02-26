@@ -13,14 +13,9 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.2.4"
 
       - run: bun install --frozen-lockfile
-
-      - name: Generate migrations
-        run: bun turbo db:generate
-        env:
-          SKIP_ENV_VALIDATION: 'true'
 
       - name: Run migrations
         run: bun scripts/migrate.ts

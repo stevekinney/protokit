@@ -15,6 +15,6 @@ export default tseslint.config(
 	},
 	{ languageOptions: { globals: { ...globals.browser, ...globals.node } } },
 	{
-		ignores: ['node_modules/', '.svelte-kit/', 'build/', 'dist/', '.turbo/'],
+		ignores: ['**/node_modules/', '**/.svelte-kit/', '**/build/', '**/dist/', '**/.turbo/'],
 	},
 );

@@ -6,10 +6,24 @@ import { database, schema } from '@template/database';
 import { eq, and } from 'drizzle-orm';
 
 const MAX_ACTIVE_SESSIONS = 1000;
+const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const EVICTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
 const activeTransports = new Map<
 	string,
-	{ transport: WebStandardStreamableHTTPServerTransport; userId: string }
+	{ transport: WebStandardStreamableHTTPServerTransport; userId: string; lastActivity: number }
 >();
+
+setInterval(() => {
+	const now = Date.now();
+	for (const [sessionId, entry] of activeTransports) {
+		if (now - entry.lastActivity > SESSION_IDLE_TIMEOUT_MS) {
+			logger.info({ sessionId, userId: entry.userId }, 'Evicting idle MCP session');
+			entry.transport.close().catch(() => {});
+			activeTransports.delete(sessionId);
+		}
+	}
+}, EVICTION_INTERVAL_MS);
 
 async function verifySessionOwnership(
 	sessionId: string,
@@ -18,6 +32,7 @@ async function verifySessionOwnership(
 	const entry = activeTransports.get(sessionId);
 	if (!entry) return null;
 	if (entry.userId !== userId) return null;
+	entry.lastActivity = Date.now();
 	return entry.transport;
 }
 
@@ -102,7 +117,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 			activeTransports.delete(newSessionId);
 		};
 
-		activeTransports.set(newSessionId, { transport, userId });
+		activeTransports.set(newSessionId, { transport, userId, lastActivity: Date.now() });
 
 		await database.insert(schema.mcpSessions).values({
 			sessionId: newSessionId,

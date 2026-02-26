@@ -3,6 +3,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import type { RequestHandler } from './$types';
 import { database, schema } from '@template/database';
 import { z } from 'zod';
+import { isValidRedirectUri } from '$lib/validate-redirect-uri';
 
 const registrationSchema = z.object({
 	client_name: z.string().min(1).default('Unknown Client'),
@@ -10,8 +11,7 @@ const registrationSchema = z.object({
 		.array(z.string().url())
 		.min(1, 'At least one redirect URI is required')
 		.refine(
-			(uris) =>
-				uris.every((uri) => uri.startsWith('https://') || uri.startsWith('http://localhost')),
+			(uris) => uris.every(isValidRedirectUri),
 			'Redirect URIs must use HTTPS (or http://localhost for development)',
 		),
 	grant_types: z.array(z.string()).default(['authorization_code']),

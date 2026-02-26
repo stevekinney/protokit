@@ -10,6 +10,8 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
+		"test": "bun test",
+		"lint": "eslint src/",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
 		"db:validate": "drizzle-kit check"

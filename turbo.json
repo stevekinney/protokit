@@ -33,7 +33,6 @@
 			"cache": false
 		},
 		"db:validate": {
-			"dependsOn": ["db:generate"],
 			"cache": false
 		}
 	}

@@ -36,6 +36,7 @@
 				</form>
 
 				<form method="POST" action="?/deny">
+					<input type="hidden" name="client_id" value={data.clientId} />
 					<input type="hidden" name="redirect_uri" value={data.redirectUri} />
 					<input type="hidden" name="state" value={data.state || ''} />
 					<button type="submit" class="deny">Deny</button>
