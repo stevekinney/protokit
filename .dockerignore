@@ -1,0 +1,12 @@
+node_modules
+.svelte-kit
+build
+dist
+.turbo
+.git
+.env.local
+.env.*.local
+*.md
+.vscode
+.claude
+documentation

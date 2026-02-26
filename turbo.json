@@ -1,0 +1,40 @@
+{
+	"$schema": "https://turbo.build/schema.json",
+	"ui": "tui",
+	"tasks": {
+		"build": {
+			"dependsOn": ["^build"],
+			"outputs": [".svelte-kit/**", "dist/**"],
+			"cache": true
+		},
+		"dev": {
+			"dependsOn": ["^build"],
+			"cache": false,
+			"persistent": true
+		},
+		"typecheck": {
+			"cache": true
+		},
+		"lint": {
+			"cache": true
+		},
+		"format": {
+			"cache": false
+		},
+		"test": {
+			"dependsOn": ["^build"],
+			"cache": true,
+			"outputs": ["coverage/**"]
+		},
+		"db:generate": {
+			"cache": false
+		},
+		"db:migrate": {
+			"cache": false
+		},
+		"db:validate": {
+			"dependsOn": ["db:generate"],
+			"cache": false
+		}
+	}
+}

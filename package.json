@@ -1,0 +1,44 @@
+{
+	"name": "protokit",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"applications/*",
+		"packages/*"
+	],
+	"scripts": {
+		"build": "turbo build",
+		"dev": "turbo dev",
+		"typecheck": "turbo typecheck",
+		"lint": "turbo lint",
+		"format": "turbo format",
+		"test": "turbo test",
+		"db:generate": "turbo db:generate",
+		"db:migrate": "turbo db:migrate",
+		"db:validate": "turbo db:validate",
+		"prepare": "husky"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.21.0",
+		"eslint": "^9.21.0",
+		"eslint-plugin-svelte": "^3.4.0",
+		"globals": "^16.0.0",
+		"husky": "^9.1.7",
+		"lint-staged": "^15.4.3",
+		"prettier": "^3.5.3",
+		"prettier-plugin-svelte": "^3.5.0",
+		"svelte-eslint-parser": "^1.1.0",
+		"turbo": "^2.4.4",
+		"typescript": "^5.7.3",
+		"typescript-eslint": "^8.25.0"
+	},
+	"lint-staged": {
+		"*.{js,ts,svelte,json,css,html,md}": [
+			"prettier --write"
+		],
+		"*.{js,ts,svelte}": [
+			"eslint --fix"
+		]
+	},
+	"packageManager": "bun@1.2.4"
+}

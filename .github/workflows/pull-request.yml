@@ -1,0 +1,61 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  SKIP_ENV_VALIDATION: 'true'
+
+jobs:
+  check:
+    name: Typecheck & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun turbo typecheck
+
+      - name: Lint
+        run: bun turbo lint
+
+  validate-database:
+    name: Validate Database
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Create Neon branch
+        id: neon-branch
+        uses: neondatabase/create-branch-action@v5
+        with:
+          project_id: ${{ secrets.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch_name: pr-${{ github.event.pull_request.number }}
+
+      - name: Validate schema
+        run: bun turbo db:validate
+        env:
+          DATABASE_URL: ${{ steps.neon-branch.outputs.db_url_with_pooler }}
+          DATABASE_URL_UNPOOLED: ${{ steps.neon-branch.outputs.db_url }}
+
+      - name: Delete Neon branch
+        if: always()
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ secrets.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch: pr-${{ github.event.pull_request.number }}

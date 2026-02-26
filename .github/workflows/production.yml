@@ -1,0 +1,29 @@
+name: Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  migrate:
+    name: Run Migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Generate migrations
+        run: bun turbo db:generate
+        env:
+          SKIP_ENV_VALIDATION: 'true'
+
+      - name: Run migrations
+        run: bun scripts/migrate.ts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
