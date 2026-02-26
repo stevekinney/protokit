@@ -4,6 +4,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { database, schema } from '@template/database';
 import { eq } from 'drizzle-orm';
 import { isValidRedirectUri } from '$lib/validate-redirect-uri';
+import { hashCredential } from '$lib/hash-credential';
 
 export const load: PageServerLoad = async ({ url, locals }) => {
 	if (!locals.user) {
@@ -40,7 +41,7 @@ export const load: PageServerLoad = async ({ url, locals }) => {
 		return { error: 'Unknown client.' };
 	}
 
-	if (client.redirectUris.length > 0 && !client.redirectUris.includes(redirectUri)) {
+	if (client.redirectUris.length === 0 || !client.redirectUris.includes(redirectUri)) {
 		return { error: 'Invalid redirect URI.' };
 	}
 
@@ -72,7 +73,7 @@ async function validateRedirectUri(clientId: string, redirectUri: string): Promi
 		.limit(1);
 
 	if (!client) return false;
-	if (client.redirectUris.length === 0) return true;
+	if (client.redirectUris.length === 0) return false;
 	return client.redirectUris.includes(redirectUri);
 }
 
@@ -104,7 +105,7 @@ export const actions: Actions = {
 		const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
 		await database.insert(schema.oauthCodes).values({
-			code,
+			code: hashCredential(code),
 			clientId,
 			userId: locals.user.id,
 			redirectUri,
@@ -124,7 +125,11 @@ export const actions: Actions = {
 		redirect(302, redirectUrl.toString());
 	},
 
-	deny: async ({ request }) => {
+	deny: async ({ request, locals }) => {
+		if (!locals.user) {
+			return fail(401, { message: 'Not authenticated' });
+		}
+
 		const formData = await request.formData();
 		const clientId = getFormString(formData, 'client_id');
 		const redirectUri = getFormString(formData, 'redirect_uri');

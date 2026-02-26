@@ -4,6 +4,10 @@ import type { RequestHandler } from './$types';
 import { database, schema } from '@template/database';
 import { z } from 'zod';
 import { isValidRedirectUri } from '$lib/validate-redirect-uri';
+import { hashCredential } from '$lib/hash-credential';
+import { corsHeaders, handleCorsPreflight } from '$lib/cors';
+
+export const OPTIONS = handleCorsPreflight;
 
 const registrationSchema = z.object({
 	client_name: z.string().min(1).default('Unknown Client'),
@@ -47,7 +51,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	await database.insert(schema.oauthClients).values({
 		clientId,
-		clientSecret,
+		clientSecret: hashCredential(clientSecret),
 		clientName: client_name,
 		redirectUris: redirect_uris,
 		grantTypes: grant_types,
@@ -65,6 +69,6 @@ export const POST: RequestHandler = async ({ request }) => {
 			client_id_issued_at: Math.floor(Date.now() / 1000),
 			client_secret_expires_at: 0,
 		},
-		{ status: 201 },
+		{ status: 201, headers: corsHeaders },
 	);
 };

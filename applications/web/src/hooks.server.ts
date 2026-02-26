@@ -4,6 +4,7 @@ import { database, schema } from '@template/database';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import { authentication } from '$lib/authentication';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
+import { hashCredential } from '$lib/hash-credential';
 
 export const handle: Handle = async ({ event, resolve }) => {
 	// MCP routes: authenticate via Bearer token
@@ -17,13 +18,14 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 
 		const accessToken = authorizationHeader.slice(7);
+		const tokenHash = hashCredential(accessToken);
 
 		const [token] = await database
 			.select()
 			.from(schema.oauthTokens)
 			.where(
 				and(
-					eq(schema.oauthTokens.accessToken, accessToken),
+					eq(schema.oauthTokens.accessToken, tokenHash),
 					isNull(schema.oauthTokens.revokedAt),
 					gt(schema.oauthTokens.expiresAt, new Date()),
 				),

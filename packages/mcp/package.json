@@ -10,14 +10,14 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "DATABASE_URL=postgresql://test:test@localhost/test bun test",
+		"test": "LOG_LEVEL=info NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test",
 		"lint": "eslint src/"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.8.0",
 		"@t3-oss/env-core": "^0.12.0",
 		"@template/database": "workspace:*",
-		"drizzle-orm": "^0.40.0",
+		"drizzle-orm": "^0.41.0",
 		"pino": "^9.6.0",
 		"zod": "^3.24.0"
 	},

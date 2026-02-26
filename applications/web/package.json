@@ -20,7 +20,7 @@
 		"@template/database": "workspace:*",
 		"@template/mcp": "workspace:*",
 		"better-auth": "^1.2.0",
-		"drizzle-orm": "^0.40.0",
+		"drizzle-orm": "^0.41.0",
 		"svelte": "^5.20.0",
 		"zod": "^3.24.0"
 	},

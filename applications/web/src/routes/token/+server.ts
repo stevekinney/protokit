@@ -4,6 +4,17 @@ import type { RequestHandler } from './$types';
 import { database, schema } from '@template/database';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import { environment as mcpEnvironment } from '@template/mcp/env';
+import { hashCredential } from '$lib/hash-credential';
+import { corsHeaders, handleCorsPreflight } from '$lib/cors';
+
+export const OPTIONS = handleCorsPreflight;
+
+function constantTimeEquals(a: string, b: string): boolean {
+	const bufferA = Buffer.from(a, 'utf-8');
+	const bufferB = Buffer.from(b, 'utf-8');
+	if (bufferA.length !== bufferB.length) return false;
+	return timingSafeEqual(bufferA, bufferB);
+}
 
 export const POST: RequestHandler = async ({ request }) => {
 	const contentType = request.headers.get('content-type') || '';
@@ -32,12 +43,14 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	// Phase 1: SELECT — fetch the code row without consuming it
+	const codeHash = hashCredential(code);
+
 	const [authorizationCode] = await database
 		.select()
 		.from(schema.oauthCodes)
 		.where(
 			and(
-				eq(schema.oauthCodes.code, code),
+				eq(schema.oauthCodes.code, codeHash),
 				eq(schema.oauthCodes.clientId, client_id),
 				isNull(schema.oauthCodes.usedAt),
 				gt(schema.oauthCodes.expiresAt, new Date()),
@@ -74,16 +87,14 @@ export const POST: RequestHandler = async ({ request }) => {
 			return json({ error: 'invalid_client' }, { status: 401 });
 		}
 
-		const expected = Buffer.from(client.clientSecret, 'utf-8');
-		const received = Buffer.from(client_secret, 'utf-8');
-		if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+		if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
 			return json({ error: 'invalid_client' }, { status: 401 });
 		}
 	}
 
 	const challenge = createHash('sha256').update(code_verifier).digest('base64url');
 
-	if (challenge !== authorizationCode.codeChallenge) {
+	if (!constantTimeEquals(challenge, authorizationCode.codeChallenge)) {
 		return json(
 			{ error: 'invalid_grant', error_description: 'PKCE verification failed' },
 			{ status: 400 },
@@ -94,7 +105,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const [consumedCode] = await database
 		.update(schema.oauthCodes)
 		.set({ usedAt: new Date() })
-		.where(and(eq(schema.oauthCodes.code, code), isNull(schema.oauthCodes.usedAt)))
+		.where(and(eq(schema.oauthCodes.code, codeHash), isNull(schema.oauthCodes.usedAt)))
 		.returning();
 
 	if (!consumedCode) {
@@ -107,13 +118,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 
-	// Issue access token
+	// Issue access token — store the hash, return the raw value
 	const accessToken = randomBytes(48).toString('hex');
 	const tokenTtlSeconds = mcpEnvironment.MCP_TOKEN_TTL_SECONDS;
 	const expiresAt = new Date(Date.now() + tokenTtlSeconds * 1000);
 
 	await database.insert(schema.oauthTokens).values({
-		accessToken,
+		accessToken: hashCredential(accessToken),
 		clientId: authorizationCode.clientId,
 		userId: authorizationCode.userId,
 		scope: authorizationCode.scope || '',
@@ -123,13 +134,15 @@ export const POST: RequestHandler = async ({ request }) => {
 	return json(
 		{
 			access_token: accessToken,
-			token_type: 'bearer',
+			token_type: 'Bearer',
 			expires_in: tokenTtlSeconds,
 			scope: authorizationCode.scope || '',
 		},
 		{
 			headers: {
 				'Cache-Control': 'no-store',
+				Pragma: 'no-cache',
+				...corsHeaders,
 			},
 		},
 	);
