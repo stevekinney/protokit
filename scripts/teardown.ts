@@ -1,14 +1,15 @@
+import { existsSync } from 'node:fs';
+
 import {
 	commandExists,
 	execute,
 	confirm,
 	prompt,
+	getEnvironmentValue,
 	deleteEnvironmentFile,
 	ENVIRONMENT_FILE_PATH,
 	MANAGED_GITHUB_SECRETS,
 } from './utilities.ts';
-
-import { existsSync } from 'node:fs';
 
 async function teardownGithubSecrets() {
 	console.log('\n--- GitHub Secrets ---\n');
@@ -123,36 +124,58 @@ async function teardownNeon() {
 		return;
 	}
 
-	console.log('Neon projects:');
-	for (let i = 0; i < projects.length; i++) {
-		console.log(`  ${i + 1}. ${projects[i].name} (${projects[i].id})`);
+	// Try to identify the project configured in .env.local via DATABASE_URL
+	const configuredDatabaseUrl = getEnvironmentValue('DATABASE_URL');
+	let defaultProject: (typeof projects)[number] | undefined;
+
+	if (configuredDatabaseUrl) {
+		defaultProject = projects.find((project) => configuredDatabaseUrl.includes(project.id));
 	}
 
-	const selection = await prompt('\nEnter number to delete (or press Enter to skip): ');
+	let project: (typeof projects)[number];
 
-	if (!selection) {
-		console.log('Skipped.');
-		return;
+	if (defaultProject) {
+		console.log(`Found project from .env.local: ${defaultProject.name} (${defaultProject.id})`);
+		const useDefault = await confirm('Delete this project? (y/N): ');
+
+		if (!useDefault) {
+			console.log('Skipped.');
+			return;
+		}
+
+		project = defaultProject;
+	} else {
+		console.log('Neon projects:');
+		for (let i = 0; i < projects.length; i++) {
+			console.log(`  ${i + 1}. ${projects[i].name} (${projects[i].id})`);
+		}
+
+		const selection = await prompt('\nEnter number to delete (or press Enter to skip): ');
+
+		if (!selection) {
+			console.log('Skipped.');
+			return;
+		}
+
+		const index = parseInt(selection, 10) - 1;
+
+		if (isNaN(index) || index < 0 || index >= projects.length) {
+			console.log('Invalid selection. Skipped.');
+			return;
+		}
+
+		project = projects[index];
 	}
-
-	const index = parseInt(selection, 10) - 1;
-
-	if (isNaN(index) || index < 0 || index >= projects.length) {
-		console.log('Invalid selection. Skipped.');
-		return;
-	}
-
-	const project = projects[index];
 
 	console.log(
 		`\n\x1b[31mWARNING: This will permanently delete Neon project "${project.name}" (${project.id}).\x1b[0m`,
 	);
 	console.log('\x1b[31mAll databases and data in this project will be lost.\x1b[0m');
 
-	const shouldDelete = await confirm('Are you sure? (y/N): ');
+	const typedName = await prompt(`Type the project name "${project.name}" to confirm: `);
 
-	if (!shouldDelete) {
-		console.log('Skipped.');
+	if (typedName !== project.name) {
+		console.log('Name does not match. Skipped.');
 		return;
 	}
 
@@ -193,7 +216,7 @@ if (subcommand) {
 		console.error(`Available phases: ${Object.keys(phases).join(', ')}`);
 		process.exit(1);
 	}
-	phase();
+	await phase();
 } else {
-	runFullTeardown();
+	await runFullTeardown();
 }

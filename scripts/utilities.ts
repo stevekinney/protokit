@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -16,7 +16,7 @@ export const MANAGED_GITHUB_SECRETS = [
 
 export function commandExists(command: string): boolean {
 	try {
-		execSync(`which ${command}`, { stdio: 'ignore' });
+		execFileSync('which', [command], { stdio: 'ignore' });
 		return true;
 	} catch {
 		return false;
@@ -24,23 +24,28 @@ export function commandExists(command: string): boolean {
 }
 
 export function execute(command: string, options?: { stdio?: 'inherit' | 'pipe' }): string {
-	return execSync(command, {
+	const output = execSync(command, {
 		encoding: 'utf-8',
 		stdio: options?.stdio || 'pipe',
 		cwd: ROOT_DIRECTORY,
-	}).trim();
+	});
+
+	return typeof output === 'string' ? output.trim() : '';
 }
 
 export function readEnvironmentFile(): Record<string, string> {
 	if (!existsSync(ENVIRONMENT_FILE_PATH)) return {};
 
-	const content = readFileSync(ENVIRONMENT_FILE_PATH, 'utf-8');
+	const content = readFileSync(ENVIRONMENT_FILE_PATH, 'utf-8').replace(/\r\n?/g, '\n');
 	const result: Record<string, string> = {};
 
-	for (const line of content.split('\n')) {
-		if (!line.includes('=') || line.startsWith('#')) continue;
-		const [key, ...valueParts] = line.split('=');
-		if (key) result[key] = valueParts.join('=');
+	for (const rawLine of content.split('\n')) {
+		const line = rawLine.trim();
+		if (!line || !line.includes('=') || line.startsWith('#')) continue;
+		const separatorIndex = line.indexOf('=');
+		const key = line.slice(0, separatorIndex).trim();
+		const value = line.slice(separatorIndex + 1).trim();
+		if (key) result[key] = value;
 	}
 
 	return result;

@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 
 import {
@@ -8,7 +9,16 @@ import {
 	prompt,
 	confirm,
 	ENVIRONMENT_FILE_PATH,
+	ROOT_DIRECTORY,
 } from './utilities.ts';
+
+function setGithubSecret(name: string, value: string) {
+	execSync(`gh secret set ${name}`, {
+		input: value,
+		stdio: ['pipe', 'pipe', 'pipe'],
+		cwd: ROOT_DIRECTORY,
+	});
+}
 
 function checkPrerequisites(commands: string[]) {
 	const missing = commands.filter((command) => !commandExists(command));
@@ -175,17 +185,17 @@ async function setupGithubSecrets(neonProjectId?: string) {
 	}
 
 	try {
-		execute(`gh secret set NEON_PROJECT_ID --body "${projectId}"`);
-		execute(`gh secret set DATABASE_URL --body "${connectionString}"`);
-		execute(`gh secret set DATABASE_URL_UNPOOLED --body "${directConnectionString}"`);
-		execute('gh secret set SKIP_ENV_VALIDATION --body "true"');
+		setGithubSecret('NEON_PROJECT_ID', projectId);
+		setGithubSecret('DATABASE_URL', connectionString);
+		setGithubSecret('DATABASE_URL_UNPOOLED', directConnectionString);
+		setGithubSecret('SKIP_ENV_VALIDATION', 'true');
 
 		const neonApiKey = await prompt(
 			'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip): ',
 		);
 
 		if (neonApiKey) {
-			execute(`gh secret set NEON_API_KEY --body "${neonApiKey}"`);
+			setGithubSecret('NEON_API_KEY', neonApiKey);
 		} else {
 			console.warn(
 				'Skipping NEON_API_KEY — PR database validation workflow will not work without it.',
@@ -262,7 +272,7 @@ if (subcommand) {
 		console.error(`Available phases: ${Object.keys(phases).join(', ')}`);
 		process.exit(1);
 	}
-	phase();
+	await phase();
 } else {
-	runFullSetup();
+	await runFullSetup();
 }

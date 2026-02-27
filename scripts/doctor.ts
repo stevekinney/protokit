@@ -178,7 +178,7 @@ async function main() {
 	const subcommand = process.argv[2];
 
 	if (subcommand) {
-		const variables = readEnvironmentFile();
+		const variables = checkEnvironmentFile();
 
 		const checks: Record<string, () => Promise<void>> = {
 			neon: () => runNeonChecks(variables),
