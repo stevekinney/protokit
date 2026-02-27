@@ -70,3 +70,16 @@ export const myPromptNamePrompt = {
 	},
 };
 ```
+
+## Using Markdown Templates
+
+Prompt handlers can import `.md` files as strings for template content:
+
+```typescript
+import templateContent from './templates/my-template.md' with { type: 'text' };
+
+// In the handler:
+const rendered = templateContent.replace('{variable}', actualValue);
+```
+
+Create template files in `packages/mcp/src/prompts/templates/`. The `text-imports.d.ts` declaration in `packages/mcp/src/` provides TypeScript support.
