@@ -1,79 +1,59 @@
 import { execSync } from 'node:child_process';
-import { writeFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { createInterface } from 'node:readline';
+import { readFileSync, existsSync } from 'node:fs';
 
-const rootDirectory = join(import.meta.dirname, '..');
-const envFilePath = join(rootDirectory, '.env.local');
+import {
+	commandExists,
+	execute,
+	appendToEnvironmentFile,
+	getEnvironmentValue,
+	prompt,
+	confirm,
+	ENVIRONMENT_FILE_PATH,
+	ROOT_DIRECTORY,
+} from './utilities.ts';
 
-function commandExists(command: string): boolean {
-	try {
-		execSync(`which ${command}`, { stdio: 'ignore' });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function execute(command: string, options?: { stdio?: 'inherit' | 'pipe' }): string {
-	return execSync(command, {
-		encoding: 'utf-8',
-		stdio: options?.stdio || 'pipe',
-		cwd: rootDirectory,
-	}).trim();
-}
-
-function appendToEnvFile(key: string, value: string) {
-	const line = `${key}=${value}\n`;
-	if (existsSync(envFilePath)) {
-		const content = readFileSync(envFilePath, 'utf-8');
-		if (content.includes(`${key}=`)) {
-			const updated = content.replace(new RegExp(`^${key}=.*$`, 'm'), `${key}=${value}`);
-			writeFileSync(envFilePath, updated);
-			return;
-		}
-		writeFileSync(envFilePath, content + line);
-	} else {
-		writeFileSync(envFilePath, line);
-	}
-}
-
-async function prompt(question: string): Promise<string> {
-	const readline = createInterface({ input: process.stdin, output: process.stdout });
-	return new Promise((resolve) => {
-		readline.question(question, (answer) => {
-			readline.close();
-			resolve(answer.trim());
-		});
+function setGithubSecret(name: string, value: string) {
+	execSync(`gh secret set ${name}`, {
+		input: value,
+		stdio: ['pipe', 'pipe', 'pipe'],
+		cwd: ROOT_DIRECTORY,
 	});
 }
 
-async function main() {
-	console.log('\n=== SvelteKit MCP Template Setup ===\n');
+function checkPrerequisites(commands: string[]) {
+	const missing = commands.filter((command) => !commandExists(command));
 
-	// Phase 1: Check prerequisites
-	console.log('Checking prerequisites...');
-	const prerequisites = ['neonctl', 'railway', 'gh'];
-	const missingPrerequisites = prerequisites.filter((command) => !commandExists(command));
-
-	if (missingPrerequisites.length > 0) {
-		console.error(`Missing required CLIs: ${missingPrerequisites.join(', ')}`);
+	if (missing.length > 0) {
+		console.error(`Missing required CLIs: ${missing.join(', ')}`);
 		console.error('Install them before running setup:');
-		if (missingPrerequisites.includes('neonctl')) {
-			console.error('  neonctl: npm install -g neonctl');
-		}
-		if (missingPrerequisites.includes('railway')) {
-			console.error('  railway: npm install -g @railway/cli');
-		}
-		if (missingPrerequisites.includes('gh')) {
-			console.error('  gh: https://cli.github.com/');
-		}
+		if (missing.includes('neonctl')) console.error('  neonctl: npm install -g neonctl');
+		if (missing.includes('railway')) console.error('  railway: npm install -g @railway/cli');
+		if (missing.includes('gh')) console.error('  gh: https://cli.github.com/');
 		process.exit(1);
 	}
-	console.log('All prerequisites found.\n');
+}
 
-	// Phase 2: Create Neon project
-	console.log('Creating Neon project...');
+async function setupNeon(): Promise<
+	{ projectId: string; connectionString: string; directConnectionString: string } | undefined
+> {
+	console.log('\n--- Neon ---\n');
+
+	if (!commandExists('neonctl')) {
+		console.error('neonctl is not installed. Install it with: npm install -g neonctl');
+		process.exit(1);
+	}
+
+	const existingDatabaseUrl = getEnvironmentValue('DATABASE_URL');
+
+	if (existingDatabaseUrl) {
+		console.log('DATABASE_URL already exists in .env.local.');
+		const createNew = await confirm('Create a new Neon project anyway? (y/N): ');
+		if (!createNew) {
+			console.log('Keeping existing configuration.');
+			return undefined;
+		}
+	}
+
 	const region = (await prompt('Neon region (default: aws-us-east-2): ')) || 'aws-us-east-2';
 
 	let neonProjectId: string;
@@ -88,60 +68,68 @@ async function main() {
 		return; // unreachable, satisfies TypeScript control flow
 	}
 
-	// Get connection strings
 	const connectionString = execute(
 		`neonctl connection-string --project-id ${neonProjectId} --pooled`,
 	);
 	const directConnectionString = execute(`neonctl connection-string --project-id ${neonProjectId}`);
 
-	appendToEnvFile('DATABASE_URL', connectionString);
-	appendToEnvFile('DATABASE_URL_UNPOOLED', directConnectionString);
-	console.log('Database URLs written to .env.local\n');
+	appendToEnvironmentFile('DATABASE_URL', connectionString);
+	appendToEnvironmentFile('DATABASE_URL_UNPOOLED', directConnectionString);
+	console.log('Database URLs written to .env.local');
 
 	// Enable Neon Auth
 	console.log('Enabling Neon Auth...');
 	try {
 		execute(`neonctl auth enable --project-id ${neonProjectId}`);
 		const neonAuthUrl = execute(`neonctl auth url --project-id ${neonProjectId}`);
-		appendToEnvFile('NEON_AUTH_URL', neonAuthUrl);
+		appendToEnvironmentFile('NEON_AUTH_URL', neonAuthUrl);
 		console.log('Neon Auth enabled. URL written to .env.local');
-		console.log('Google login works immediately with Neon shared dev credentials.\n');
+		console.log('Google login works immediately with Neon shared dev credentials.');
 	} catch {
 		console.warn('Could not enable Neon Auth automatically.');
-		console.warn('Enable it manually in the Neon dashboard and add NEON_AUTH_URL to .env.local\n');
+		console.warn('Enable it manually in the Neon dashboard and add NEON_AUTH_URL to .env.local');
 	}
 
-	// Phase 3: Optional Google OAuth production credentials
-	const configureGoogle = await prompt('Configure production Google OAuth credentials? (y/N): ');
+	return { projectId: neonProjectId, connectionString, directConnectionString };
+}
 
-	if (configureGoogle.toLowerCase() === 'y') {
-		console.log('\nOpen Google Cloud Console: https://console.cloud.google.com/apis/credentials');
-		console.log('Create OAuth 2.0 Client ID with redirect URI:');
-		console.log('  https://your-app.railway.app/api/auth/callback/google\n');
+async function setupGoogle() {
+	console.log('\n--- Google OAuth ---\n');
 
-		const googleClientId = await prompt('GOOGLE_CLIENT_ID: ');
-		const googleClientSecret = await prompt('GOOGLE_CLIENT_SECRET: ');
+	const shouldConfigure = await confirm('Configure production Google OAuth credentials? (y/N): ');
+	if (!shouldConfigure) return;
 
-		if (googleClientId && googleClientSecret) {
-			appendToEnvFile('GOOGLE_CLIENT_ID', googleClientId);
-			appendToEnvFile('GOOGLE_CLIENT_SECRET', googleClientSecret);
-			console.log('Google OAuth credentials written to .env.local\n');
-		}
+	console.log('\nOpen Google Cloud Console: https://console.cloud.google.com/apis/credentials');
+	console.log('Create OAuth 2.0 Client ID with redirect URI:');
+	console.log('  https://your-app.railway.app/api/auth/callback/google\n');
+
+	const googleClientId = await prompt('GOOGLE_CLIENT_ID: ');
+	const googleClientSecret = await prompt('GOOGLE_CLIENT_SECRET: ');
+
+	if (googleClientId && googleClientSecret) {
+		appendToEnvironmentFile('GOOGLE_CLIENT_ID', googleClientId);
+		appendToEnvironmentFile('GOOGLE_CLIENT_SECRET', googleClientSecret);
+		console.log('Google OAuth credentials written to .env.local');
+	}
+}
+
+async function setupRailway() {
+	console.log('\n--- Railway ---\n');
+
+	if (!commandExists('railway')) {
+		console.error('railway CLI is not installed. Install it with: npm install -g @railway/cli');
+		process.exit(1);
 	}
 
-	// Set PUBLIC_APP_URL
-	appendToEnvFile('PUBLIC_APP_URL', 'http://localhost:3000');
+	const shouldConfigure = await confirm('Configure Railway deployment? (y/N): ');
+	if (!shouldConfigure) return;
 
-	// Phase 4: Railway setup
-	const configureRailway = await prompt('Configure Railway deployment? (y/N): ');
+	console.log('\nInitializing Railway project...');
+	try {
+		execute('railway init -y', { stdio: 'inherit' });
 
-	if (configureRailway.toLowerCase() === 'y') {
-		console.log('\nInitializing Railway project...');
-		try {
-			execute('railway init -y', { stdio: 'inherit' });
-
-			// Set environment variables on Railway
-			const envContent = readFileSync(envFilePath, 'utf-8');
+		if (existsSync(ENVIRONMENT_FILE_PATH)) {
+			const envContent = readFileSync(ENVIRONMENT_FILE_PATH, 'utf-8');
 			const envLines = envContent
 				.split('\n')
 				.filter((line) => line.includes('=') && !line.startsWith('#'));
@@ -157,48 +145,95 @@ async function main() {
 					}
 				}
 			}
-			console.log('Railway environment variables configured.\n');
-		} catch {
-			console.warn('Railway setup failed. Configure manually with: railway init\n');
+			console.log('Railway environment variables configured.');
 		}
+	} catch {
+		console.warn('Railway setup failed. Configure manually with: railway init');
+	}
+}
+
+async function setupGithubSecrets(neonProjectId?: string) {
+	console.log('\n--- GitHub Secrets ---\n');
+
+	if (!commandExists('gh')) {
+		console.error('gh CLI is not installed. Install it from: https://cli.github.com/');
+		process.exit(1);
 	}
 
-	// Phase 5: GitHub secrets
-	const configureGithub = await prompt('Set GitHub secrets for CI/CD? (y/N): ');
+	const shouldConfigure = await confirm('Set GitHub secrets for CI/CD? (y/N): ');
+	if (!shouldConfigure) return;
 
-	if (configureGithub.toLowerCase() === 'y') {
-		try {
-			execute(`gh secret set NEON_PROJECT_ID --body "${neonProjectId}"`);
-			execute(`gh secret set DATABASE_URL --body "${connectionString}"`);
-			execute(`gh secret set DATABASE_URL_UNPOOLED --body "${directConnectionString}"`);
-			execute('gh secret set SKIP_ENV_VALIDATION --body "true"');
+	const connectionString = neonProjectId
+		? execute(`neonctl connection-string --project-id ${neonProjectId} --pooled`)
+		: getEnvironmentValue('DATABASE_URL');
 
-			const neonApiKey = await prompt(
-				'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip): ',
+	const directConnectionString = neonProjectId
+		? execute(`neonctl connection-string --project-id ${neonProjectId}`)
+		: getEnvironmentValue('DATABASE_URL_UNPOOLED');
+
+	if (!connectionString || !directConnectionString) {
+		console.error('DATABASE_URL and DATABASE_URL_UNPOOLED are required.');
+		console.error('Run the Neon setup phase first, or add them to .env.local manually.');
+		return;
+	}
+
+	const projectId = neonProjectId || (await prompt('NEON_PROJECT_ID: '));
+
+	if (!projectId) {
+		console.error('Neon project ID is required for GitHub secrets.');
+		return;
+	}
+
+	try {
+		setGithubSecret('NEON_PROJECT_ID', projectId);
+		setGithubSecret('DATABASE_URL', connectionString);
+		setGithubSecret('DATABASE_URL_UNPOOLED', directConnectionString);
+		setGithubSecret('SKIP_ENV_VALIDATION', 'true');
+
+		const neonApiKey = await prompt(
+			'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip): ',
+		);
+
+		if (neonApiKey) {
+			setGithubSecret('NEON_API_KEY', neonApiKey);
+		} else {
+			console.warn(
+				'Skipping NEON_API_KEY — PR database validation workflow will not work without it.',
 			);
-			if (neonApiKey) {
-				execute(`gh secret set NEON_API_KEY --body "${neonApiKey}"`);
-			} else {
-				console.warn(
-					'Skipping NEON_API_KEY — PR database validation workflow will not work without it.',
-				);
-			}
-
-			console.log('GitHub secrets configured.\n');
-		} catch {
-			console.warn('Failed to set GitHub secrets. Make sure gh is authenticated.\n');
 		}
-	}
 
-	// Phase 6: Run initial migration
+		console.log('GitHub secrets configured.');
+	} catch {
+		console.warn('Failed to set GitHub secrets. Make sure gh is authenticated.');
+	}
+}
+
+async function runInitialMigration() {
+	console.log('\n--- Migration ---\n');
 	console.log('Running initial migration...');
 	try {
 		execute('bun scripts/migrate.ts', { stdio: 'inherit' });
 	} catch {
-		console.warn('Migration failed. Run manually: bun scripts/migrate.ts\n');
+		console.warn('Migration failed. Run manually: bun scripts/migrate.ts');
 	}
+}
 
-	// Summary
+async function runFullSetup() {
+	console.log('\n=== SvelteKit MCP Template Setup ===\n');
+
+	console.log('Checking prerequisites...');
+	checkPrerequisites(['neonctl', 'railway', 'gh']);
+	console.log('All prerequisites found.');
+
+	const neonResult = await setupNeon();
+	await setupGoogle();
+
+	appendToEnvironmentFile('PUBLIC_APP_URL', 'http://localhost:3000');
+
+	await setupRailway();
+	await setupGithubSecrets(neonResult?.projectId);
+	await runInitialMigration();
+
 	console.log('\n=== Setup Complete ===');
 	console.log('');
 	console.log('Next steps:');
@@ -210,4 +245,34 @@ async function main() {
 	console.log('');
 }
 
-main();
+const subcommand = process.argv[2];
+
+const phases: Record<string, () => Promise<void>> = {
+	neon: async () => {
+		await setupNeon();
+	},
+	google: async () => {
+		await setupGoogle();
+	},
+	railway: async () => {
+		await setupRailway();
+	},
+	github: async () => {
+		await setupGithubSecrets();
+	},
+	migration: async () => {
+		await runInitialMigration();
+	},
+};
+
+if (subcommand) {
+	const phase = phases[subcommand];
+	if (!phase) {
+		console.error(`Unknown phase: ${subcommand}`);
+		console.error(`Available phases: ${Object.keys(phases).join(', ')}`);
+		process.exit(1);
+	}
+	await phase();
+} else {
+	await runFullSetup();
+}
