@@ -10,6 +10,7 @@ MCP server factory, tool/resource/prompt definitions, and shared logger.
 - `src/prompts/` — One file per prompt. Each exports a prompt object with `name`, `description`, `arguments`, and `handler`.
 - `src/logger.ts` — Shared pino logger. JSON in production, pretty-print in development.
 - `src/env.ts` — Owns `MCP_TOKEN_TTL_SECONDS`.
+- `src/text-imports.d.ts` — Type declarations for importing `.md` files as strings (used by prompt templates).
 
 ## Adding a New Tool
 
@@ -40,6 +41,8 @@ MCP server factory, tool/resource/prompt definitions, and shared logger.
 5. Log errors via `logger.error({ err }, 'description')`
 6. Register the prompt in `src/server.ts` via `server.registerPrompt()`
 7. Re-export from `src/index.ts`
+
+Prompts can import Markdown files as template strings: `import template from './templates/my-template.md' with { type: 'text' };`. The `text-imports.d.ts` declaration provides TypeScript support for this pattern.
 
 ## Logging Conventions
 

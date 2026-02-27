@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import { database, schema } from '@template/database';
-import { eq } from 'drizzle-orm';
 import { logger } from '../logger.js';
 
 export const getUserProfileTool = {
@@ -12,6 +10,9 @@ export const getUserProfileTool = {
 		const start = Date.now();
 
 		try {
+			const { database, schema } = await import('@template/database');
+			const { eq } = await import('drizzle-orm');
+
 			const [user] = await database
 				.select()
 				.from(schema.neonAuthUsers)
