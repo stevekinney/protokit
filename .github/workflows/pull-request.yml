@@ -16,7 +16,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.2.4"
+          bun-version: '1.2.4'
           cache: true
 
       - run: bun install --frozen-lockfile
@@ -33,20 +33,21 @@ jobs:
       - name: Build
         run: bun turbo build
         env:
-          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
-          NEON_AUTH_URL: "https://ci.neon.tech"
-          PUBLIC_APP_URL: "http://localhost:3000"
-          LOG_LEVEL: "info"
+          DATABASE_URL: 'postgresql://ci:ci@localhost:5432/ci'
+          NEON_AUTH_URL: 'https://ci.neon.tech'
+          PUBLIC_APP_URL: 'http://localhost:3000'
+          LOG_LEVEL: 'info'
 
   validate-database:
     name: Validate Database
+    if: ${{ !github.event.repository.is_template }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.2.4"
+          bun-version: '1.2.4'
           cache: true
 
       - run: bun install --frozen-lockfile
