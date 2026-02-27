@@ -29,8 +29,10 @@ scripts/                   Setup wizard, migration runner, scope renamer
 | `applications/web/src/routes/token/+server.ts`    | OAuth code-to-token exchange with PKCE validation                            |
 | `applications/web/src/routes/authorize/`          | OAuth consent page (requires authenticated session)                          |
 | `applications/web/src/routes/register/+server.ts` | Dynamic client registration (RFC 7591)                                       |
-| `packages/mcp/src/server.ts`                      | `createMcpServer(context)` factory — register tools here                     |
+| `packages/mcp/src/server.ts`                      | `createMcpServer(context)` factory — register tools, resources, and prompts  |
 | `packages/mcp/src/tools/get-user-profile.ts`      | Example MCP tool — returns the authenticated user's profile                  |
+| `packages/mcp/src/resources/user-profile.ts`      | Example MCP resource — exposes user profile as a JSON resource               |
+| `packages/mcp/src/prompts/summarize.ts`           | Example MCP prompt — generates a topic summarization prompt                  |
 | `packages/database/src/schema.ts`                 | All table definitions (OAuth clients, codes, tokens, MCP sessions)           |
 
 ## Prerequisites
@@ -231,6 +233,129 @@ Tool conventions:
 - Filenames use kebab-case (e.g., `list-projects.ts`)
 - Tools must never throw — catch errors and return `{ content: [...], isError: true }`
 - Log errors via `logger.error({ err }, 'description')` (use `err` as the key, per pino convention)
+
+## Adding MCP Resources
+
+1. Create a new file in `packages/mcp/src/resources/` (kebab-case filename):
+
+   ```typescript
+   // packages/mcp/src/resources/project-settings.ts
+   import { logger } from '../logger.js';
+
+   export const projectSettingsResource = {
+   	name: 'project_settings' as const,
+   	uri: 'project://settings',
+   	description: 'Exposes the project settings as a JSON resource.',
+   	mimeType: 'application/json',
+   	handler: async (uri: URL, context: { userId: string }) => {
+   		try {
+   			// Your logic here
+   			return {
+   				contents: [
+   					{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(result) },
+   				],
+   			};
+   		} catch (error) {
+   			logger.error({ err: error }, 'project_settings read failed');
+   			return {
+   				contents: [
+   					{
+   						uri: uri.href,
+   						mimeType: 'application/json',
+   						text: JSON.stringify({ error: 'Failed to read project settings.' }),
+   					},
+   				],
+   			};
+   		}
+   	},
+   };
+   ```
+
+2. Register it in `packages/mcp/src/server.ts`:
+
+   ```typescript
+   import { projectSettingsResource } from './resources/project-settings.js';
+
+   server.registerResource(
+   	projectSettingsResource.name,
+   	projectSettingsResource.uri,
+   	{
+   		description: projectSettingsResource.description,
+   		mimeType: projectSettingsResource.mimeType,
+   	},
+   	async (uri) => projectSettingsResource.handler(uri, context),
+   );
+   ```
+
+Resource conventions:
+
+- Resource names use `snake_case` (e.g., `project_settings`)
+- Filenames use kebab-case (e.g., `project-settings.ts`)
+- Resources must never throw — catch errors and return a structured `contents` array
+- Return shape: `{ contents: [{ uri, mimeType, text }] }`
+
+## Adding MCP Prompts
+
+1. Create a new file in `packages/mcp/src/prompts/` (kebab-case filename):
+
+   ```typescript
+   // packages/mcp/src/prompts/explain.ts
+   import { z } from 'zod';
+   import { logger } from '../logger.js';
+
+   export const explainPrompt = {
+   	name: 'explain' as const,
+   	description: 'Generates a prompt asking to explain a concept.',
+   	arguments: {
+   		concept: z.string().describe('The concept to explain'),
+   	},
+   	handler: async (arguments_: { concept: string }, context: { userId: string }) => {
+   		try {
+   			return {
+   				messages: [
+   					{
+   						role: 'user' as const,
+   						content: {
+   							type: 'text' as const,
+   							text: `Please explain ${arguments_.concept} for user ${context.userId}.`,
+   						},
+   					},
+   				],
+   			};
+   		} catch (error) {
+   			logger.error({ err: error }, 'explain prompt failed');
+   			return {
+   				messages: [
+   					{
+   						role: 'user' as const,
+   						content: { type: 'text' as const, text: 'An error occurred.' },
+   					},
+   				],
+   			};
+   		}
+   	},
+   };
+   ```
+
+2. Register it in `packages/mcp/src/server.ts`:
+
+   ```typescript
+   import { explainPrompt } from './prompts/explain.js';
+
+   server.registerPrompt(
+   	explainPrompt.name,
+   	{ description: explainPrompt.description, argsSchema: explainPrompt.arguments },
+   	async (arguments_) => explainPrompt.handler(arguments_, context),
+   );
+   ```
+
+Prompt conventions:
+
+- Prompt names use `snake_case` (e.g., `explain`)
+- Filenames use kebab-case (e.g., `explain.ts`)
+- Define `arguments` as a raw Zod shape (not wrapped in `z.object()`)
+- Prompts must never throw — catch errors and return a fallback `messages` array
+- Return shape: `{ messages: [{ role, content: { type, text } }] }`
 
 ## OAuth Flow
 

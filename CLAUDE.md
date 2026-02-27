@@ -40,9 +40,10 @@
 - Import: `import { logger } from '@template/mcp/logger'`
 - Errors: `logger.error({ err }, 'description')` — pass error as `err` key
 
-## MCP Tool Naming
+## MCP Naming
 
-- Snake_case always: `get_user_profile`, not `get-user-profile`
+- Snake_case always for tools, resources, and prompts: `get_user_profile`, not `get-user-profile`
+- Directory convention: `src/tools/`, `src/resources/`, `src/prompts/`
 
 ## File & Identifier Naming
 
