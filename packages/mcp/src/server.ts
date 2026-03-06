@@ -2,12 +2,16 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getUserProfileTool } from './tools/get-user-profile.js';
 import { userProfileResource } from './resources/user-profile.js';
 import { summarizePrompt } from './prompts/summarize.js';
+import instructions from './instructions.md';
 
 export function createMcpServer(context: { userId: string }): McpServer {
-	const server = new McpServer({
-		name: 'template-mcp-server',
-		version: '0.1.0',
-	});
+	const server = new McpServer(
+		{
+			name: 'template-mcp-server',
+			version: '0.1.0',
+		},
+		{ instructions },
+	);
 
 	server.registerTool(
 		getUserProfileTool.name,

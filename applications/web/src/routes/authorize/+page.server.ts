@@ -9,10 +9,7 @@ import { hashCredential } from '$lib/hash-credential';
 export const load: PageServerLoad = async ({ url, locals }) => {
 	if (!locals.user) {
 		const returnUrl = url.pathname + url.search;
-		redirect(
-			302,
-			`/api/auth/sign-in/social?provider=google&callbackURL=${encodeURIComponent(returnUrl)}`,
-		);
+		redirect(302, `/sign-in?provider=google&callbackURL=${encodeURIComponent(returnUrl)}`);
 	}
 
 	const clientId = url.searchParams.get('client_id');

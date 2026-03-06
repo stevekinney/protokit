@@ -49,7 +49,7 @@ function checkEnvironmentFile(): Record<string, string> {
 }
 
 function checkRequiredVariables(variables: Record<string, string>) {
-	const required = ['DATABASE_URL', 'DATABASE_URL_UNPOOLED', 'NEON_AUTH_URL'];
+	const required = ['DATABASE_URL', 'DATABASE_URL_UNPOOLED', 'BETTER_AUTH_SECRET'];
 
 	for (const key of required) {
 		if (variables[key]) {
@@ -76,22 +76,6 @@ async function checkDatabaseConnection(variables: Record<string, string>) {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : 'Unknown error';
 		report('fail', 'Database connection', `Failed (${message})`);
-	}
-}
-
-async function checkNeonAuthUrl(variables: Record<string, string>) {
-	const neonAuthUrl = variables['NEON_AUTH_URL'];
-
-	if (!neonAuthUrl) {
-		report('skip', 'Neon Auth URL', 'Not configured');
-		return;
-	}
-
-	try {
-		const response = await fetch(neonAuthUrl, { method: 'HEAD' });
-		report('pass', 'Neon Auth URL', `Reachable (${response.status})`);
-	} catch {
-		report('fail', 'Neon Auth URL', 'Unreachable');
 	}
 }
 
@@ -149,7 +133,6 @@ function checkRailwayLinked() {
 async function runNeonChecks(variables: Record<string, string>) {
 	checkRequiredVariables(variables);
 	await checkDatabaseConnection(variables);
-	await checkNeonAuthUrl(variables);
 }
 
 async function runGithubChecks() {
@@ -166,7 +149,6 @@ async function runAllChecks() {
 	checkCliAvailability();
 	checkRequiredVariables(variables);
 	await checkDatabaseConnection(variables);
-	await checkNeonAuthUrl(variables);
 	checkGithubAuthentication();
 	checkGithubSecrets();
 	checkRailwayLinked();

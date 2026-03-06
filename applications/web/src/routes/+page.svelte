@@ -1,15 +1,7 @@
 <script lang="ts">
-	import { authenticationClient } from '$lib/authentication-client';
+	import type { PageData } from './$types';
 
-	const session = authenticationClient.useSession();
-
-	function signIn() {
-		authenticationClient.signIn.social({ provider: 'google' });
-	}
-
-	function signOut() {
-		authenticationClient.signOut();
-	}
+	let { data }: { data: PageData } = $props();
 </script>
 
 <svelte:head>
@@ -19,15 +11,17 @@
 <main>
 	<h1>MCP Server Template</h1>
 
-	{#if $session.data}
+	{#if data.user}
 		<div class="authenticated">
-			<p>Signed in as <strong>{$session.data.user.email}</strong></p>
-			<button onclick={signOut}>Sign Out</button>
+			<p>Signed in as <strong>{data.user.email}</strong></p>
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- Better Auth route, not a SvelteKit route -->
+			<a href="/api/auth/sign-out">Sign Out</a>
 		</div>
 	{:else}
 		<div class="unauthenticated">
 			<p>Sign in to manage your MCP server.</p>
-			<button onclick={signIn}>Sign in with Google</button>
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- custom sign-in endpoint with query params -->
+			<a href="/sign-in?provider=google">Sign in with Google</a>
 		</div>
 	{/if}
 </main>
@@ -41,7 +35,8 @@
 		text-align: center;
 	}
 
-	button {
+	a {
+		display: inline-block;
 		padding: 0.75rem 1.5rem;
 		border: none;
 		border-radius: 0.375rem;
@@ -49,9 +44,10 @@
 		cursor: pointer;
 		background: #2563eb;
 		color: white;
+		text-decoration: none;
 	}
 
-	button:hover {
+	a:hover {
 		background: #1d4ed8;
 	}
 </style>

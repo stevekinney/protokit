@@ -9,6 +9,12 @@ import { corsHeaders, handleCorsPreflight } from '$lib/cors';
 
 export const OPTIONS = handleCorsPreflight;
 
+const tokenResponseHeaders = {
+	'Cache-Control': 'no-store',
+	Pragma: 'no-cache',
+	...corsHeaders,
+};
+
 function constantTimeEquals(a: string, b: string): boolean {
 	const bufferA = Buffer.from(a, 'utf-8');
 	const bufferB = Buffer.from(b, 'utf-8');
@@ -16,29 +22,30 @@ function constantTimeEquals(a: string, b: string): boolean {
 	return timingSafeEqual(bufferA, bufferB);
 }
 
-export const POST: RequestHandler = async ({ request }) => {
-	const contentType = request.headers.get('content-type') || '';
+function issueTokens() {
+	const accessToken = randomBytes(48).toString('hex');
+	const refreshToken = randomBytes(48).toString('hex');
+	const tokenTtlSeconds = mcpEnvironment.MCP_TOKEN_TTL_SECONDS;
+	const refreshTtlSeconds = mcpEnvironment.MCP_REFRESH_TOKEN_TTL_SECONDS;
 
-	let body: Record<string, string>;
-	if (contentType.includes('application/x-www-form-urlencoded')) {
-		const formData = await request.formData();
-		body = Object.fromEntries(formData.entries()) as Record<string, string>;
-	} else if (contentType.includes('application/json')) {
-		body = await request.json();
-	} else {
-		return json({ error: 'unsupported_content_type' }, { status: 400 });
-	}
+	return {
+		accessToken,
+		accessTokenHash: hashCredential(accessToken),
+		refreshToken,
+		refreshTokenHash: hashCredential(refreshToken),
+		tokenTtlSeconds,
+		accessTokenExpiresAt: new Date(Date.now() + tokenTtlSeconds * 1000),
+		refreshTokenExpiresAt: new Date(Date.now() + refreshTtlSeconds * 1000),
+	};
+}
 
-	const { grant_type, code, redirect_uri, client_id, client_secret, code_verifier } = body;
-
-	if (grant_type !== 'authorization_code') {
-		return json({ error: 'unsupported_grant_type' }, { status: 400 });
-	}
+async function handleAuthorizationCodeGrant(body: Record<string, string>) {
+	const { code, redirect_uri, client_id, client_secret, code_verifier } = body;
 
 	if (!code || !redirect_uri || !client_id || !code_verifier) {
 		return json(
 			{ error: 'invalid_request', error_description: 'Missing required parameters' },
-			{ status: 400 },
+			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
 
@@ -64,7 +71,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				error: 'invalid_grant',
 				error_description: 'Authorization code not found, already used, or expired',
 			},
-			{ status: 400 },
+			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
 
@@ -72,7 +79,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (authorizationCode.redirectUri !== redirect_uri) {
 		return json(
 			{ error: 'invalid_grant', error_description: 'Redirect URI mismatch' },
-			{ status: 400 },
+			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
 
@@ -84,11 +91,11 @@ export const POST: RequestHandler = async ({ request }) => {
 			.limit(1);
 
 		if (!client) {
-			return json({ error: 'invalid_client' }, { status: 401 });
+			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
 		}
 
 		if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
-			return json({ error: 'invalid_client' }, { status: 401 });
+			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
 		}
 	}
 
@@ -97,7 +104,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (!constantTimeEquals(challenge, authorizationCode.codeChallenge)) {
 		return json(
 			{ error: 'invalid_grant', error_description: 'PKCE verification failed' },
-			{ status: 400 },
+			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
 
@@ -114,36 +121,153 @@ export const POST: RequestHandler = async ({ request }) => {
 				error: 'invalid_grant',
 				error_description: 'Authorization code already used',
 			},
-			{ status: 400 },
+			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
 
-	// Issue access token — store the hash, return the raw value
-	const accessToken = randomBytes(48).toString('hex');
-	const tokenTtlSeconds = mcpEnvironment.MCP_TOKEN_TTL_SECONDS;
-	const expiresAt = new Date(Date.now() + tokenTtlSeconds * 1000);
+	// Issue access token + refresh token
+	const tokens = issueTokens();
 
 	await database.insert(schema.oauthTokens).values({
-		accessToken: hashCredential(accessToken),
+		accessToken: tokens.accessTokenHash,
 		clientId: authorizationCode.clientId,
 		userId: authorizationCode.userId,
 		scope: authorizationCode.scope || '',
-		expiresAt,
+		expiresAt: tokens.accessTokenExpiresAt,
+	});
+
+	await database.insert(schema.oauthRefreshTokens).values({
+		refreshToken: tokens.refreshTokenHash,
+		clientId: authorizationCode.clientId,
+		userId: authorizationCode.userId,
+		scope: authorizationCode.scope || '',
+		accessTokenHash: tokens.accessTokenHash,
+		expiresAt: tokens.refreshTokenExpiresAt,
 	});
 
 	return json(
 		{
-			access_token: accessToken,
+			access_token: tokens.accessToken,
 			token_type: 'Bearer',
-			expires_in: tokenTtlSeconds,
+			expires_in: tokens.tokenTtlSeconds,
+			refresh_token: tokens.refreshToken,
 			scope: authorizationCode.scope || '',
 		},
-		{
-			headers: {
-				'Cache-Control': 'no-store',
-				Pragma: 'no-cache',
-				...corsHeaders,
-			},
-		},
+		{ headers: tokenResponseHeaders },
 	);
+}
+
+async function handleRefreshTokenGrant(body: Record<string, string>) {
+	const { refresh_token, client_id } = body;
+
+	if (!refresh_token) {
+		return json(
+			{ error: 'invalid_request', error_description: 'Missing refresh_token parameter' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	const refreshTokenHash = hashCredential(refresh_token);
+
+	// Atomic revocation: UPDATE SET revokedAt WHERE revokedAt IS NULL prevents race conditions
+	const [revokedToken] = await database
+		.update(schema.oauthRefreshTokens)
+		.set({ revokedAt: new Date() })
+		.where(
+			and(
+				eq(schema.oauthRefreshTokens.refreshToken, refreshTokenHash),
+				isNull(schema.oauthRefreshTokens.revokedAt),
+				gt(schema.oauthRefreshTokens.expiresAt, new Date()),
+			),
+		)
+		.returning();
+
+	if (!revokedToken) {
+		return json(
+			{
+				error: 'invalid_grant',
+				error_description: 'Refresh token not found, already used, or expired',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	// Validate client_id matches if provided
+	if (client_id && revokedToken.clientId !== client_id) {
+		return json(
+			{ error: 'invalid_grant', error_description: 'Client ID mismatch' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	// Revoke the old access token (defense in depth)
+	await database
+		.update(schema.oauthTokens)
+		.set({ revokedAt: new Date() })
+		.where(
+			and(
+				eq(schema.oauthTokens.accessToken, revokedToken.accessTokenHash),
+				isNull(schema.oauthTokens.revokedAt),
+			),
+		);
+
+	// Issue new access token + new refresh token (rotation)
+	const tokens = issueTokens();
+
+	await database.insert(schema.oauthTokens).values({
+		accessToken: tokens.accessTokenHash,
+		clientId: revokedToken.clientId,
+		userId: revokedToken.userId,
+		scope: revokedToken.scope || '',
+		expiresAt: tokens.accessTokenExpiresAt,
+	});
+
+	await database.insert(schema.oauthRefreshTokens).values({
+		refreshToken: tokens.refreshTokenHash,
+		clientId: revokedToken.clientId,
+		userId: revokedToken.userId,
+		scope: revokedToken.scope || '',
+		accessTokenHash: tokens.accessTokenHash,
+		expiresAt: tokens.refreshTokenExpiresAt,
+	});
+
+	return json(
+		{
+			access_token: tokens.accessToken,
+			token_type: 'Bearer',
+			expires_in: tokens.tokenTtlSeconds,
+			refresh_token: tokens.refreshToken,
+			scope: revokedToken.scope || '',
+		},
+		{ headers: tokenResponseHeaders },
+	);
+}
+
+export const POST: RequestHandler = async ({ request }) => {
+	const contentType = request.headers.get('content-type') || '';
+
+	let body: Record<string, string>;
+	if (contentType.includes('application/x-www-form-urlencoded')) {
+		const formData = await request.formData();
+		body = Object.fromEntries(formData.entries()) as Record<string, string>;
+	} else if (contentType.includes('application/json')) {
+		body = await request.json();
+	} else {
+		return json(
+			{ error: 'unsupported_content_type' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	const { grant_type } = body;
+
+	if (grant_type === 'authorization_code') {
+		return handleAuthorizationCodeGrant(body);
+	}
+
+	if (grant_type === 'refresh_token') {
+		return handleRefreshTokenGrant(body);
+	}
+
+	return json({ error: 'unsupported_grant_type' }, { status: 400, headers: tokenResponseHeaders });
 };

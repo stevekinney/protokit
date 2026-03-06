@@ -6,7 +6,7 @@ A production-ready template for building [Model Context Protocol](https://modelc
 
 - **MCP Server** — Streamable HTTP transport at `/mcp`, authenticated via OAuth Bearer tokens
 - **OAuth 2.0 + PKCE** — Full authorization server with dynamic client registration (RFC 7591), token exchange (RFC 6749), and S256 code challenges (RFC 7636)
-- **Google Sign-In** — Via Neon Auth (Better Auth under the hood), works immediately with shared dev credentials
+- **Google Sign-In** — Via Neon Auth (Better Auth under the hood), with shared dev credentials for prototyping
 - **Postgres** — Neon serverless Postgres with Drizzle ORM, schema migrations, and CI validation
 - **Monorepo** — Turborepo with three packages, Bun as the package manager
 
@@ -56,11 +56,12 @@ bun scripts/setup.ts
 The wizard will:
 
 1. Create a Neon project and write `DATABASE_URL` / `DATABASE_URL_UNPOOLED` to `.env.local`
-2. Enable Neon Auth and write `NEON_AUTH_URL` to `.env.local`
-3. Optionally configure production Google OAuth credentials
+2. Generate `BETTER_AUTH_SECRET` and write it to `.env.local`
+3. Optionally configure Google OAuth credentials
 4. Optionally initialize a Railway project and sync environment variables
 5. Optionally set GitHub secrets for CI/CD
 6. Run the initial database migration
+7. Run `svelte-kit sync` to generate SvelteKit types
 
 ### Manual Setup
 
@@ -70,11 +71,11 @@ The wizard will:
    bun install
    ```
 
-2. **Create a Neon project** and enable Neon Auth:
+2. **Create a Neon project** and enable Neon Auth in the [Neon Console](https://console.neon.tech):
 
    ```sh
    neonctl projects create --region-id aws-us-east-2
-   neonctl auth enable --project-id <your-project-id>
+   # Then enable Neon Auth in the Console: https://console.neon.tech/app/projects/YOUR_PROJECT_ID/auth
    ```
 
 3. **Create `.env.local`** in the project root:
@@ -82,17 +83,13 @@ The wizard will:
    ```sh
    # Required
    DATABASE_URL=<pooled connection string from Neon>
-   PUBLIC_APP_URL=http://localhost:3000
-   NEON_AUTH_URL=<from: neonctl auth url --project-id YOUR_PROJECT_ID>
-
-   # Required for migrations (falls back to DATABASE_URL if not set)
    DATABASE_URL_UNPOOLED=<direct connection string from Neon>
-
-   # Optional — Neon Auth provides shared Google dev credentials automatically
+   BETTER_AUTH_SECRET=<random string, at least 32 characters>
    GOOGLE_CLIENT_ID=<your Google OAuth client ID>
    GOOGLE_CLIENT_SECRET=<your Google OAuth client secret>
 
-   # Optional — defaults shown
+   # Optional
+   BETTER_AUTH_URL=http://localhost:3000
    MCP_TOKEN_TTL_SECONDS=3600
    LOG_LEVEL=info
    ```
@@ -116,23 +113,23 @@ The wizard will:
 
 ### Required
 
-| Variable         | Package              | Description                   |
-| ---------------- | -------------------- | ----------------------------- |
-| `DATABASE_URL`   | `@template/database` | Neon pooled connection string |
-| `PUBLIC_APP_URL` | `@template/web`      | Public URL of the application |
-| `NEON_AUTH_URL`  | `@template/web`      | Neon Auth endpoint URL        |
+| Variable                | Package              | Description                                    |
+| ----------------------- | -------------------- | ---------------------------------------------- |
+| `DATABASE_URL`          | `@template/database` | Neon pooled connection string                  |
+| `DATABASE_URL_UNPOOLED` | `@template/database` | Direct connection string (used for migrations) |
+| `BETTER_AUTH_SECRET`    | `@template/web`      | Random string, at least 32 characters          |
+| `GOOGLE_CLIENT_ID`      | `@template/web`      | Google OAuth client ID                         |
+| `GOOGLE_CLIENT_SECRET`  | `@template/web`      | Google OAuth client secret                     |
 
 ### Optional
 
-| Variable                | Package              | Default       | Description                                                         |
-| ----------------------- | -------------------- | ------------- | ------------------------------------------------------------------- |
-| `DATABASE_URL_UNPOOLED` | `@template/database` | —             | Direct connection string (used for migrations)                      |
-| `GOOGLE_CLIENT_ID`      | `@template/web`      | —             | Google OAuth client ID for production                               |
-| `GOOGLE_CLIENT_SECRET`  | `@template/web`      | —             | Google OAuth client secret for production                           |
-| `MCP_TOKEN_TTL_SECONDS` | `@template/mcp`      | `3600`        | OAuth access token lifetime in seconds                              |
-| `LOG_LEVEL`             | `@template/mcp`      | `info`        | Pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace`) |
-| `NODE_ENV`              | `@template/mcp`      | `development` | `development`, `production`, or `test`                              |
-| `SKIP_ENV_VALIDATION`   | all                  | —             | Set to `true` to skip Zod validation (used in CI)                   |
+| Variable                | Package         | Default       | Description                                                         |
+| ----------------------- | --------------- | ------------- | ------------------------------------------------------------------- |
+| `BETTER_AUTH_URL`       | `@template/web` | —             | Public URL (auto-derived from `RAILWAY_PUBLIC_DOMAIN` if unset)     |
+| `MCP_TOKEN_TTL_SECONDS` | `@template/mcp` | `3600`        | OAuth access token lifetime in seconds                              |
+| `LOG_LEVEL`             | `@template/mcp` | `info`        | Pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace`) |
+| `NODE_ENV`              | `@template/mcp` | `development` | `development`, `production`, or `test`                              |
+| `SKIP_ENV_VALIDATION`   | all             | —             | Set to `true` to skip Zod validation (used in CI)                   |
 
 Each package validates its own environment variables via `src/env.ts` using Zod. Import from the relevant `env.ts` rather than reading `process.env` directly.
 
@@ -357,6 +354,14 @@ Prompt conventions:
 - Prompts must never throw — catch errors and return a fallback `messages` array
 - Return shape: `{ messages: [{ role, content: { type, text } }] }`
 
+## Neon Auth Architecture
+
+This template uses [Neon Auth](https://neon.tech/docs/guides/neon-auth-guide) (Better Auth under the hood) for user authentication. Neon Auth manages four tables in the `neon_auth` schema (`user`, `session`, `account`, `verification`) — these are referenced in `packages/database/src/schema.ts` but never migrated by Drizzle.
+
+**Shared dev credentials:** Neon Auth provides shared Google OAuth credentials for development. These work out of the box but are for prototyping only.
+
+**Production:** You must create your own Google OAuth credentials in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) and set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Additionally, `BETTER_AUTH_SECRET` must be a random string of at least 32 characters (the setup wizard generates one automatically).
+
 ## OAuth Flow
 
 The template implements a complete OAuth 2.0 authorization server for MCP clients:
@@ -417,7 +422,7 @@ The template uses `adapter-node` for Railway deployment:
    railway up
    ```
 
-2. Set environment variables in the Railway dashboard — same variables as `.env.local`, but with production values (`PUBLIC_APP_URL` should point to your Railway domain).
+2. Set environment variables in the Railway dashboard — same variables as `.env.local`, but with production values. `BETTER_AUTH_URL` is auto-derived from `RAILWAY_PUBLIC_DOMAIN` if unset.
 
 The default Neon region is `aws-us-east-2` (Ohio). Choose a region close to your Railway deployment for lower latency.
 

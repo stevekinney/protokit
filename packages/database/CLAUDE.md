@@ -4,10 +4,10 @@ Drizzle ORM schema, migrations, and shared database client for Neon Postgres.
 
 ## Key Files
 
-- `src/schema.ts` — All table definitions. `neonAuthUsers` is a reference-only table in the `neon_auth` schema (not migrated by Drizzle).
+- `src/schema.ts` — All table definitions. Four `neon_auth` tables (`neonAuthUsers`, `neonAuthSessions`, `neonAuthAccounts`, `neonAuthVerifications`) are reference-only — not migrated by Drizzle.
 - `src/env.ts` — Owns `DATABASE_URL` and `DATABASE_URL_UNPOOLED`.
 - `src/index.ts` — Exports the `database` instance and `schema`.
-- `drizzle.config.ts` — Uses `DATABASE_URL_UNPOOLED` for migrations.
+- `drizzle.config.ts` — Uses `DATABASE_URL_UNPOOLED` for migrations. `schemaFilter: ['public']` prevents generating `neon_auth` migrations.
 
 ## Commands
 

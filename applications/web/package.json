@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev --port 3000",
-		"build": "vite build",
+		"build": "SKIP_ENV_VALIDATION=true vite build",
 		"preview": "vite preview",
 		"typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"lint": "eslint .",
@@ -13,16 +13,16 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.8.0",
+		"@modelcontextprotocol/sdk": "^1.27.0",
 		"@sveltejs/adapter-node": "^5.2.0",
 		"@sveltejs/kit": "^2.15.0",
-		"@t3-oss/env-core": "^0.12.0",
+		"@t3-oss/env-core": "^0.13.0",
 		"@template/database": "workspace:*",
 		"@template/mcp": "workspace:*",
 		"better-auth": "^1.2.0",
 		"drizzle-orm": "^0.41.0",
 		"svelte": "^5.20.0",
-		"zod": "^3.24.0"
+		"zod": "^4.0.0"
 	},
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "^5.0.0",

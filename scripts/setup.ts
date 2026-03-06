@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 
@@ -77,18 +78,9 @@ async function setupNeon(): Promise<
 	appendToEnvironmentFile('DATABASE_URL_UNPOOLED', directConnectionString);
 	console.log('Database URLs written to .env.local');
 
-	// Enable Neon Auth
-	console.log('Enabling Neon Auth...');
-	try {
-		execute(`neonctl auth enable --project-id ${neonProjectId}`);
-		const neonAuthUrl = execute(`neonctl auth url --project-id ${neonProjectId}`);
-		appendToEnvironmentFile('NEON_AUTH_URL', neonAuthUrl);
-		console.log('Neon Auth enabled. URL written to .env.local');
-		console.log('Google login works immediately with Neon shared dev credentials.');
-	} catch {
-		console.warn('Could not enable Neon Auth automatically.');
-		console.warn('Enable it manually in the Neon dashboard and add NEON_AUTH_URL to .env.local');
-	}
+	console.log('\nNeon Auth must be enabled in the Neon Console:');
+	console.log(`  https://console.neon.tech/app/projects/${neonProjectId}/auth`);
+	console.log('Enable it, then Google login will work with shared dev credentials.');
 
 	return { projectId: neonProjectId, connectionString, directConnectionString };
 }
@@ -96,20 +88,44 @@ async function setupNeon(): Promise<
 async function setupGoogle() {
 	console.log('\n--- Google OAuth ---\n');
 
-	const shouldConfigure = await confirm('Configure production Google OAuth credentials? (y/N): ');
-	if (!shouldConfigure) return;
+	console.log('Google OAuth credentials are required for authentication.');
+	console.log('For development, Neon Auth provides shared credentials automatically.');
+	console.log('For production, you need your own credentials.\n');
 
-	console.log('\nOpen Google Cloud Console: https://console.cloud.google.com/apis/credentials');
+	console.log('Open Google Cloud Console: https://console.cloud.google.com/apis/credentials');
 	console.log('Create OAuth 2.0 Client ID with redirect URI:');
 	console.log('  https://your-app.railway.app/api/auth/callback/google\n');
 
-	const googleClientId = await prompt('GOOGLE_CLIENT_ID: ');
-	const googleClientSecret = await prompt('GOOGLE_CLIENT_SECRET: ');
+	const googleClientId = await prompt('GOOGLE_CLIENT_ID (blank to skip): ');
+	const googleClientSecret = googleClientId ? await prompt('GOOGLE_CLIENT_SECRET: ') : '';
 
 	if (googleClientId && googleClientSecret) {
 		appendToEnvironmentFile('GOOGLE_CLIENT_ID', googleClientId);
 		appendToEnvironmentFile('GOOGLE_CLIENT_SECRET', googleClientSecret);
 		console.log('Google OAuth credentials written to .env.local');
+	} else {
+		console.log('Skipping — add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env.local later.');
+	}
+}
+
+async function setupBetterAuth() {
+	console.log('\n--- Better Auth ---\n');
+
+	const existingSecret = getEnvironmentValue('BETTER_AUTH_SECRET');
+
+	if (existingSecret) {
+		console.log('BETTER_AUTH_SECRET already exists in .env.local.');
+	} else {
+		const secret = randomBytes(32).toString('hex');
+		appendToEnvironmentFile('BETTER_AUTH_SECRET', secret);
+		console.log('Generated BETTER_AUTH_SECRET and written to .env.local');
+	}
+
+	const existingUrl = getEnvironmentValue('BETTER_AUTH_URL');
+
+	if (!existingUrl) {
+		appendToEnvironmentFile('BETTER_AUTH_URL', 'http://localhost:3000');
+		console.log('BETTER_AUTH_URL set to http://localhost:3000');
 	}
 }
 
@@ -213,8 +229,28 @@ async function runInitialMigration() {
 	console.log('Running initial migration...');
 	try {
 		execute('bun scripts/migrate.ts', { stdio: 'inherit' });
+		console.log('Migration completed successfully.');
 	} catch {
 		console.warn('Migration failed. Run manually: bun scripts/migrate.ts');
+	}
+
+	console.log('Verifying database connectivity...');
+	try {
+		execute(
+			"bun -e \"const { neon } = require('@neondatabase/serverless'); const sql = neon(process.env.DATABASE_URL); sql`SELECT 1`.then(() => console.log('Connected.'))\"",
+		);
+	} catch {
+		console.warn('Could not verify database connectivity. Check DATABASE_URL.');
+	}
+}
+
+async function runSvelteKitSync() {
+	console.log('\n--- SvelteKit Sync ---\n');
+	try {
+		execute('bunx svelte-kit sync', { stdio: 'inherit' });
+		console.log('SvelteKit types generated.');
+	} catch {
+		console.warn('svelte-kit sync failed. Run manually: bunx svelte-kit sync');
 	}
 }
 
@@ -226,13 +262,12 @@ async function runFullSetup() {
 	console.log('All prerequisites found.');
 
 	const neonResult = await setupNeon();
+	await setupBetterAuth();
 	await setupGoogle();
-
-	appendToEnvironmentFile('PUBLIC_APP_URL', 'http://localhost:3000');
-
 	await setupRailway();
 	await setupGithubSecrets(neonResult?.projectId);
 	await runInitialMigration();
+	await runSvelteKitSync();
 
 	console.log('\n=== Setup Complete ===');
 	console.log('');
@@ -253,6 +288,9 @@ const phases: Record<string, () => Promise<void>> = {
 	},
 	google: async () => {
 		await setupGoogle();
+	},
+	'better-auth': async () => {
+		await setupBetterAuth();
 	},
 	railway: async () => {
 		await setupRailway();

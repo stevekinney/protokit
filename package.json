@@ -40,5 +40,8 @@
 			"eslint --fix"
 		]
 	},
-	"packageManager": "bun@1.2.4"
+	"packageManager": "bun@1.2.4",
+	"overrides": {
+		"zod": "^4.0.0"
+	}
 }

@@ -1,13 +1,13 @@
 {
 	"$schema": "https://turbo.build/schema.json",
-	"ui": "tui",
+	"ui": "stream",
 	"globalEnv": [
 		"DATABASE_URL",
 		"DATABASE_URL_UNPOOLED",
-		"NEON_AUTH_URL",
+		"BETTER_AUTH_URL",
+		"BETTER_AUTH_SECRET",
 		"GOOGLE_CLIENT_ID",
 		"GOOGLE_CLIENT_SECRET",
-		"PUBLIC_APP_URL",
 		"MCP_TOKEN_TTL_SECONDS",
 		"LOG_LEVEL",
 		"NODE_ENV",

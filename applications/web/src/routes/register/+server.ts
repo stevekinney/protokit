@@ -18,7 +18,7 @@ const registrationSchema = z.object({
 			(uris) => uris.every(isValidRedirectUri),
 			'Redirect URIs must use HTTPS (or http://localhost for development)',
 		),
-	grant_types: z.array(z.string()).default(['authorization_code']),
+	grant_types: z.array(z.string()).default(['authorization_code', 'refresh_token']),
 	response_types: z.array(z.string()).default(['code']),
 });
 

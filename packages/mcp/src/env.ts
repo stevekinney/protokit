@@ -4,6 +4,7 @@ import { z } from 'zod';
 export const environment = createEnv({
 	server: {
 		MCP_TOKEN_TTL_SECONDS: z.coerce.number().positive().optional().default(3600),
+		MCP_REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().positive().optional().default(2592000),
 		LOG_LEVEL: z
 			.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
 			.optional()
@@ -12,6 +13,7 @@ export const environment = createEnv({
 	},
 	runtimeEnv: {
 		MCP_TOKEN_TTL_SECONDS: process.env.MCP_TOKEN_TTL_SECONDS,
+		MCP_REFRESH_TOKEN_TTL_SECONDS: process.env.MCP_REFRESH_TOKEN_TTL_SECONDS,
 		LOG_LEVEL: process.env.LOG_LEVEL,
 		NODE_ENV: process.env.NODE_ENV,
 	},

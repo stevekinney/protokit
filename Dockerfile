@@ -11,6 +11,10 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 
+ENV SKIP_ENV_VALIDATION=true
+ENV NODE_ENV=production
+
+# Note: update --filter after renaming the @template scope
 RUN bun turbo build --filter=@template/web
 
 FROM node:22-slim AS runner

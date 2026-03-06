@@ -19,7 +19,7 @@
 
 ## Validation
 
-- Zod v3: `import { z } from 'zod'` (`^3.24.0`)
+- Zod v4: `import { z } from 'zod'` (`^4.0.0`, uses v4 compat layer — same API as v3)
 - Never install `drizzle-zod` — define Zod schemas manually alongside Drizzle schema
 
 ## SvelteKit Patterns

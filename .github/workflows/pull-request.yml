@@ -17,7 +17,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.2.4'
-          cache: true
 
       - run: bun install --frozen-lockfile
 
@@ -34,8 +33,10 @@ jobs:
         run: bun turbo build
         env:
           DATABASE_URL: 'postgresql://ci:ci@localhost:5432/ci'
-          NEON_AUTH_URL: 'https://ci.neon.tech'
-          PUBLIC_APP_URL: 'http://localhost:3000'
+          BETTER_AUTH_SECRET: 'ci-placeholder-secret-at-least-32-chars'
+          BETTER_AUTH_URL: 'http://localhost:3000'
+          GOOGLE_CLIENT_ID: 'ci-placeholder'
+          GOOGLE_CLIENT_SECRET: 'ci-placeholder'
           LOG_LEVEL: 'info'
 
   validate-database:
@@ -48,7 +49,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.2.4'
-          cache: true
 
       - run: bun install --frozen-lockfile
 
