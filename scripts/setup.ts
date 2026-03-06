@@ -57,9 +57,34 @@ async function setupNeon(): Promise<
 
 	const region = (await prompt('Neon region (default: aws-us-east-2): ')) || 'aws-us-east-2';
 
+	let organizationId: string | undefined;
+	try {
+		const organizationsOutput = execute('neonctl orgs list --output json');
+		const organizations: Array<{ id: string; name: string }> = JSON.parse(organizationsOutput);
+		if (organizations.length > 1) {
+			console.log('\nAvailable organizations:');
+			for (let i = 0; i < organizations.length; i++) {
+				console.log(`  ${i + 1}. ${organizations[i].name} (${organizations[i].id})`);
+			}
+			const selection = await prompt(
+				`Select organization (1-${organizations.length}, blank for personal): `,
+			);
+			const index = parseInt(selection, 10) - 1;
+			if (index >= 0 && index < organizations.length) {
+				organizationId = organizations[index].id;
+			}
+		}
+	} catch {
+		// Non-fatal: old neonctl version or no orgs — continue without --org-id
+	}
+
+	const organizationFlag = organizationId ? ` --org-id ${organizationId}` : '';
+
 	let neonProjectId: string;
 	try {
-		const output = execute(`neonctl projects create --region-id ${region} --output json`);
+		const output = execute(
+			`neonctl projects create --region-id ${region}${organizationFlag} --output json`,
+		);
 		const project = JSON.parse(output);
 		neonProjectId = project.project.id;
 		console.log(`Created Neon project: ${neonProjectId}`);
@@ -133,8 +158,10 @@ async function setupRailway() {
 	console.log('\n--- Railway ---\n');
 
 	if (!commandExists('railway')) {
-		console.error('railway CLI is not installed. Install it with: npm install -g @railway/cli');
-		process.exit(1);
+		console.warn(
+			'railway CLI is not installed. Skipping. Install it with: npm install -g @railway/cli',
+		);
+		return;
 	}
 
 	const shouldConfigure = await confirm('Configure Railway deployment? (y/N): ');
@@ -172,8 +199,8 @@ async function setupGithubSecrets(neonProjectId?: string) {
 	console.log('\n--- GitHub Secrets ---\n');
 
 	if (!commandExists('gh')) {
-		console.error('gh CLI is not installed. Install it from: https://cli.github.com/');
-		process.exit(1);
+		console.warn('gh CLI is not installed. Skipping. Install it from: https://cli.github.com/');
+		return;
 	}
 
 	const shouldConfigure = await confirm('Set GitHub secrets for CI/CD? (y/N): ');
@@ -258,7 +285,7 @@ async function runFullSetup() {
 	console.log('\n=== SvelteKit MCP Template Setup ===\n');
 
 	console.log('Checking prerequisites...');
-	checkPrerequisites(['neonctl', 'railway', 'gh']);
+	checkPrerequisites(['neonctl']);
 	console.log('All prerequisites found.');
 
 	const neonResult = await setupNeon();

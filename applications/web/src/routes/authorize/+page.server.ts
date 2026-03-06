@@ -5,11 +5,20 @@ import { database, schema } from '@template/database';
 import { eq } from 'drizzle-orm';
 import { isValidRedirectUri } from '$lib/validate-redirect-uri';
 import { hashCredential } from '$lib/hash-credential';
+import { environment } from '../../env.js';
 
 export const load: PageServerLoad = async ({ url, locals }) => {
 	if (!locals.user) {
 		const returnUrl = url.pathname + url.search;
-		redirect(302, `/sign-in?provider=google&callbackURL=${encodeURIComponent(returnUrl)}`);
+		const betterAuthUrl = environment.BETTER_AUTH_URL;
+		const signInOrigin =
+			betterAuthUrl && new URL(betterAuthUrl).origin !== url.origin
+				? new URL(betterAuthUrl).origin
+				: '';
+		redirect(
+			302,
+			`${signInOrigin}/sign-in?provider=google&callbackURL=${encodeURIComponent(returnUrl)}`,
+		);
 	}
 
 	const clientId = url.searchParams.get('client_id');

@@ -2,6 +2,7 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
 const TARGET_EXTENSIONS = ['.json', '.ts', '.js', '.svelte', '.md'];
+const TARGET_FILENAMES = ['Dockerfile'];
 const IGNORE_DIRECTORIES = ['node_modules', '.svelte-kit', '.turbo', 'build', 'dist', '.git'];
 
 async function collectFiles(directory: string): Promise<string[]> {
@@ -14,7 +15,10 @@ async function collectFiles(directory: string): Promise<string[]> {
 			if (!IGNORE_DIRECTORIES.includes(entry.name)) {
 				files.push(...(await collectFiles(fullPath)));
 			}
-		} else if (TARGET_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
+		} else if (
+			TARGET_EXTENSIONS.some((extension) => entry.name.endsWith(extension)) ||
+			TARGET_FILENAMES.includes(entry.name)
+		) {
 			files.push(fullPath);
 		}
 	}
