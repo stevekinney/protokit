@@ -1,7 +1,20 @@
 declare module 'bun:test' {
+	type Expectation = {
+		toBe: (expected: unknown) => void;
+		toEqual: (expected: unknown) => void;
+		toMatchObject: (expected: Record<string, unknown>) => void;
+		toContain: (expected: unknown) => void;
+		toBeGreaterThan: (expected: number) => void;
+		toBeGreaterThanOrEqual: (expected: number) => void;
+		toBeNull: () => void;
+		not: {
+			toBeNull: () => void;
+		};
+	};
+
 	export const describe: (name: string, fn: () => void | Promise<void>) => void;
 	export const it: (name: string, fn: () => void | Promise<void>) => void;
-	export const expect: (value: unknown) => unknown;
+	export const expect: (value: unknown) => Expectation;
 	export const beforeEach: (fn: () => void | Promise<void>) => void;
 	export const afterEach: (fn: () => void | Promise<void>) => void;
 	export const mock: {
