@@ -5,12 +5,12 @@ import { createMcpServer } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { database, schema } from '@template/database';
 import { eq, and } from 'drizzle-orm';
-import { mcpSessionStore } from '$lib/mcp-session-store';
-import { instanceIdentifier } from '$lib/instance-identifier';
-import { environment } from '../env.js';
-import { createMcpProtocolErrorResponse } from './mcp-protocol-error-response.js';
-import { createMcpCorsHeaders, validateMcpRequestOrigin } from './mcp-origin-validation.js';
-import { mcpProtocolVersion } from './mcp-protocol-constants.js';
+import { mcpSessionStore } from '@web/lib/mcp-session-store';
+import { instanceIdentifier } from '@web/lib/instance-identifier';
+import { environment } from '@web/env';
+import { createMcpProtocolErrorResponse } from '@web/lib/mcp-protocol-error-response';
+import { createMcpCorsHeaders, validateMcpRequestOrigin } from '@web/lib/mcp-origin-validation';
+import { mcpProtocolVersion } from '@web/lib/mcp-protocol-constants';
 
 const MAX_ACTIVE_SESSIONS = 1000;
 const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes

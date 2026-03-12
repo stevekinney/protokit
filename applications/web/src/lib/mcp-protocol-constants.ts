@@ -1,4 +1,4 @@
-import { environment } from '../env.js';
+import { environment } from '@web/env';
 
 export const mcpProtocolVersion = environment.MCP_PROTOCOL_VERSION ?? '2025-11-25';
 export const mcpUiExtensionIdentifier = 'io.modelcontextprotocol/ui';

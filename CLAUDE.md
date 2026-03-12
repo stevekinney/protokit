@@ -1,44 +1,37 @@
-# SvelteKit MCP Template
+# Bun + React MCP Template
 
 ## Monorepo Structure
 
-- `applications/web` — SvelteKit app (UI + MCP server + OAuth endpoints)
-- `packages/database` — Drizzle schema, migrations, shared DB client
+- `applications/web` — Bun-native React SSR app (UI + OAuth endpoints + MCP server transport)
+- `packages/database` — Drizzle schema, migrations, shared database client
 - `packages/mcp` — MCP tool/resource/prompt definitions + shared logger
 
 ## Package Manager & Task Runner
 
 - Always use `bun`, never `npm` or `yarn`
 - Use `bunx` instead of `npx`
-- Run tasks via `bun turbo <task>` (e.g. `bun turbo dev`, `bun turbo typecheck`)
+- Run tasks via `bun turbo <task>` (for example `bun turbo dev`, `bun turbo typecheck`)
 
 ## TypeScript
 
-- Each package/app manages its own `tsconfig.json` — no root tsconfig
-- SvelteKit generates its own via `svelte-kit sync` — never edit `.svelte-kit/tsconfig.json`
+- Each package/application manages its own `tsconfig.json`
+- `applications/web` uses explicit path aliases (`@web/*`) and Bun-compatible JSX settings
 
 ## Validation
 
-- Zod v4: `import { z } from 'zod'` (`^4.0.0`, uses v4 compat layer — same API as v3)
+- Zod v4: `import { z } from 'zod'`
 - Never install `drizzle-zod` — define Zod schemas manually alongside Drizzle schema
-
-## SvelteKit Patterns
-
-- Use Remote Functions for server communication
-- Use Attachments over legacy `use:action` enhancers
-- `getRequestEvent()` from `$app/server` for request context
 
 ## Environment Variables
 
 - Never read `process.env` directly — import from that package's `src/env.ts`
-- Never use `$env/static/private` or `$env/dynamic/private`
 - `packages/*` must not import from `applications/*`
 
 ## Logging
 
 - Never use `console.log`, `console.error`, or `console.warn` in server code
 - Import: `import { logger } from '@template/mcp/logger'`
-- Errors: `logger.error({ err }, 'description')` — pass error as `err` key
+- Errors: `logger.error({ err }, 'description')`
 
 ## MCP Naming
 
@@ -47,35 +40,30 @@
 
 ## File & Identifier Naming
 
-- Kebab-case for all file names: `get-user-profile.ts`, `token-validation.ts`
-  (except SvelteKit route files and tool config files which follow their own conventions)
-- Full words, no abbreviations: `configuration` not `config`, `utilities` not `utils`,
-  `parameters` not `params`, `authentication` not `auth`, `database` not `db`,
-  `response` not `res`, `request` not `req`, `initialize` not `init`
-- Exceptions where the abbreviation is the actual API: pino's `{ err }` key,
-  Drizzle's exported `db` instance, Svelte's `$props()` and DOM refs
+- Kebab-case for file names: `get-user-profile.ts`, `token-validation.ts`
+- Full words, no abbreviations: `configuration`, `utilities`, `parameters`, `authentication`, `database`, `response`, `request`, `initialize`
+- Exceptions where the abbreviation is the real API: pino `{ err }`, Drizzle `db` instance
 
 ## Deployment
 
-- Railway via `adapter-node` (not Vercel)
+- Railway deployment runs Bun directly
 - Neon region default: `aws-us-east-2` (Ohio), configurable
 
 ## MVP: Keep the Codebase Clean
 
 - No backwards compatibility layers, deprecation warnings, or feature flags
-- No `@deprecated` JSDoc — delete the code instead
+- No `@deprecated` JSDoc
 - If an API changes, update all callsites; do not add shims
 - When in doubt, delete rather than comment out
 
 ## Testing
 
 - `bun test` in `packages/*`
-- `vitest` in `applications/web`
-- Never try to run Vitest in packages or bun test in the web app
+- `bun test` in `applications/web`
 
 ## Linting & Formatting
 
-- ESLint + Prettier (not Biome — Biome is explicitly excluded)
+- ESLint + Prettier (Biome excluded)
 - `bun turbo lint` to lint, `bun turbo format` to format
 
 ## Before Installing Packages

@@ -1,6 +1,4 @@
-import type { RequestHandler } from '@sveltejs/kit';
-
-export const corsHeaders: Record<string, string> = {
+export const oauthCorsHeaders: Record<string, string> = {
 	'Access-Control-Allow-Origin': '*',
 	'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
 	'Access-Control-Allow-Headers':
@@ -8,6 +6,9 @@ export const corsHeaders: Record<string, string> = {
 	'Access-Control-Expose-Headers': 'mcp-session-id, mcp-protocol-version',
 };
 
-export const handleCorsPreflight: RequestHandler = async () => {
-	return new Response(null, { status: 204, headers: corsHeaders });
-};
+export function createCorsPreflightResponse(headers: HeadersInit = oauthCorsHeaders): Response {
+	return new Response(null, {
+		status: 204,
+		headers,
+	});
+}

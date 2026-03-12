@@ -3,10 +3,11 @@ import { z } from 'zod';
 
 export const environment = createEnv({
 	server: {
-		BETTER_AUTH_URL: z.string().url().optional(),
 		BETTER_AUTH_SECRET: z.string().min(32),
 		GOOGLE_CLIENT_ID: z.string().min(1),
 		GOOGLE_CLIENT_SECRET: z.string().min(1),
+		SESSION_COOKIE_NAME: z.string().min(1).optional().default('application_session'),
+		SESSION_TIME_TO_LIVE_SECONDS: z.coerce.number().int().positive().optional().default(2_592_000),
 		REDIS_URL: z.string().url(),
 		RATE_LIMIT_REGISTER_MAX: z.coerce.number().int().positive().default(10),
 		RATE_LIMIT_REGISTER_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
@@ -27,16 +28,14 @@ export const environment = createEnv({
 		ENTERPRISE_AUTH_CLIENT_ID: z.string().optional(),
 		ENTERPRISE_AUTH_CLIENT_SECRET: z.string().optional(),
 		ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS: z.string().optional(),
+		NODE_ENV: z.enum(['development', 'production', 'test']).optional().default('development'),
 	},
 	runtimeEnv: {
-		BETTER_AUTH_URL: process.env.BETTER_AUTH_URL
-			? process.env.BETTER_AUTH_URL
-			: process.env.RAILWAY_PUBLIC_DOMAIN
-				? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-				: undefined,
 		BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
 		GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
 		GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+		SESSION_COOKIE_NAME: process.env.SESSION_COOKIE_NAME,
+		SESSION_TIME_TO_LIVE_SECONDS: process.env.SESSION_TIME_TO_LIVE_SECONDS,
 		REDIS_URL: process.env.REDIS_URL,
 		RATE_LIMIT_REGISTER_MAX: process.env.RATE_LIMIT_REGISTER_MAX,
 		RATE_LIMIT_REGISTER_WINDOW_SECONDS: process.env.RATE_LIMIT_REGISTER_WINDOW_SECONDS,
@@ -57,6 +56,7 @@ export const environment = createEnv({
 		ENTERPRISE_AUTH_CLIENT_ID: process.env.ENTERPRISE_AUTH_CLIENT_ID,
 		ENTERPRISE_AUTH_CLIENT_SECRET: process.env.ENTERPRISE_AUTH_CLIENT_SECRET,
 		ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS: process.env.ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS,
+		NODE_ENV: process.env.NODE_ENV as 'development' | 'production' | 'test' | undefined,
 	},
 	emptyStringAsUndefined: true,
 	skipValidation: process.env.SKIP_ENV_VALIDATION === 'true',

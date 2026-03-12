@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { environment } from '../env.js';
+import { environment } from '@web/env';
 
 export const instanceIdentifier =
 	environment.INSTANCE_IDENTIFIER ??
