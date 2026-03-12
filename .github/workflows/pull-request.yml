@@ -59,7 +59,7 @@ jobs:
           SERVER_PID=$!
           trap "kill ${SERVER_PID}" EXIT
           sleep 4
-          bunx @modelcontextprotocol/conformance server \
+          bunx --bun @modelcontextprotocol/conformance server \
             --url http://127.0.0.1:3137/mcp \
             --spec-version 2025-11-25
 
