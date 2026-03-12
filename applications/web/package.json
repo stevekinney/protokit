@@ -10,7 +10,7 @@
 		"typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"test": "vitest run"
+		"test": "SKIP_ENV_VALIDATION=true vitest run"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.27.0",
@@ -21,6 +21,7 @@
 		"@template/mcp": "workspace:*",
 		"better-auth": "^1.2.0",
 		"drizzle-orm": "^0.41.0",
+		"redis": "^5.11.0",
 		"svelte": "^5.20.0",
 		"zod": "^4.0.0"
 	},

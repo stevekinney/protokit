@@ -67,6 +67,11 @@ export const oauthClients = pgTable('oauth_clients', {
 	clientId: text('client_id').primaryKey(),
 	clientSecret: text('client_secret').notNull(),
 	clientName: text('client_name').notNull(),
+	clientType: text('client_type').notNull().default('confidential'),
+	tokenEndpointAuthMethod: text('token_endpoint_auth_method')
+		.notNull()
+		.default('client_secret_post'),
+	serviceAccountUserId: uuid('service_account_user_id').references(() => neonAuthUsers.id),
 	redirectUris: jsonb('redirect_uris').$type<string[]>().notNull().default([]),
 	grantTypes: jsonb('grant_types').$type<string[]>().notNull().default([]),
 	responseTypes: jsonb('response_types').$type<string[]>().notNull().default([]),

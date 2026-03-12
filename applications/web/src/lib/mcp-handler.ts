@@ -1,18 +1,195 @@
 import { randomUUID } from 'node:crypto';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import { isInitializeRequest, JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServer } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { database, schema } from '@template/database';
 import { eq, and } from 'drizzle-orm';
+import { mcpSessionStore } from '$lib/mcp-session-store';
+import { instanceIdentifier } from '$lib/instance-identifier';
+import { environment } from '../env.js';
+import { createMcpProtocolErrorResponse } from './mcp-protocol-error-response.js';
+import { createMcpCorsHeaders, validateMcpRequestOrigin } from './mcp-origin-validation.js';
+import { mcpProtocolVersion } from './mcp-protocol-constants.js';
 
 const MAX_ACTIVE_SESSIONS = 1000;
 const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const EVICTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const SESSION_TIME_TO_LIVE_SECONDS = Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000);
 
-const activeTransports = new Map<
-	string,
-	{ transport: WebStandardStreamableHTTPServerTransport; userId: string; lastActivity: number }
->();
+type ActiveTransportEntry = {
+	transport: WebStandardStreamableHTTPServerTransport;
+	userId: string;
+	lastActivity: number;
+};
+
+const activeTransports = new Map<string, ActiveTransportEntry>();
+
+type ParsedMcpPostBody = {
+	parsedBody: unknown;
+	isInitializationRequest: boolean;
+};
+
+function buildMcpResponseHeaders(request: Request): Record<string, string> {
+	return {
+		...createMcpCorsHeaders(request),
+		'MCP-Protocol-Version': mcpProtocolVersion,
+	};
+}
+
+function buildSessionAffinityRequiredResponse(sessionId: string, request: Request): Response {
+	return new Response(
+		JSON.stringify({
+			error: 'session_affinity_required',
+			error_description:
+				'This MCP session is owned by a different application instance. Reconnect to establish a new session.',
+			action: 'reconnect',
+			session_id: sessionId,
+			status: 409,
+		}),
+		{
+			status: 409,
+			headers: {
+				'Content-Type': 'application/json',
+				...buildMcpResponseHeaders(request),
+			},
+		},
+	);
+}
+
+function buildSessionNotFoundResponse(request: Request): Response {
+	return createMcpProtocolErrorResponse({
+		status: 404,
+		error: 'not_found',
+		errorDescription: 'Session not found',
+		headers: buildMcpResponseHeaders(request),
+	});
+}
+
+async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPostBody | Response> {
+	const acceptHeader = request.headers.get('accept') ?? '';
+	if (!acceptHeader.includes('application/json') || !acceptHeader.includes('text/event-stream')) {
+		return createMcpProtocolErrorResponse({
+			status: 406,
+			error: 'not_acceptable',
+			errorDescription:
+				'POST /mcp requires Accept to include both application/json and text/event-stream.',
+			headers: buildMcpResponseHeaders(request),
+		});
+	}
+
+	const contentType = request.headers.get('content-type') ?? '';
+	if (!contentType.includes('application/json')) {
+		return createMcpProtocolErrorResponse({
+			status: 415,
+			error: 'unsupported_media_type',
+			errorDescription: 'POST /mcp requires Content-Type: application/json.',
+			headers: buildMcpResponseHeaders(request),
+		});
+	}
+
+	let rawBody: unknown;
+	try {
+		rawBody = await request.json();
+	} catch {
+		return createMcpProtocolErrorResponse({
+			status: 400,
+			error: 'bad_request',
+			errorDescription: 'Invalid JSON body.',
+			headers: buildMcpResponseHeaders(request),
+		});
+	}
+
+	const messages = Array.isArray(rawBody) ? rawBody : [rawBody];
+	try {
+		for (const message of messages) {
+			JSONRPCMessageSchema.parse(message);
+		}
+	} catch {
+		return createMcpProtocolErrorResponse({
+			status: 400,
+			error: 'bad_request',
+			errorDescription: 'Invalid JSON-RPC message payload.',
+			headers: buildMcpResponseHeaders(request),
+		});
+	}
+
+	const isInitializationRequest = messages.some((message) => isInitializeRequest(message));
+	if (isInitializationRequest) {
+		const initializationMessage = messages.find((message) => isInitializeRequest(message));
+		const requestedProtocolVersion = initializationMessage?.params?.protocolVersion;
+		if (requestedProtocolVersion !== mcpProtocolVersion) {
+			return createMcpProtocolErrorResponse({
+				status: 400,
+				error: 'bad_request',
+				errorDescription: `Only MCP protocol version ${mcpProtocolVersion} is supported.`,
+				headers: buildMcpResponseHeaders(request),
+			});
+		}
+	}
+
+	return { parsedBody: rawBody, isInitializationRequest };
+}
+
+function validateVersionAndAcceptHeadersForSessionBoundRequests(request: Request): Response | null {
+	const protocolHeader = request.headers.get('mcp-protocol-version');
+	if (protocolHeader !== mcpProtocolVersion) {
+		return createMcpProtocolErrorResponse({
+			status: 400,
+			error: 'bad_request',
+			errorDescription: `MCP-Protocol-Version must be ${mcpProtocolVersion} for established sessions.`,
+			headers: buildMcpResponseHeaders(request),
+		});
+	}
+
+	if (request.method === 'GET') {
+		const acceptHeader = request.headers.get('accept') ?? '';
+		if (!acceptHeader.includes('text/event-stream')) {
+			return createMcpProtocolErrorResponse({
+				status: 406,
+				error: 'not_acceptable',
+				errorDescription: 'GET /mcp requires Accept: text/event-stream.',
+				headers: buildMcpResponseHeaders(request),
+			});
+		}
+	}
+
+	return null;
+}
+
+function attachCommonMcpResponseHeaders(response: Response, request: Request): Response {
+	for (const [key, value] of Object.entries(buildMcpResponseHeaders(request))) {
+		response.headers.set(key, value);
+	}
+	return response;
+}
+
+async function verifySessionOwnership(input: {
+	sessionId: string;
+	userId: string;
+}): Promise<
+	| { status: 'ok'; transport: WebStandardStreamableHTTPServerTransport }
+	| { status: 'not_found' | 'session_affinity_required' }
+> {
+	const storedSession = await mcpSessionStore.getSession(input.sessionId);
+	if (!storedSession || storedSession.userId !== input.userId) {
+		return { status: 'not_found' };
+	}
+
+	if (storedSession.ownerInstanceId !== instanceIdentifier) {
+		return { status: 'session_affinity_required' };
+	}
+
+	const activeTransportEntry = activeTransports.get(input.sessionId);
+	if (!activeTransportEntry || activeTransportEntry.userId !== input.userId) {
+		return { status: 'session_affinity_required' };
+	}
+
+	activeTransportEntry.lastActivity = Date.now();
+	await mcpSessionStore.touchSession(input.sessionId, SESSION_TIME_TO_LIVE_SECONDS);
+
+	return { status: 'ok', transport: activeTransportEntry.transport };
+}
 
 setInterval(() => {
 	const now = Date.now();
@@ -21,68 +198,87 @@ setInterval(() => {
 			logger.info({ sessionId, userId: entry.userId }, 'Evicting idle MCP session');
 			entry.transport.close().catch(() => {});
 			activeTransports.delete(sessionId);
+			void mcpSessionStore.deleteSession(sessionId);
 		}
 	}
 }, EVICTION_INTERVAL_MS);
 
-async function verifySessionOwnership(
-	sessionId: string,
-	userId: string,
-): Promise<WebStandardStreamableHTTPServerTransport | null> {
-	const entry = activeTransports.get(sessionId);
-	if (!entry) return null;
-	if (entry.userId !== userId) return null;
-	entry.lastActivity = Date.now();
-	return entry.transport;
-}
-
 export async function handleMcpRequest(request: Request, userId: string): Promise<Response> {
-	const requestLogger = logger.child({ component: 'mcp-handler', userId });
+	const requestLogger = logger.child({ component: 'mcp-handler', userId, instanceIdentifier });
+	const originValidation = validateMcpRequestOrigin(request);
+	if (!originValidation.allowed) {
+		return createMcpProtocolErrorResponse({
+			status: 403,
+			error: 'forbidden',
+			errorDescription: 'Origin is not allowed for MCP requests.',
+			headers: buildMcpResponseHeaders(request),
+		});
+	}
 
 	if (request.method === 'GET' || request.method === 'DELETE') {
 		const sessionId = request.headers.get('mcp-session-id');
 		if (!sessionId) {
-			return new Response(JSON.stringify({ error: 'Missing mcp-session-id header' }), {
+			return createMcpProtocolErrorResponse({
 				status: 400,
-				headers: { 'Content-Type': 'application/json' },
+				error: 'bad_request',
+				errorDescription: 'Missing mcp-session-id header.',
+				headers: buildMcpResponseHeaders(request),
 			});
+		}
+		const protocolValidationError = validateVersionAndAcceptHeadersForSessionBoundRequests(request);
+		if (protocolValidationError) {
+			return protocolValidationError;
 		}
 
-		const transport = await verifySessionOwnership(sessionId, userId);
-		if (!transport) {
-			return new Response(JSON.stringify({ error: 'Session not found' }), {
-				status: 404,
-				headers: { 'Content-Type': 'application/json' },
-			});
+		const verification = await verifySessionOwnership({ sessionId, userId });
+		if (verification.status !== 'ok') {
+			if (verification.status === 'not_found') {
+				return buildSessionNotFoundResponse(request);
+			}
+			return buildSessionAffinityRequiredResponse(sessionId, request);
 		}
+		const { transport } = verification;
 
 		if (request.method === 'DELETE') {
 			requestLogger.info({ sessionId }, 'Closing MCP session');
 			await transport.close();
 			activeTransports.delete(sessionId);
+			await mcpSessionStore.deleteSession(sessionId);
 			await database
 				.update(schema.mcpSessions)
 				.set({ lastActiveAt: new Date() })
 				.where(
 					and(eq(schema.mcpSessions.sessionId, sessionId), eq(schema.mcpSessions.userId, userId)),
 				);
-			return new Response(null, { status: 204 });
+			return attachCommonMcpResponseHeaders(new Response(null, { status: 204 }), request);
 		}
 
-		return transport.handleRequest(request);
+		return attachCommonMcpResponseHeaders(await transport.handleRequest(request), request);
 	}
 
 	if (request.method === 'POST') {
+		const postPayload = await parseAndValidatePostBody(request);
+		if (postPayload instanceof Response) {
+			return postPayload;
+		}
+
 		const sessionId = request.headers.get('mcp-session-id');
 
 		if (sessionId) {
-			const transport = await verifySessionOwnership(sessionId, userId);
-			if (!transport) {
-				return new Response(JSON.stringify({ error: 'Session not found' }), {
-					status: 404,
-					headers: { 'Content-Type': 'application/json' },
-				});
+			const protocolValidationError =
+				validateVersionAndAcceptHeadersForSessionBoundRequests(request);
+			if (protocolValidationError) {
+				return protocolValidationError;
 			}
+
+			const verification = await verifySessionOwnership({ sessionId, userId });
+			if (verification.status !== 'ok') {
+				if (verification.status === 'not_found') {
+					return buildSessionNotFoundResponse(request);
+				}
+				return buildSessionAffinityRequiredResponse(sessionId, request);
+			}
+			const { transport } = verification;
 
 			await database
 				.update(schema.mcpSessions)
@@ -91,15 +287,49 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 					and(eq(schema.mcpSessions.sessionId, sessionId), eq(schema.mcpSessions.userId, userId)),
 				);
 
-			return transport.handleRequest(request);
+			return attachCommonMcpResponseHeaders(
+				await transport.handleRequest(request, { parsedBody: postPayload.parsedBody }),
+				request,
+			);
 		}
 
-		// Enforce max session limit
+		// Stateless mode fallback for non-session requests that are not initialization.
+		if (!postPayload.isInitializationRequest) {
+			const protocolHeader = request.headers.get('mcp-protocol-version');
+			if (protocolHeader !== mcpProtocolVersion) {
+				return createMcpProtocolErrorResponse({
+					status: 400,
+					error: 'bad_request',
+					errorDescription: `MCP-Protocol-Version must be ${mcpProtocolVersion} when no session is used.`,
+					headers: buildMcpResponseHeaders(request),
+				});
+			}
+
+			const statelessTransport = new WebStandardStreamableHTTPServerTransport({
+				sessionIdGenerator: undefined,
+				enableJsonResponse: true,
+			});
+			const statelessServer = createMcpServer({
+				userId,
+				enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
+				enableClientCredentialsExtension: environment.MCP_ENABLE_CLIENT_CREDENTIALS,
+				enableEnterpriseAuthorizationExtension: environment.MCP_ENABLE_ENTERPRISE_AUTH,
+				enableConformanceMode: environment.MCP_CONFORMANCE_MODE,
+			});
+			await statelessServer.connect(statelessTransport);
+			return attachCommonMcpResponseHeaders(
+				await statelessTransport.handleRequest(request, { parsedBody: postPayload.parsedBody }),
+				request,
+			);
+		}
+
 		if (activeTransports.size >= MAX_ACTIVE_SESSIONS) {
 			requestLogger.warn({ activeCount: activeTransports.size }, 'Max active sessions reached');
-			return new Response(JSON.stringify({ error: 'Too many active sessions' }), {
+			return createMcpProtocolErrorResponse({
 				status: 503,
-				headers: { 'Content-Type': 'application/json' },
+				error: 'internal_error',
+				errorDescription: 'Too many active sessions.',
+				headers: buildMcpResponseHeaders(request),
 			});
 		}
 
@@ -110,14 +340,28 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 			sessionIdGenerator: () => newSessionId,
 		});
 
-		const server = createMcpServer({ userId });
+		const server = createMcpServer({
+			userId,
+			enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
+			enableClientCredentialsExtension: environment.MCP_ENABLE_CLIENT_CREDENTIALS,
+			enableEnterpriseAuthorizationExtension: environment.MCP_ENABLE_ENTERPRISE_AUTH,
+			enableConformanceMode: environment.MCP_CONFORMANCE_MODE,
+		});
 
 		transport.onclose = () => {
 			requestLogger.info({ sessionId: newSessionId }, 'Transport closed');
 			activeTransports.delete(newSessionId);
+			void mcpSessionStore.deleteSession(newSessionId);
 		};
 
 		activeTransports.set(newSessionId, { transport, userId, lastActivity: Date.now() });
+
+		await mcpSessionStore.createSession({
+			sessionId: newSessionId,
+			userId,
+			ownerInstanceId: instanceIdentifier,
+			timeToLiveSeconds: SESSION_TIME_TO_LIVE_SECONDS,
+		});
 
 		await database.insert(schema.mcpSessions).values({
 			sessionId: newSessionId,
@@ -127,11 +371,16 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 		});
 
 		await server.connect(transport);
-		return transport.handleRequest(request);
+		return attachCommonMcpResponseHeaders(
+			await transport.handleRequest(request, { parsedBody: postPayload.parsedBody }),
+			request,
+		);
 	}
 
-	return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+	return createMcpProtocolErrorResponse({
 		status: 405,
-		headers: { 'Content-Type': 'application/json' },
+		error: 'bad_request',
+		errorDescription: 'Method not allowed.',
+		headers: buildMcpResponseHeaders(request),
 	});
 }

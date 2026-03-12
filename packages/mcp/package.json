@@ -11,6 +11,7 @@
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"test": "LOG_LEVEL=info NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test",
+		"test:conformance": "MCP_CONFORMANCE_PORT=3137 bun ./src/conformance-server.ts",
 		"lint": "eslint src/"
 	},
 	"dependencies": {

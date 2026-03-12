@@ -154,6 +154,65 @@ async function setupBetterAuth() {
 	}
 }
 
+async function setupRedis() {
+	console.log('\n--- Redis ---\n');
+
+	const existingRedisUrl = getEnvironmentValue('REDIS_URL');
+	if (existingRedisUrl) {
+		console.log('REDIS_URL already exists in .env.local.');
+		return;
+	}
+
+	const redisUrl = (await prompt('REDIS_URL (default: redis://localhost:6379): ')).trim();
+	appendToEnvironmentFile('REDIS_URL', redisUrl || 'redis://localhost:6379');
+	appendToEnvironmentFile('RATE_LIMIT_REGISTER_MAX', '10');
+	appendToEnvironmentFile('RATE_LIMIT_REGISTER_WINDOW_SECONDS', '60');
+	appendToEnvironmentFile('RATE_LIMIT_TOKEN_MAX', '30');
+	appendToEnvironmentFile('RATE_LIMIT_TOKEN_WINDOW_SECONDS', '60');
+
+	console.log('Redis URL and rate-limit defaults written to .env.local');
+}
+
+async function setupMcpProtocolAndExtensions() {
+	console.log('\n--- MCP Protocol + Extensions ---\n');
+
+	if (!getEnvironmentValue('MCP_PROTOCOL_VERSION')) {
+		appendToEnvironmentFile('MCP_PROTOCOL_VERSION', '2025-11-25');
+	}
+
+	const existingAllowedOrigins = getEnvironmentValue('MCP_ALLOWED_ORIGINS');
+	if (!existingAllowedOrigins) {
+		const betterAuthUrl = getEnvironmentValue('BETTER_AUTH_URL') || 'http://localhost:3000';
+		const suggestedOrigin = new URL(betterAuthUrl).origin;
+		const allowedOriginsInput = await prompt(
+			`MCP_ALLOWED_ORIGINS (comma-separated, default: ${suggestedOrigin}): `,
+		);
+		appendToEnvironmentFile('MCP_ALLOWED_ORIGINS', allowedOriginsInput || suggestedOrigin);
+	}
+
+	if (!getEnvironmentValue('MCP_ENABLE_UI_EXTENSION')) {
+		appendToEnvironmentFile('MCP_ENABLE_UI_EXTENSION', 'true');
+	}
+	if (!getEnvironmentValue('MCP_ENABLE_CLIENT_CREDENTIALS')) {
+		appendToEnvironmentFile('MCP_ENABLE_CLIENT_CREDENTIALS', 'true');
+	}
+	if (!getEnvironmentValue('MCP_ENABLE_ENTERPRISE_AUTH')) {
+		appendToEnvironmentFile('MCP_ENABLE_ENTERPRISE_AUTH', 'true');
+	}
+	if (!getEnvironmentValue('MCP_CONFORMANCE_MODE')) {
+		appendToEnvironmentFile('MCP_CONFORMANCE_MODE', 'false');
+	}
+
+	if (!getEnvironmentValue('ENTERPRISE_AUTH_PROVIDER_URL')) {
+		appendToEnvironmentFile('ENTERPRISE_AUTH_PROVIDER_URL', '');
+		appendToEnvironmentFile('ENTERPRISE_AUTH_TENANT', '');
+		appendToEnvironmentFile('ENTERPRISE_AUTH_AUDIENCE', '');
+		appendToEnvironmentFile('ENTERPRISE_AUTH_CLIENT_ID', '');
+		appendToEnvironmentFile('ENTERPRISE_AUTH_CLIENT_SECRET', '');
+		appendToEnvironmentFile('ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS', '');
+	}
+}
+
 async function setupRailway() {
 	console.log('\n--- Railway ---\n');
 
@@ -291,6 +350,8 @@ async function runFullSetup() {
 	const neonResult = await setupNeon();
 	await setupBetterAuth();
 	await setupGoogle();
+	await setupRedis();
+	await setupMcpProtocolAndExtensions();
 	await setupRailway();
 	await setupGithubSecrets(neonResult?.projectId);
 	await runInitialMigration();
@@ -318,6 +379,12 @@ const phases: Record<string, () => Promise<void>> = {
 	},
 	'better-auth': async () => {
 		await setupBetterAuth();
+	},
+	redis: async () => {
+		await setupRedis();
+	},
+	mcp: async () => {
+		await setupMcpProtocolAndExtensions();
 	},
 	railway: async () => {
 		await setupRailway();

@@ -9,7 +9,7 @@ env:
 
 jobs:
   check:
-    name: Typecheck & Lint
+    name: Typecheck, Lint, Test, Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,11 +33,34 @@ jobs:
         run: bun turbo build
         env:
           DATABASE_URL: 'postgresql://ci:ci@localhost:5432/ci'
+          DATABASE_URL_UNPOOLED: 'postgresql://ci:ci@localhost:5432/ci'
           BETTER_AUTH_SECRET: 'ci-placeholder-secret-at-least-32-chars'
           BETTER_AUTH_URL: 'http://localhost:3000'
           GOOGLE_CLIENT_ID: 'ci-placeholder'
           GOOGLE_CLIENT_SECRET: 'ci-placeholder'
+          REDIS_URL: 'redis://localhost:6379'
+          RATE_LIMIT_REGISTER_MAX: '10'
+          RATE_LIMIT_REGISTER_WINDOW_SECONDS: '60'
+          RATE_LIMIT_TOKEN_MAX: '30'
+          RATE_LIMIT_TOKEN_WINDOW_SECONDS: '60'
+          MCP_PROTOCOL_VERSION: '2025-11-25'
+          MCP_ALLOWED_ORIGINS: 'http://localhost:3000'
+          MCP_ENABLE_UI_EXTENSION: 'true'
+          MCP_ENABLE_CLIENT_CREDENTIALS: 'true'
+          MCP_ENABLE_ENTERPRISE_AUTH: 'false'
+          MCP_CONFORMANCE_MODE: 'false'
           LOG_LEVEL: 'info'
+
+      - name: MCP Conformance (Server, 2025-11-25)
+        run: |
+          set -euo pipefail
+          (cd packages/mcp && MCP_CONFORMANCE_PORT=3137 bun ./src/conformance-server.ts) &
+          SERVER_PID=$!
+          trap "kill ${SERVER_PID}" EXIT
+          sleep 4
+          bunx @modelcontextprotocol/conformance server \
+            --url http://127.0.0.1:3137/mcp \
+            --spec-version 2025-11-25
 
   validate-database:
     name: Validate Database

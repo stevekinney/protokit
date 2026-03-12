@@ -6,6 +6,10 @@ import { eq, and, isNull, gt } from 'drizzle-orm';
 import { environment as mcpEnvironment } from '@template/mcp/env';
 import { hashCredential } from '$lib/hash-credential';
 import { corsHeaders, handleCorsPreflight } from '$lib/cors';
+import { enforceTokenRateLimit } from '$lib/request-rate-limiter';
+import { createRateLimitedResponse } from '$lib/rate-limit-response';
+import { environment } from '../../env.js';
+import { evaluateEnterpriseAuthorizationPolicy } from '$lib/enterprise-authorization-policy';
 
 export const OPTIONS = handleCorsPreflight;
 
@@ -49,6 +53,40 @@ async function handleAuthorizationCodeGrant(body: Record<string, string>) {
 		);
 	}
 
+	const [client] = await database
+		.select()
+		.from(schema.oauthClients)
+		.where(eq(schema.oauthClients.clientId, client_id))
+		.limit(1);
+
+	if (!client) {
+		return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+	}
+
+	if (!client.grantTypes.includes('authorization_code')) {
+		return json(
+			{
+				error: 'unauthorized_client',
+				error_description: 'Client is not authorized for authorization_code.',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	if (client.tokenEndpointAuthMethod === 'client_secret_post') {
+		if (!client_secret) {
+			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+		}
+
+		if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
+			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+		}
+	}
+
+	if (client.tokenEndpointAuthMethod === 'none' && client_secret) {
+		return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+	}
+
 	// Phase 1: SELECT — fetch the code row without consuming it
 	const codeHash = hashCredential(code);
 
@@ -83,22 +121,6 @@ async function handleAuthorizationCodeGrant(body: Record<string, string>) {
 		);
 	}
 
-	if (client_secret) {
-		const [client] = await database
-			.select()
-			.from(schema.oauthClients)
-			.where(eq(schema.oauthClients.clientId, client_id))
-			.limit(1);
-
-		if (!client) {
-			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
-		}
-
-		if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
-			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
-		}
-	}
-
 	const challenge = createHash('sha256').update(code_verifier).digest('base64url');
 
 	if (!constantTimeEquals(challenge, authorizationCode.codeChallenge)) {
@@ -122,6 +144,21 @@ async function handleAuthorizationCodeGrant(body: Record<string, string>) {
 				error_description: 'Authorization code already used',
 			},
 			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
+		clientId: authorizationCode.clientId,
+		userId: authorizationCode.userId,
+		action: 'issue_token',
+	});
+	if (!enterpriseDecision.allowed) {
+		return json(
+			{
+				error: 'access_denied',
+				error_description: `Enterprise authorization policy denied token issuance: ${enterpriseDecision.reason}`,
+			},
+			{ status: 403, headers: tokenResponseHeaders },
 		);
 	}
 
@@ -158,13 +195,49 @@ async function handleAuthorizationCodeGrant(body: Record<string, string>) {
 }
 
 async function handleRefreshTokenGrant(body: Record<string, string>) {
-	const { refresh_token, client_id } = body;
+	const { refresh_token, client_id, client_secret } = body;
 
 	if (!refresh_token) {
 		return json(
 			{ error: 'invalid_request', error_description: 'Missing refresh_token parameter' },
 			{ status: 400, headers: tokenResponseHeaders },
 		);
+	}
+
+	if (!client_id) {
+		return json(
+			{ error: 'invalid_request', error_description: 'Missing client_id parameter' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	const [client] = await database
+		.select()
+		.from(schema.oauthClients)
+		.where(eq(schema.oauthClients.clientId, client_id))
+		.limit(1);
+
+	if (!client) {
+		return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+	}
+
+	if (!client.grantTypes.includes('refresh_token')) {
+		return json(
+			{
+				error: 'unauthorized_client',
+				error_description: 'Client is not authorized for refresh_token.',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	if (client.tokenEndpointAuthMethod === 'client_secret_post') {
+		if (!client_secret) {
+			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+		}
+		if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
+			return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+		}
 	}
 
 	const refreshTokenHash = hashCredential(refresh_token);
@@ -192,8 +265,8 @@ async function handleRefreshTokenGrant(body: Record<string, string>) {
 		);
 	}
 
-	// Validate client_id matches if provided
-	if (client_id && revokedToken.clientId !== client_id) {
+	// Validate client_id matches
+	if (revokedToken.clientId !== client_id) {
 		return json(
 			{ error: 'invalid_grant', error_description: 'Client ID mismatch' },
 			{ status: 400, headers: tokenResponseHeaders },
@@ -210,6 +283,21 @@ async function handleRefreshTokenGrant(body: Record<string, string>) {
 				isNull(schema.oauthTokens.revokedAt),
 			),
 		);
+
+	const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
+		clientId: revokedToken.clientId,
+		userId: revokedToken.userId,
+		action: 'issue_token',
+	});
+	if (!enterpriseDecision.allowed) {
+		return json(
+			{
+				error: 'access_denied',
+				error_description: `Enterprise authorization policy denied token issuance: ${enterpriseDecision.reason}`,
+			},
+			{ status: 403, headers: tokenResponseHeaders },
+		);
+	}
 
 	// Issue new access token + new refresh token (rotation)
 	const tokens = issueTokens();
@@ -243,7 +331,100 @@ async function handleRefreshTokenGrant(body: Record<string, string>) {
 	);
 }
 
-export const POST: RequestHandler = async ({ request }) => {
+async function handleClientCredentialsGrant(body: Record<string, string>) {
+	if (!environment.MCP_ENABLE_CLIENT_CREDENTIALS) {
+		return json(
+			{
+				error: 'unsupported_grant_type',
+				error_description: 'client_credentials is disabled on this server',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	const { client_id, client_secret, scope } = body;
+
+	if (!client_id || !client_secret) {
+		return json(
+			{
+				error: 'invalid_request',
+				error_description: 'Missing client_id or client_secret parameter',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	const [client] = await database
+		.select()
+		.from(schema.oauthClients)
+		.where(eq(schema.oauthClients.clientId, client_id))
+		.limit(1);
+
+	if (!client) {
+		return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+	}
+
+	if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
+		return json({ error: 'invalid_client' }, { status: 401, headers: tokenResponseHeaders });
+	}
+
+	if (!client.grantTypes.includes('client_credentials')) {
+		return json(
+			{
+				error: 'unauthorized_client',
+				error_description: 'Client is not authorized for client_credentials.',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	if (!client.serviceAccountUserId) {
+		return json(
+			{
+				error: 'invalid_client',
+				error_description: 'Client is missing a service account identity.',
+			},
+			{ status: 401, headers: tokenResponseHeaders },
+		);
+	}
+
+	const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
+		clientId: client.clientId,
+		userId: client.serviceAccountUserId,
+		action: 'issue_token',
+	});
+	if (!enterpriseDecision.allowed) {
+		return json(
+			{
+				error: 'access_denied',
+				error_description: `Enterprise authorization policy denied token issuance: ${enterpriseDecision.reason}`,
+			},
+			{ status: 403, headers: tokenResponseHeaders },
+		);
+	}
+
+	const tokens = issueTokens();
+	await database.insert(schema.oauthTokens).values({
+		accessToken: tokens.accessTokenHash,
+		clientId: client.clientId,
+		userId: client.serviceAccountUserId,
+		scope: scope ?? '',
+		expiresAt: tokens.accessTokenExpiresAt,
+	});
+
+	return json(
+		{
+			access_token: tokens.accessToken,
+			token_type: 'Bearer',
+			expires_in: tokens.tokenTtlSeconds,
+			scope: scope ?? '',
+		},
+		{ headers: tokenResponseHeaders },
+	);
+}
+
+export const POST: RequestHandler = async (event) => {
+	const { request } = event;
 	const contentType = request.headers.get('content-type') || '';
 
 	let body: Record<string, string>;
@@ -259,6 +440,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		);
 	}
 
+	const rateLimitResult = await enforceTokenRateLimit(event, body.client_id);
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, tokenResponseHeaders);
+	}
+
 	const { grant_type } = body;
 
 	if (grant_type === 'authorization_code') {
@@ -267,6 +453,10 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	if (grant_type === 'refresh_token') {
 		return handleRefreshTokenGrant(body);
+	}
+
+	if (grant_type === 'client_credentials') {
+		return handleClientCredentialsGrant(body);
 	}
 
 	return json({ error: 'unsupported_grant_type' }, { status: 400, headers: tokenResponseHeaders });

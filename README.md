@@ -4,10 +4,12 @@ A production-ready template for building [Model Context Protocol](https://modelc
 
 ## What You Get
 
-- **MCP Server** — Streamable HTTP transport at `/mcp`, authenticated via OAuth Bearer tokens
-- **OAuth 2.0 + PKCE** — Full authorization server with dynamic client registration (RFC 7591), token exchange (RFC 6749), and S256 code challenges (RFC 7636)
+- **MCP Server** — Streamable HTTP transport at `/mcp`, authenticated via OAuth Bearer tokens, pinned to protocol `2025-11-25`
+- **OAuth 2.0 + PKCE** — Full authorization server with dynamic client registration (RFC 7591), token exchange (RFC 6749), S256 code challenges (RFC 7636), and optional `client_credentials`
 - **Google Sign-In** — Via Neon Auth (Better Auth under the hood), with shared dev credentials for prototyping
 - **Postgres** — Neon serverless Postgres with Drizzle ORM, schema migrations, and CI validation
+- **Redis Coordination** — Shared MCP session ownership and sliding-window rate limiting
+- **Extension Surface** — MCP Apps UI, OAuth client credentials, and enterprise-managed authorization policy hooks
 - **Monorepo** — Turborepo with three packages, Bun as the package manager
 
 ## Project Structure
@@ -21,19 +23,21 @@ scripts/                   Setup wizard, migration runner, scope renamer
 
 ### Key Files
 
-| File                                              | Purpose                                                                      |
-| ------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `applications/web/src/hooks.server.ts`            | Dual auth — Bearer tokens for `/mcp`, Neon Auth sessions for everything else |
-| `applications/web/src/lib/mcp-handler.ts`         | In-memory MCP transport management with session eviction                     |
-| `applications/web/src/routes/mcp/+server.ts`      | GET/POST/DELETE handlers for Streamable HTTP                                 |
-| `applications/web/src/routes/token/+server.ts`    | OAuth code-to-token exchange with PKCE validation                            |
-| `applications/web/src/routes/authorize/`          | OAuth consent page (requires authenticated session)                          |
-| `applications/web/src/routes/register/+server.ts` | Dynamic client registration (RFC 7591)                                       |
-| `packages/mcp/src/server.ts`                      | `createMcpServer(context)` factory — register tools, resources, and prompts  |
-| `packages/mcp/src/tools/get-user-profile.ts`      | Example MCP tool — returns the authenticated user's profile                  |
-| `packages/mcp/src/resources/user-profile.ts`      | Example MCP resource — exposes user profile as a JSON resource               |
-| `packages/mcp/src/prompts/summarize.ts`           | Example MCP prompt — generates a topic summarization prompt                  |
-| `packages/database/src/schema.ts`                 | All table definitions (OAuth clients, codes, tokens, MCP sessions)           |
+| File                                                          | Purpose                                                                      |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `applications/web/src/hooks.server.ts`                        | Dual auth — Bearer tokens for `/mcp`, Neon Auth sessions for everything else |
+| `applications/web/src/lib/mcp-handler.ts`                     | MCP transport handling with Redis-backed ownership and affinity validation   |
+| `applications/web/src/routes/mcp/+server.ts`                  | GET/POST/DELETE handlers for Streamable HTTP                                 |
+| `applications/web/src/routes/token/+server.ts`                | OAuth code-to-token exchange with PKCE validation                            |
+| `applications/web/src/routes/authorize/`                      | OAuth consent page (requires authenticated session)                          |
+| `applications/web/src/routes/register/+server.ts`             | Dynamic client registration (RFC 7591)                                       |
+| `packages/mcp/src/server.ts`                                  | `createMcpServer(context)` factory — register tools, resources, and prompts  |
+| `packages/mcp/src/tools/get-user-profile.ts`                  | Example MCP tool — returns the authenticated user's profile                  |
+| `packages/mcp/src/tools/render-account-dashboard.ts`          | MCP Apps example tool — returns UI-linked state payload                      |
+| `packages/mcp/src/resources/account-dashboard-application.ts` | MCP Apps UI resource (`ui://account-dashboard`)                              |
+| `packages/mcp/src/resources/user-profile.ts`                  | Example MCP resource — exposes user profile as a JSON resource               |
+| `packages/mcp/src/prompts/summarize.ts`                       | Example MCP prompt — generates a topic summarization prompt                  |
+| `packages/database/src/schema.ts`                             | All table definitions (OAuth clients, codes, tokens, MCP sessions)           |
 
 ## Prerequisites
 
@@ -58,10 +62,12 @@ The wizard will:
 1. Create a Neon project and write `DATABASE_URL` / `DATABASE_URL_UNPOOLED` to `.env.local`
 2. Generate `BETTER_AUTH_SECRET` and write it to `.env.local`
 3. Optionally configure Google OAuth credentials
-4. Optionally initialize a Railway project and sync environment variables
-5. Optionally set GitHub secrets for CI/CD
-6. Run the initial database migration
-7. Run `svelte-kit sync` to generate SvelteKit types
+4. Configure `REDIS_URL` and rate-limit defaults
+5. Configure MCP protocol/origin/extension defaults
+6. Optionally initialize a Railway project and sync environment variables
+7. Optionally set GitHub secrets for CI/CD
+8. Run the initial database migration
+9. Run `svelte-kit sync` to generate SvelteKit types
 
 ### Manual Setup
 
@@ -84,13 +90,30 @@ The wizard will:
    # Required
    DATABASE_URL=<pooled connection string from Neon>
    DATABASE_URL_UNPOOLED=<direct connection string from Neon>
+   REDIS_URL=<redis connection string>
    BETTER_AUTH_SECRET=<random string, at least 32 characters>
    GOOGLE_CLIENT_ID=<your Google OAuth client ID>
    GOOGLE_CLIENT_SECRET=<your Google OAuth client secret>
 
    # Optional
    BETTER_AUTH_URL=http://localhost:3000
+   RATE_LIMIT_REGISTER_MAX=10
+   RATE_LIMIT_REGISTER_WINDOW_SECONDS=60
+   RATE_LIMIT_TOKEN_MAX=30
+   RATE_LIMIT_TOKEN_WINDOW_SECONDS=60
+   MCP_PROTOCOL_VERSION=2025-11-25
+   MCP_ALLOWED_ORIGINS=http://localhost:3000
+   MCP_CONFORMANCE_MODE=false
+   MCP_ENABLE_UI_EXTENSION=true
+   MCP_ENABLE_CLIENT_CREDENTIALS=true
+   MCP_ENABLE_ENTERPRISE_AUTH=true
    MCP_TOKEN_TTL_SECONDS=3600
+   ENTERPRISE_AUTH_PROVIDER_URL=
+   ENTERPRISE_AUTH_TENANT=
+   ENTERPRISE_AUTH_AUDIENCE=
+   ENTERPRISE_AUTH_CLIENT_ID=
+   ENTERPRISE_AUTH_CLIENT_SECRET=
+   ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS=
    LOG_LEVEL=info
    ```
 
@@ -113,23 +136,40 @@ The wizard will:
 
 ### Required
 
-| Variable                | Package              | Description                                    |
-| ----------------------- | -------------------- | ---------------------------------------------- |
-| `DATABASE_URL`          | `@template/database` | Neon pooled connection string                  |
-| `DATABASE_URL_UNPOOLED` | `@template/database` | Direct connection string (used for migrations) |
-| `BETTER_AUTH_SECRET`    | `@template/web`      | Random string, at least 32 characters          |
-| `GOOGLE_CLIENT_ID`      | `@template/web`      | Google OAuth client ID                         |
-| `GOOGLE_CLIENT_SECRET`  | `@template/web`      | Google OAuth client secret                     |
+| Variable                | Package              | Description                                          |
+| ----------------------- | -------------------- | ---------------------------------------------------- |
+| `DATABASE_URL`          | `@template/database` | Neon pooled connection string                        |
+| `DATABASE_URL_UNPOOLED` | `@template/database` | Direct connection string (used for migrations)       |
+| `REDIS_URL`             | `@template/web`      | Redis URL for session coordination and rate limiting |
+| `MCP_ALLOWED_ORIGINS`   | `@template/web`      | Allowed `Origin` values for `/mcp` (comma-separated) |
+| `BETTER_AUTH_SECRET`    | `@template/web`      | Random string, at least 32 characters                |
+| `GOOGLE_CLIENT_ID`      | `@template/web`      | Google OAuth client ID                               |
+| `GOOGLE_CLIENT_SECRET`  | `@template/web`      | Google OAuth client secret                           |
 
 ### Optional
 
-| Variable                | Package         | Default       | Description                                                         |
-| ----------------------- | --------------- | ------------- | ------------------------------------------------------------------- |
-| `BETTER_AUTH_URL`       | `@template/web` | —             | Public URL (auto-derived from `RAILWAY_PUBLIC_DOMAIN` if unset)     |
-| `MCP_TOKEN_TTL_SECONDS` | `@template/mcp` | `3600`        | OAuth access token lifetime in seconds                              |
-| `LOG_LEVEL`             | `@template/mcp` | `info`        | Pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace`) |
-| `NODE_ENV`              | `@template/mcp` | `development` | `development`, `production`, or `test`                              |
-| `SKIP_ENV_VALIDATION`   | all             | —             | Set to `true` to skip Zod validation (used in CI)                   |
+| Variable                             | Package         | Default       | Description                                                          |
+| ------------------------------------ | --------------- | ------------- | -------------------------------------------------------------------- |
+| `BETTER_AUTH_URL`                    | `@template/web` | —             | Public URL (auto-derived from `RAILWAY_PUBLIC_DOMAIN` if unset)      |
+| `RATE_LIMIT_REGISTER_MAX`            | `@template/web` | `10`          | Maximum `/register` requests per window per client IP                |
+| `RATE_LIMIT_REGISTER_WINDOW_SECONDS` | `@template/web` | `60`          | `/register` rate-limit window duration in seconds                    |
+| `RATE_LIMIT_TOKEN_MAX`               | `@template/web` | `30`          | Maximum `/token` requests per window per client identifier           |
+| `RATE_LIMIT_TOKEN_WINDOW_SECONDS`    | `@template/web` | `60`          | `/token` rate-limit window duration in seconds                       |
+| `MCP_PROTOCOL_VERSION`               | `@template/web` | `2025-11-25`  | Required MCP protocol version (latest-only mode)                     |
+| `MCP_CONFORMANCE_MODE`               | `@template/web` | `false`       | Enables conformance-only MCP fixtures and localhost rebinding checks |
+| `MCP_ENABLE_UI_EXTENSION`            | `@template/web` | `true`        | Advertise/enable MCP Apps UI extension behavior                      |
+| `MCP_ENABLE_CLIENT_CREDENTIALS`      | `@template/web` | `true`        | Advertise/enable OAuth `client_credentials` grant                    |
+| `MCP_ENABLE_ENTERPRISE_AUTH`         | `@template/web` | `true`        | Enable enterprise policy checks for token issuance and MCP access    |
+| `ENTERPRISE_AUTH_PROVIDER_URL`       | `@template/web` | —             | Enterprise policy/IdP provider URL                                   |
+| `ENTERPRISE_AUTH_TENANT`             | `@template/web` | —             | Enterprise tenant identifier                                         |
+| `ENTERPRISE_AUTH_AUDIENCE`           | `@template/web` | —             | Enterprise audience identifier                                       |
+| `ENTERPRISE_AUTH_CLIENT_ID`          | `@template/web` | —             | Enterprise policy client identifier                                  |
+| `ENTERPRISE_AUTH_CLIENT_SECRET`      | `@template/web` | —             | Enterprise policy client secret                                      |
+| `ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS` | `@template/web` | —             | Comma-separated allowlist used by the default policy adapter         |
+| `MCP_TOKEN_TTL_SECONDS`              | `@template/mcp` | `3600`        | OAuth access token lifetime in seconds                               |
+| `LOG_LEVEL`                          | `@template/mcp` | `info`        | Pino log level (`fatal`, `error`, `warn`, `info`, `debug`, `trace`)  |
+| `NODE_ENV`                           | `@template/mcp` | `development` | `development`, `production`, or `test`                               |
+| `SKIP_ENV_VALIDATION`                | all             | —             | Set to `true` to skip Zod validation (used in CI)                    |
 
 Each package validates its own environment variables via `src/env.ts` using Zod. Import from the relevant `env.ts` rather than reading `process.env` directly.
 
@@ -147,6 +187,10 @@ Each package validates its own environment variables via `src/env.ts` using Zod.
 | `bun turbo test`        | Run all tests                                        |
 | `bun turbo db:generate` | Generate Drizzle migration files from schema changes |
 | `bun turbo db:validate` | Validate migrations match the current schema         |
+
+Known warning:
+
+- Vite/Rollup may print `Unknown output options: codeSplitting` during SvelteKit builds. This does not fail the build and is currently treated as non-blocking upstream noise.
 
 ### Testing MCP Locally
 
@@ -397,6 +441,21 @@ Security details:
 - Authorization codes are validated before consumption (invalid requests don't burn the code)
 - Token and secret comparisons use timing-safe equality checks
 - CORS headers are set on all OAuth and discovery endpoints
+- `/register` and `/token` use Redis sliding-window rate limiting (`429 rate_limited` with `Retry-After`)
+- MCP sessions are stored in Redis with owner-instance metadata (`409 session_affinity_required` on misrouted requests)
+- `/mcp` enforces strict protocol behavior: latest-only `MCP-Protocol-Version` (`2025-11-25`), strict `Accept`/`Content-Type` checks, and structured JSON error payloads
+- `/mcp` uses explicit `Origin` allowlisting (`MCP_ALLOWED_ORIGINS`) instead of wildcard CORS
+- Origin handling rules: missing `Origin` is allowed for non-browser clients, `Origin: null` is rejected, and non-allowlisted origins return `403`
+- `MCP_CONFORMANCE_MODE=true` enables conformance fixture tools/resources/prompts and applies localhost DNS rebinding protection for `/mcp` (only `localhost`, `127.0.0.1`, and `[::1]` Host/Origin values are accepted)
+- Enterprise authorization policy checks run before token issuance and before `/mcp` access when `MCP_ENABLE_ENTERPRISE_AUTH=true`
+
+### Extension Support Matrix
+
+| Extension                        | Identifier                                                 | Status                  | Notes                                                                         |
+| -------------------------------- | ---------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------- |
+| MCP Apps UI                      | `io.modelcontextprotocol/ui`                               | supported               | Includes `ui://account-dashboard` HTML app resource + tool-linked UI metadata |
+| OAuth Client Credentials         | `io.modelcontextprotocol/oauth-client-credentials`         | supported               | Dynamic registration + `/token` grant support with service-account identity   |
+| Enterprise Managed Authorization | `io.modelcontextprotocol/enterprise-managed-authorization` | supported (policy hook) | Default adapter is deny-unless-configured + allowlist-based                   |
 
 ## Renaming the Template
 
@@ -423,6 +482,8 @@ The template uses `adapter-node` for Railway deployment:
    ```
 
 2. Set environment variables in the Railway dashboard — same variables as `.env.local`, but with production values. `BETTER_AUTH_URL` is auto-derived from `RAILWAY_PUBLIC_DOMAIN` if unset.
+3. Enable sticky routing/session affinity for MCP traffic so requests consistently land on the session owner instance.
+4. Set `MCP_ALLOWED_ORIGINS` to your production host origin(s), and ensure enterprise policy variables are configured if enterprise authorization is enabled.
 
 The default Neon region is `aws-us-east-2` (Ohio). Choose a region close to your Railway deployment for lower latency.
 
@@ -430,8 +491,13 @@ The default Neon region is `aws-us-east-2` (Ohio). Choose a region close to your
 
 Two GitHub Actions workflows are included:
 
-- **Pull Request** — Runs typecheck, lint, test, and build. Validates the database schema against a temporary Neon branch.
+- **Pull Request** — Runs typecheck, lint, test, build, and MCP server conformance (`@modelcontextprotocol/conformance` at spec `2025-11-25`). Validates the database schema against a temporary Neon branch.
 - **Production** — Runs migrations on push to `main`.
+  Conformance is enforced with a zero-baseline policy: no expected-failures file is used in CI.
+
+### Registry Manifest
+
+A `server.json` registry descriptor is included at the repository root. Update the placeholder domain values before publishing.
 
 Required GitHub secrets:
 

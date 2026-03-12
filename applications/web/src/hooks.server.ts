@@ -6,14 +6,45 @@ import { getAuthentication } from '$lib/authentication';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
 import { hashCredential } from '$lib/hash-credential';
 import { getBaseUrl } from '$lib/base-url';
-import { corsHeaders } from '$lib/cors';
+import { isLoopbackHostname, hasValidLocalhostRebindingHeaders } from '@template/mcp';
+import { createMcpCorsHeaders, validateMcpRequestOrigin } from '$lib/mcp-origin-validation';
+import { createMcpProtocolErrorResponse } from '$lib/mcp-protocol-error-response';
+import { mcpProtocolVersion } from '$lib/mcp-protocol-constants';
+import { evaluateEnterpriseAuthorizationPolicy } from '$lib/enterprise-authorization-policy';
+import { environment as webEnvironment } from './env.js';
 
 export const handle: Handle = async ({ event, resolve }) => {
 	// MCP routes: authenticate via Bearer token
 	if (event.url.pathname.startsWith('/mcp')) {
+		const mcpCorsHeaders = createMcpCorsHeaders(event.request);
+		if (
+			webEnvironment.MCP_CONFORMANCE_MODE &&
+			isLoopbackHostname(event.url.hostname) &&
+			!hasValidLocalhostRebindingHeaders(event.request.headers)
+		) {
+			return createMcpProtocolErrorResponse({
+				status: 403,
+				error: 'forbidden',
+				errorDescription: 'Request rejected by localhost DNS rebinding protection.',
+				headers: { ...mcpCorsHeaders, 'MCP-Protocol-Version': mcpProtocolVersion },
+			});
+		}
+
 		// CORS preflight — must respond before auth check
 		if (event.request.method === 'OPTIONS') {
-			return new Response(null, { status: 204, headers: corsHeaders });
+			const originValidation = validateMcpRequestOrigin(event.request);
+			if (!originValidation.allowed) {
+				return createMcpProtocolErrorResponse({
+					status: 403,
+					error: 'forbidden',
+					errorDescription: 'Origin is not allowed for MCP requests.',
+					headers: { ...mcpCorsHeaders, 'MCP-Protocol-Version': mcpProtocolVersion },
+				});
+			}
+			return new Response(null, {
+				status: 204,
+				headers: { ...mcpCorsHeaders, 'MCP-Protocol-Version': mcpProtocolVersion },
+			});
 		}
 
 		const baseUrl = getBaseUrl(event);
@@ -21,11 +52,14 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 		const authorizationHeader = event.request.headers.get('authorization');
 		if (!authorizationHeader?.startsWith('Bearer ')) {
-			return new Response('Missing or invalid Authorization header', {
+			return createMcpProtocolErrorResponse({
 				status: 401,
+				error: 'unauthorized',
+				errorDescription: 'Missing or invalid Authorization header.',
 				headers: {
+					...mcpCorsHeaders,
+					'MCP-Protocol-Version': mcpProtocolVersion,
 					'WWW-Authenticate': `Bearer resource_metadata="${resourceMetadataUrl}"`,
-					...corsHeaders,
 				},
 			});
 		}
@@ -46,12 +80,29 @@ export const handle: Handle = async ({ event, resolve }) => {
 			.limit(1);
 
 		if (!token) {
-			return new Response('Invalid or expired token', {
+			return createMcpProtocolErrorResponse({
 				status: 401,
+				error: 'unauthorized',
+				errorDescription: 'Invalid or expired token.',
 				headers: {
+					...mcpCorsHeaders,
+					'MCP-Protocol-Version': mcpProtocolVersion,
 					'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
-					...corsHeaders,
 				},
+			});
+		}
+
+		const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
+			clientId: token.clientId,
+			userId: token.userId,
+			action: 'access_mcp',
+		});
+		if (!enterpriseDecision.allowed) {
+			return createMcpProtocolErrorResponse({
+				status: 403,
+				error: 'forbidden',
+				errorDescription: `Enterprise authorization policy denied access: ${enterpriseDecision.reason}`,
+				headers: { ...mcpCorsHeaders, 'MCP-Protocol-Version': mcpProtocolVersion },
 			});
 		}
 
@@ -59,9 +110,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 		const response = await resolve(event);
 
 		// Add CORS headers to all authenticated MCP responses
-		for (const [key, value] of Object.entries(corsHeaders)) {
+		for (const [key, value] of Object.entries(mcpCorsHeaders)) {
 			response.headers.set(key, value);
 		}
+		response.headers.set('MCP-Protocol-Version', mcpProtocolVersion);
 
 		response.headers.set('X-Content-Type-Options', 'nosniff');
 

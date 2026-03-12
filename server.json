@@ -1,0 +1,16 @@
+{
+	"name": "template-mcp-server",
+	"description": "SvelteKit MCP template server with OAuth, Streamable HTTP transport, and extension support.",
+	"homepage": "https://example.com",
+	"version": "0.1.0",
+	"protocolVersion": "2025-11-25",
+	"transports": {
+		"streamable_http": {
+			"url": "https://YOUR_DOMAIN/mcp",
+			"oauth": {
+				"authorizationServer": "https://YOUR_DOMAIN/.well-known/oauth-authorization-server",
+				"protectedResource": "https://YOUR_DOMAIN/.well-known/oauth-protected-resource/mcp"
+			}
+		}
+	}
+}
