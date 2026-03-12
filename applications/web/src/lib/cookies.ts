@@ -1,5 +1,13 @@
 const COOKIE_SEPARATOR = ';';
 
+function decodeCookieComponent(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
+
 export function parseCookies(cookieHeaderValue: string | null): Map<string, string> {
 	if (!cookieHeaderValue) {
 		return new Map();
@@ -15,8 +23,10 @@ export function parseCookies(cookieHeaderValue: string | null): Map<string, stri
 				return null;
 			}
 
-			const key = decodeURIComponent(entry.slice(0, separatorIndex).trim());
-			const value = decodeURIComponent(entry.slice(separatorIndex + 1));
+			const rawKey = entry.slice(0, separatorIndex).trim();
+			const rawValue = entry.slice(separatorIndex + 1);
+			const key = decodeCookieComponent(rawKey);
+			const value = decodeCookieComponent(rawValue);
 			return [key, value] as const;
 		})
 		.filter((entry): entry is readonly [string, string] => entry !== null);

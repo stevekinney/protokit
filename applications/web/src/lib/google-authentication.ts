@@ -1,5 +1,6 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { environment } from '@web/env';
+import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import { parseCookies, serializeCookie } from '@web/lib/cookies';
 import { getBaseUrl } from '@web/lib/base-url';
 
@@ -41,16 +42,6 @@ function sanitizeCallbackPath(value: string | null): string {
 
 function createSignature(payload: string): string {
 	return createHmac('sha256', environment.BETTER_AUTH_SECRET).update(payload).digest('base64url');
-}
-
-function constantTimeEquals(leftValue: string, rightValue: string): boolean {
-	const leftBuffer = Buffer.from(leftValue, 'utf-8');
-	const rightBuffer = Buffer.from(rightValue, 'utf-8');
-	if (leftBuffer.length !== rightBuffer.length) {
-		return false;
-	}
-
-	return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function encodeGoogleStatePayload(payload: GoogleOauthCookiePayload): string {

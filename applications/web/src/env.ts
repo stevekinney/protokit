@@ -28,6 +28,7 @@ export const environment = createEnv({
 		ENTERPRISE_AUTH_CLIENT_ID: z.string().optional(),
 		ENTERPRISE_AUTH_CLIENT_SECRET: z.string().optional(),
 		ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS: z.string().optional(),
+		PORT: z.coerce.number().int().positive().optional().default(3000),
 		NODE_ENV: z.enum(['development', 'production', 'test']).optional().default('development'),
 	},
 	runtimeEnv: {
@@ -56,6 +57,7 @@ export const environment = createEnv({
 		ENTERPRISE_AUTH_CLIENT_ID: process.env.ENTERPRISE_AUTH_CLIENT_ID,
 		ENTERPRISE_AUTH_CLIENT_SECRET: process.env.ENTERPRISE_AUTH_CLIENT_SECRET,
 		ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS: process.env.ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS,
+		PORT: process.env.PORT,
 		NODE_ENV: process.env.NODE_ENV as 'development' | 'production' | 'test' | undefined,
 	},
 	emptyStringAsUndefined: true,

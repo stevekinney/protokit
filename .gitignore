@@ -10,3 +10,4 @@ dist
 .DS_Store
 coverage
 .vercel
+applications/web/public/assets/application.css

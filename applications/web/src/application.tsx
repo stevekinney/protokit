@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { JSX } from 'react';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -18,6 +18,7 @@ import {
 } from '@web/lib/google-authentication';
 import { hashCredential } from '@web/lib/hash-credential';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
+import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import { handleMcpRequest } from '@web/lib/mcp-handler';
 import { createMcpCorsHeaders, validateMcpRequestOrigin } from '@web/lib/mcp-origin-validation';
 import {
@@ -101,16 +102,6 @@ function htmlResponse(input: { title: string; body: JSX.Element; status?: number
 	});
 }
 
-function constantTimeEquals(leftValue: string, rightValue: string): boolean {
-	const leftBuffer = Buffer.from(leftValue, 'utf-8');
-	const rightBuffer = Buffer.from(rightValue, 'utf-8');
-	if (leftBuffer.length !== rightBuffer.length) {
-		return false;
-	}
-
-	return timingSafeEqual(leftBuffer, rightBuffer);
-}
-
 function getFormString(formData: FormData, key: string): string | null {
 	const value = formData.get(key);
 	if (typeof value !== 'string') {
@@ -148,6 +139,13 @@ async function upsertGoogleUser(input: {
 				updatedAt: new Date(),
 			})
 			.where(eq(schema.users.id, existingGoogleAccount.userId));
+		await database
+			.update(schema.userGoogleAccounts)
+			.set({
+				email: input.email,
+				updatedAt: new Date(),
+			})
+			.where(eq(schema.userGoogleAccounts.googleSubject, input.subject));
 		return existingGoogleAccount.userId;
 	}
 
@@ -178,6 +176,23 @@ async function upsertGoogleUser(input: {
 				updatedAt: new Date(),
 			})
 			.where(eq(schema.users.id, userId));
+	}
+
+	const [existingGoogleAccountByUser] = await database
+		.select({ userId: schema.userGoogleAccounts.userId })
+		.from(schema.userGoogleAccounts)
+		.where(eq(schema.userGoogleAccounts.userId, userId))
+		.limit(1);
+	if (existingGoogleAccountByUser) {
+		await database
+			.update(schema.userGoogleAccounts)
+			.set({
+				googleSubject: input.subject,
+				email: input.email,
+				updatedAt: new Date(),
+			})
+			.where(eq(schema.userGoogleAccounts.userId, userId));
+		return userId;
 	}
 
 	await database
@@ -409,6 +424,16 @@ async function handleOauthAuthorizeApprove(context: RequestContext): Promise<Res
 	if (!clientId || !redirectUri || !codeChallenge) {
 		return jsonResponse(
 			{ error: 'invalid_request', message: 'Missing required fields.' },
+			{ status: 400 },
+		);
+	}
+
+	if (codeChallengeMethod !== 'S256') {
+		return jsonResponse(
+			{
+				error: 'invalid_request',
+				message: 'Only S256 code challenge method is supported.',
+			},
 			{ status: 400 },
 		);
 	}
@@ -1258,32 +1283,35 @@ async function handleMcpRequestWithAuthentication(context: RequestContext): Prom
 }
 
 async function serveStaticFile(pathname: string): Promise<Response | null> {
-	const publicDirectoryUrl = new URL('../public/', import.meta.url);
 	if (!pathname.startsWith('/assets/') && pathname !== '/favicon.png') {
 		return null;
 	}
 
-	const fileUrl = new URL(`.${pathname}`, publicDirectoryUrl);
-	const staticFile = Bun.file(fileUrl);
-	if (!(await staticFile.exists())) {
-		return null;
+	const publicDirectoryUrls = [
+		new URL('./public/', import.meta.url),
+		new URL('../public/', import.meta.url),
+	];
+
+	for (const publicDirectoryUrl of publicDirectoryUrls) {
+		const fileUrl = new URL(`.${pathname}`, publicDirectoryUrl);
+		const staticFile = Bun.file(fileUrl);
+		if (!(await staticFile.exists())) {
+			continue;
+		}
+
+		const response = new Response(staticFile);
+		if (pathname.startsWith('/assets/')) {
+			response.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+		}
+
+		return response;
 	}
 
-	const response = new Response(staticFile);
-	if (pathname.startsWith('/assets/')) {
-		response.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-	}
-
-	return response;
+	return null;
 }
 
 async function dispatch(context: RequestContext): Promise<Response> {
 	const { request, requestUrl } = context;
-
-	const staticFileResponse = await serveStaticFile(requestUrl.pathname);
-	if (staticFileResponse) {
-		return staticFileResponse;
-	}
 
 	if (requestUrl.pathname === '/' && request.method === 'GET') {
 		return renderHomePage(context);
@@ -1375,6 +1403,12 @@ export async function handleApplicationRequest(
 	input?: { clientAddress?: string },
 ): Promise<Response> {
 	const requestUrl = new URL(request.url);
+
+	const staticFileResponse = await serveStaticFile(requestUrl.pathname);
+	if (staticFileResponse) {
+		return withSecurityHeaders(staticFileResponse, requestUrl.pathname);
+	}
+
 	const session = await hydrateSession(request);
 
 	const context: RequestContext = {

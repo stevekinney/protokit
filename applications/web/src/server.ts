@@ -1,7 +1,8 @@
 import { logger } from '@template/mcp/logger';
 import { handleApplicationRequest } from '@web/application';
+import { environment } from '@web/env';
 
-const port = Number(process.env.PORT ?? 3000);
+const port = environment.PORT;
 
 Bun.serve({
 	port,
