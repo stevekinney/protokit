@@ -1,4 +1,4 @@
-import { json } from '@sveltejs/kit';
+import { jsonResponse } from '@web/lib/http-response';
 
 export function createRateLimitedResponse(
 	retryAfterSeconds: number,
@@ -9,7 +9,7 @@ export function createRateLimitedResponse(
 		'Retry-After': String(retryAfterSeconds),
 	};
 
-	return json(
+	return jsonResponse(
 		{ error: 'rate_limited', error_description: 'Too many requests' },
 		{ status: 429, headers: responseHeaders },
 	);

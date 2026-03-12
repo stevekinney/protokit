@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { SlidingWindowRateLimiter } from '$lib/sliding-window-rate-limiter';
+import { describe, it, expect } from 'bun:test';
+import { SlidingWindowRateLimiter } from '@web/lib/sliding-window-rate-limiter';
 
 class InMemorySortedSetStore {
 	private readonly values = new Map<string, Array<{ score: number; member: string }>>();

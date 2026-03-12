@@ -1,6 +1,6 @@
 import { createClient } from 'redis';
 import { logger } from '@template/mcp/logger';
-import { environment } from '../env.js';
+import { environment } from '@web/env';
 
 type RedisClient = ReturnType<typeof createClient>;
 

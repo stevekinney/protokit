@@ -1,4 +1,4 @@
-import { environment } from '../env.js';
+import { environment } from '@web/env';
 
 function hasEnterprisePolicyConfiguration(): boolean {
 	return Boolean(

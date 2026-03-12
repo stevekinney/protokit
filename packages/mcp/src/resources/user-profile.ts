@@ -15,8 +15,8 @@ export const userProfileResource = {
 
 			const [user] = await database
 				.select()
-				.from(schema.neonAuthUsers)
-				.where(eq(schema.neonAuthUsers.id, context.userId))
+				.from(schema.users)
+				.where(eq(schema.users.id, context.userId))
 				.limit(1);
 
 			const durationMs = Date.now() - start;

@@ -103,9 +103,9 @@ async function setupNeon(): Promise<
 	appendToEnvironmentFile('DATABASE_URL_UNPOOLED', directConnectionString);
 	console.log('Database URLs written to .env.local');
 
-	console.log('\nNeon Auth must be enabled in the Neon Console:');
-	console.log(`  https://console.neon.tech/app/projects/${neonProjectId}/auth`);
-	console.log('Enable it, then Google login will work with shared dev credentials.');
+	console.log('\nNeon project created successfully.');
+	console.log(`  Project dashboard: https://console.neon.tech/app/projects/${neonProjectId}`);
+	console.log('Next, configure your own Google OAuth credentials for sign-in.');
 
 	return { projectId: neonProjectId, connectionString, directConnectionString };
 }
@@ -114,8 +114,7 @@ async function setupGoogle() {
 	console.log('\n--- Google OAuth ---\n');
 
 	console.log('Google OAuth credentials are required for authentication.');
-	console.log('For development, Neon Auth provides shared credentials automatically.');
-	console.log('For production, you need your own credentials.\n');
+	console.log('Configure your own credentials for both development and production.\n');
 
 	console.log('Open Google Cloud Console: https://console.cloud.google.com/apis/credentials');
 	console.log('Create OAuth 2.0 Client ID with redirect URI:');
@@ -146,11 +145,12 @@ async function setupBetterAuth() {
 		console.log('Generated BETTER_AUTH_SECRET and written to .env.local');
 	}
 
-	const existingUrl = getEnvironmentValue('BETTER_AUTH_URL');
+	if (!getEnvironmentValue('SESSION_COOKIE_NAME')) {
+		appendToEnvironmentFile('SESSION_COOKIE_NAME', 'application_session');
+	}
 
-	if (!existingUrl) {
-		appendToEnvironmentFile('BETTER_AUTH_URL', 'http://localhost:3000');
-		console.log('BETTER_AUTH_URL set to http://localhost:3000');
+	if (!getEnvironmentValue('SESSION_TIME_TO_LIVE_SECONDS')) {
+		appendToEnvironmentFile('SESSION_TIME_TO_LIVE_SECONDS', '2592000');
 	}
 }
 
@@ -182,8 +182,7 @@ async function setupMcpProtocolAndExtensions() {
 
 	const existingAllowedOrigins = getEnvironmentValue('MCP_ALLOWED_ORIGINS');
 	if (!existingAllowedOrigins) {
-		const betterAuthUrl = getEnvironmentValue('BETTER_AUTH_URL') || 'http://localhost:3000';
-		const suggestedOrigin = new URL(betterAuthUrl).origin;
+		const suggestedOrigin = 'http://localhost:3000';
 		const allowedOriginsInput = await prompt(
 			`MCP_ALLOWED_ORIGINS (comma-separated, default: ${suggestedOrigin}): `,
 		);
@@ -330,18 +329,8 @@ async function runInitialMigration() {
 	}
 }
 
-async function runSvelteKitSync() {
-	console.log('\n--- SvelteKit Sync ---\n');
-	try {
-		execute('bunx svelte-kit sync', { stdio: 'inherit' });
-		console.log('SvelteKit types generated.');
-	} catch {
-		console.warn('svelte-kit sync failed. Run manually: bunx svelte-kit sync');
-	}
-}
-
 async function runFullSetup() {
-	console.log('\n=== SvelteKit MCP Template Setup ===\n');
+	console.log('\n=== Bun + React MCP Template Setup ===\n');
 
 	console.log('Checking prerequisites...');
 	checkPrerequisites(['neonctl']);
@@ -355,7 +344,6 @@ async function runFullSetup() {
 	await setupRailway();
 	await setupGithubSecrets(neonResult?.projectId);
 	await runInitialMigration();
-	await runSvelteKitSync();
 
 	console.log('\n=== Setup Complete ===');
 	console.log('');

@@ -1,11 +1,10 @@
-import { json } from '@sveltejs/kit';
-import type { RequestHandler } from './$types';
-import { isRedisHealthy } from '$lib/redis-client';
-import { instanceIdentifier } from '$lib/instance-identifier';
-import { database } from '@template/database';
 import { sql } from 'drizzle-orm';
-import { environment } from '../../env.js';
-import { mcpProtocolVersion } from '$lib/mcp-protocol-constants';
+import { database } from '@template/database';
+import { environment } from '@web/env';
+import { jsonResponse } from '@web/lib/http-response';
+import { instanceIdentifier } from '@web/lib/instance-identifier';
+import { mcpProtocolVersion } from '@web/lib/mcp-protocol-constants';
+import { isRedisHealthy } from '@web/lib/redis-client';
 
 async function isDatabaseHealthy(): Promise<boolean> {
 	try {
@@ -30,14 +29,13 @@ function isEnterprisePolicyConfigured(): boolean {
 	);
 }
 
-export const GET: RequestHandler = async () => {
+export async function handleHealthGet(): Promise<Response> {
 	const redisHealthy = await isRedisHealthy();
 	const databaseHealthy = await isDatabaseHealthy();
 	const enterprisePolicyConfigured = isEnterprisePolicyConfigured();
-
 	const status = redisHealthy && databaseHealthy && enterprisePolicyConfigured ? 'ok' : 'degraded';
 
-	return json(
+	return jsonResponse(
 		{
 			status,
 			instanceIdentifier,
@@ -55,4 +53,4 @@ export const GET: RequestHandler = async () => {
 		},
 		{ status: status === 'ok' ? 200 : 503 },
 	);
-};
+}

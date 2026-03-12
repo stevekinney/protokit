@@ -4,10 +4,11 @@
 	"globalEnv": [
 		"DATABASE_URL",
 		"DATABASE_URL_UNPOOLED",
-		"BETTER_AUTH_URL",
 		"BETTER_AUTH_SECRET",
 		"GOOGLE_CLIENT_ID",
 		"GOOGLE_CLIENT_SECRET",
+		"SESSION_COOKIE_NAME",
+		"SESSION_TIME_TO_LIVE_SECONDS",
 		"REDIS_URL",
 		"RATE_LIMIT_REGISTER_MAX",
 		"RATE_LIMIT_REGISTER_WINDOW_SECONDS",
@@ -37,7 +38,7 @@
 	"tasks": {
 		"build": {
 			"dependsOn": ["^build"],
-			"outputs": [".svelte-kit/**", "build/**"],
+			"outputs": ["dist/**", "build/**"],
 			"cache": true
 		},
 		"dev": {

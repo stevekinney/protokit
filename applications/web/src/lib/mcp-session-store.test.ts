@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const redisValues = new Map<string, string>();
 
-vi.mock('$lib/redis-client', () => {
+mock.module('@web/lib/redis-client', () => {
 	return {
 		getRedisClient: async () => ({
 			set: async (key: string, value: string) => {
@@ -16,7 +16,7 @@ vi.mock('$lib/redis-client', () => {
 	};
 });
 
-const { McpSessionStore } = await import('$lib/mcp-session-store');
+const { McpSessionStore } = await import('@web/lib/mcp-session-store');
 
 describe('McpSessionStore', () => {
 	beforeEach(() => {

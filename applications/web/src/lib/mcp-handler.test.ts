@@ -1,21 +1,21 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, mock } from 'bun:test';
 
-vi.mock('$lib/mcp-session-store', () => ({
+mock.module('@web/lib/mcp-session-store', () => ({
 	mcpSessionStore: {
-		getSession: vi.fn(async () => ({
+		getSession: async () => ({
 			sessionId: 'session-1',
 			userId: 'user-1',
 			ownerInstanceId: 'other-instance',
 			lastActivityAt: new Date().toISOString(),
 			expiresAt: new Date(Date.now() + 1000 * 60).toISOString(),
-		})),
-		touchSession: vi.fn(async () => null),
-		deleteSession: vi.fn(async () => undefined),
-		createSession: vi.fn(async () => undefined),
+		}),
+		touchSession: async () => null,
+		deleteSession: async () => undefined,
+		createSession: async () => undefined,
 	},
 }));
 
-const { handleMcpRequest } = await import('$lib/mcp-handler');
+const { handleMcpRequest } = await import('@web/lib/mcp-handler');
 
 describe('handleMcpRequest session affinity', () => {
 	it('rejects non-allowlisted origin', async () => {
