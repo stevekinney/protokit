@@ -47,6 +47,7 @@
 			"persistent": true
 		},
 		"typecheck": {
+			"dependsOn": ["^build"],
 			"cache": true
 		},
 		"lint": {

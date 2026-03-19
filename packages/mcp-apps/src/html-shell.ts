@@ -1,9 +1,17 @@
+function escapeForEmbedding(content: string, tag: string): string {
+	const pattern = new RegExp(`</${tag}`, 'gi');
+	return content.replace(pattern, `<\\/${tag}`);
+}
+
 export function createApplicationHtml(options: {
 	title: string;
 	javascript: string;
 	css?: string;
 }): string {
-	const styleBlock = options.css ? `\n\t\t<style>${options.css}</style>` : '';
+	const safeJavascript = escapeForEmbedding(options.javascript, 'script');
+	const styleBlock = options.css
+		? `\n\t\t<style>${escapeForEmbedding(options.css, 'style')}</style>`
+		: '';
 
 	return `<!doctype html>
 <html lang="en">
@@ -19,7 +27,7 @@ export function createApplicationHtml(options: {
 	</head>
 	<body>
 		<div id="root"></div>
-		<script type="module">${options.javascript}</script>
+		<script type="module">${safeJavascript}</script>
 	</body>
 </html>`;
 }

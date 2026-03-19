@@ -22,6 +22,8 @@ for (const directory of applicationDirectories) {
 		target: 'browser',
 		minify: true,
 		bundle: true,
+		sourcemap: 'none',
+		splitting: false,
 	});
 
 	if (!result.success) {
@@ -33,7 +35,15 @@ for (const directory of applicationDirectories) {
 		continue;
 	}
 
-	const javascript = await result.outputs[0].text();
+	const javascriptOutput = result.outputs.find((output) => output.kind === 'entry-point');
+
+	if (!javascriptOutput) {
+		console.error(`No JavaScript output found for ${applicationName}`);
+		hasErrors = true;
+		continue;
+	}
+
+	const javascript = await javascriptOutput.text();
 	const html = createApplicationHtml({ title: applicationName, javascript });
 
 	writeFileSync(join(outputDirectory, `${applicationName}.html`), html);

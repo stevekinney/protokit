@@ -18,6 +18,7 @@ function AccountDashboard() {
 	const [activeSection, setActiveSection] = useState<DashboardSection>('overview');
 	const [refreshing, setRefreshing] = useState(false);
 	const [connected, setConnected] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
 		app.ontoolresult = (result) => {
@@ -37,12 +38,20 @@ function AccountDashboard() {
 			}
 		};
 
-		app.connect().then(() => setConnected(true));
+		app.connect().then(
+			() => setConnected(true),
+			(connectionError: unknown) => {
+				const message =
+					connectionError instanceof Error ? connectionError.message : 'Failed to connect to host';
+				setError(message);
+			},
+		);
 	}, [app]);
 
 	const handleRefresh = useCallback(
 		async (section: DashboardSection) => {
 			setRefreshing(true);
+			setError(null);
 			try {
 				const result = await app.callServerTool({
 					name: 'refresh_account_dashboard',
@@ -52,6 +61,10 @@ function AccountDashboard() {
 					setState(result.structuredContent as unknown as DashboardState);
 					setActiveSection(section);
 				}
+			} catch (refreshError: unknown) {
+				const message =
+					refreshError instanceof Error ? refreshError.message : 'Failed to refresh dashboard';
+				setError(message);
 			} finally {
 				setRefreshing(false);
 			}
@@ -59,8 +72,12 @@ function AccountDashboard() {
 		[app],
 	);
 
-	if (!connected) {
+	if (!connected && !error) {
 		return <div style={styles.loading}>Connecting…</div>;
+	}
+
+	if (error && !state) {
+		return <div style={styles.error}>{error}</div>;
 	}
 
 	if (!state) {
@@ -95,6 +112,8 @@ function AccountDashboard() {
 					</button>
 				))}
 			</nav>
+
+			{error && <div style={styles.errorBanner}>{error}</div>}
 
 			<section style={styles.card}>
 				<SectionContent section={activeSection} state={state} />
@@ -149,6 +168,23 @@ const styles: Record<string, React.CSSProperties> = {
 		minHeight: '120px',
 		fontFamily: 'system-ui, -apple-system, sans-serif',
 		color: 'GrayText',
+	},
+	error: {
+		display: 'flex',
+		alignItems: 'center',
+		justifyContent: 'center',
+		minHeight: '120px',
+		fontFamily: 'system-ui, -apple-system, sans-serif',
+		color: '#b91c1c',
+	},
+	errorBanner: {
+		padding: '0.75rem 1rem',
+		marginBottom: '1rem',
+		borderRadius: '6px',
+		border: '1px solid #fca5a5',
+		background: '#fef2f2',
+		color: '#b91c1c',
+		fontSize: '0.875rem',
 	},
 	main: {
 		maxWidth: '720px',
