@@ -4,6 +4,7 @@ import { createHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse } from '@web/lib/http-response';
 import type { RequestContext } from '@web/lib/request-context';
 import { hydrateSession } from '@web/lib/session-authentication';
+import { resolvePublicFile } from '@web/resolve-public-file';
 import {
 	handleGoogleSignInCallback,
 	handleGoogleSignInStart,
@@ -45,29 +46,17 @@ async function serveStaticFile(pathname: string): Promise<Response | null> {
 		return null;
 	}
 
-	const publicDirectoryUrls = [
-		new URL('./public/', import.meta.url),
-		new URL('../public/', import.meta.url),
-	];
+	const staticFile = await resolvePublicFile(pathname.slice(1));
+	if (!staticFile) return null;
 
-	for (const publicDirectoryUrl of publicDirectoryUrls) {
-		const fileUrl = new URL(`.${pathname}`, publicDirectoryUrl);
-		const staticFile = Bun.file(fileUrl);
-		if (!(await staticFile.exists())) {
-			continue;
-		}
-
-		const response = new Response(staticFile, {
-			headers: { 'Content-Type': staticFile.type },
-		});
-		if (pathname.startsWith('/assets/')) {
-			response.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-		}
-
-		return response;
+	const response = new Response(staticFile, {
+		headers: { 'Content-Type': staticFile.type },
+	});
+	if (pathname.startsWith('/assets/')) {
+		response.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
 	}
 
-	return null;
+	return response;
 }
 
 async function dispatch(context: RequestContext): Promise<Response> {
