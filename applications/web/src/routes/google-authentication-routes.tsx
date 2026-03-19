@@ -21,6 +21,10 @@ import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
 
 const GOOGLE_IDENTITY_CONFLICT_ERROR = 'google_identity_conflict';
 
+function isUniqueConstraintViolation(error: unknown): boolean {
+	return error instanceof Error && 'code' in error && (error as { code: string }).code === '23505';
+}
+
 async function upsertGoogleUser(input: {
 	subject: string;
 	email: string;
@@ -34,16 +38,23 @@ async function upsertGoogleUser(input: {
 		.limit(1);
 
 	if (existingGoogleAccount) {
-		await database
-			.update(schema.users)
-			.set({
-				email: input.email,
-				name: input.name,
-				image: input.image,
-				emailVerified: true,
-				updatedAt: new Date(),
-			})
-			.where(eq(schema.users.id, existingGoogleAccount.userId));
+		try {
+			await database
+				.update(schema.users)
+				.set({
+					email: input.email,
+					name: input.name,
+					image: input.image,
+					emailVerified: true,
+					updatedAt: new Date(),
+				})
+				.where(eq(schema.users.id, existingGoogleAccount.userId));
+		} catch (error) {
+			if (isUniqueConstraintViolation(error)) {
+				throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR);
+			}
+			throw error;
+		}
 		await database
 			.update(schema.userGoogleAccounts)
 			.set({
@@ -64,19 +75,21 @@ async function upsertGoogleUser(input: {
 	}
 
 	const userId = randomUUID();
-	await database.insert(schema.users).values({
-		id: userId,
-		email: input.email,
-		name: input.name,
-		image: input.image,
-		emailVerified: true,
-		role: 'user',
-	});
+	await database.transaction(async (transaction) => {
+		await transaction.insert(schema.users).values({
+			id: userId,
+			email: input.email,
+			name: input.name,
+			image: input.image,
+			emailVerified: true,
+			role: 'user',
+		});
 
-	await database.insert(schema.userGoogleAccounts).values({
-		googleSubject: input.subject,
-		userId,
-		email: input.email,
+		await transaction.insert(schema.userGoogleAccounts).values({
+			googleSubject: input.subject,
+			userId,
+			email: input.email,
+		});
 	});
 
 	return userId;
