@@ -1,27 +1,21 @@
-import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createApplicationHtml } from './html-shell.js';
 
 const sourceDirectory = resolve(import.meta.dirname, 'applications');
 const outputDirectory = resolve(import.meta.dirname, '..', 'dist');
 
-mkdirSync(outputDirectory, { recursive: true });
-
-const applicationDirectories = readdirSync(sourceDirectory, { withFileTypes: true }).filter(
-	(entry) => entry.isDirectory(),
-);
+const glob = new Bun.Glob('*/');
+const applicationNames = [...glob.scanSync(sourceDirectory)].map((match) => match.slice(0, -1));
 
 let hasErrors = false;
 
-for (const directory of applicationDirectories) {
-	const applicationName = directory.name;
+for (const applicationName of applicationNames) {
 	const entrypoint = join(sourceDirectory, applicationName, `${applicationName}.tsx`);
 
 	const result = await Bun.build({
 		entrypoints: [entrypoint],
 		target: 'browser',
 		minify: true,
-		bundle: true,
 		sourcemap: 'none',
 		splitting: false,
 	});
@@ -46,12 +40,12 @@ for (const directory of applicationDirectories) {
 	const javascript = await javascriptOutput.text();
 	const html = createApplicationHtml({ title: applicationName, javascript });
 
-	writeFileSync(join(outputDirectory, `${applicationName}.html`), html);
-	writeFileSync(
+	await Bun.write(join(outputDirectory, `${applicationName}.html`), html);
+	await Bun.write(
 		join(outputDirectory, `${applicationName}.js`),
 		`export default ${JSON.stringify(html)};\n`,
 	);
-	writeFileSync(
+	await Bun.write(
 		join(outputDirectory, `${applicationName}.d.ts`),
 		'declare const html: string;\nexport default html;\n',
 	);
