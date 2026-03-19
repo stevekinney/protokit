@@ -1,37 +1,32 @@
 import { cpSync, rmSync } from 'node:fs';
-
-const styleBuildResult = Bun.spawnSync(
-	[
-		'bunx',
-		'@tailwindcss/cli',
-		'-i',
-		'src/styles/application.css',
-		'-o',
-		'public/assets/application.css',
-		'--minify',
-	],
-	{
-		stdout: 'inherit',
-		stderr: 'inherit',
-		stdin: 'inherit',
-	},
-);
-
-if (styleBuildResult.exitCode !== 0) {
-	process.exit(styleBuildResult.exitCode);
-}
+import { createTailwindPlugin } from './plugins/tailwind.js';
 
 rmSync('dist', { recursive: true, force: true });
 
-const serverBuildOutput = await Bun.build({
+const styleBuildResult = await Bun.build({
+	entrypoints: ['src/styles/application.css'],
+	outdir: 'public/assets',
+	plugins: [createTailwindPlugin({ minify: true })],
+	naming: '[name].[ext]',
+});
+
+if (!styleBuildResult.success) {
+	for (const message of styleBuildResult.logs) {
+		console.error(message);
+	}
+	process.exit(1);
+}
+
+const serverBuildResult = await Bun.build({
 	entrypoints: ['src/server.ts'],
 	target: 'bun',
 	outdir: 'dist',
 	sourcemap: 'external',
+	define: { 'process.env.NODE_ENV': '"production"' },
 });
 
-if (!serverBuildOutput.success) {
-	for (const message of serverBuildOutput.logs) {
+if (!serverBuildResult.success) {
+	for (const message of serverBuildResult.logs) {
 		console.error(message);
 	}
 	process.exit(1);

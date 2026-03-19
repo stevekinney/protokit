@@ -1,6 +1,7 @@
 import { logger } from '@template/mcp/logger';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';
+import { resolvePublicFile } from '@web/resolve-public-file';
 
 const port = environment.PORT;
 
@@ -9,21 +10,6 @@ const staticHeaders = {
 };
 
 const staticRoutes: Record<string, Response> = {};
-
-const publicDirectoryUrls = [
-	new URL('./public/', import.meta.url),
-	new URL('../public/', import.meta.url),
-];
-
-async function resolvePublicFile(
-	relativePath: string,
-): Promise<ReturnType<typeof Bun.file> | null> {
-	for (const publicDirectoryUrl of publicDirectoryUrls) {
-		const file = Bun.file(new URL(relativePath, publicDirectoryUrl));
-		if (await file.exists()) return file;
-	}
-	return null;
-}
 
 const faviconFile = await resolvePublicFile('favicon.png');
 if (faviconFile) {

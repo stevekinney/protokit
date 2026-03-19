@@ -1,21 +1,54 @@
+import { watch } from 'node:fs';
 import { logger } from '@template/mcp/logger';
+import { createTailwindPlugin } from './plugins/tailwind.js';
 
-const styleProcess = Bun.spawn(
-	[
-		'bunx',
-		'@tailwindcss/cli',
-		'-i',
-		'src/styles/application.css',
-		'-o',
-		'public/assets/application.css',
-		'--watch',
-	],
-	{
-		stdout: 'inherit',
-		stderr: 'inherit',
-		stdin: 'inherit',
-	},
-);
+const tailwindPlugin = createTailwindPlugin();
+
+async function buildStyles() {
+	const result = await Bun.build({
+		entrypoints: ['src/styles/application.css'],
+		outdir: 'public/assets',
+		plugins: [tailwindPlugin],
+		naming: '[name].[ext]',
+	});
+
+	if (!result.success) {
+		for (const message of result.logs) {
+			logger.error({ err: message }, 'Style build error');
+		}
+	}
+}
+
+await buildStyles();
+
+let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+let building = false;
+let rebuildQueued = false;
+
+async function scheduledBuild() {
+	if (building) {
+		rebuildQueued = true;
+		return;
+	}
+	building = true;
+	try {
+		await buildStyles();
+	} finally {
+		building = false;
+		if (rebuildQueued) {
+			rebuildQueued = false;
+			await scheduledBuild();
+		}
+	}
+}
+
+const watcher = watch('src', { recursive: true }, (_event, filename) => {
+	if (!filename) return;
+	if (filename.endsWith('.css') || filename.endsWith('.tsx') || filename.endsWith('.ts')) {
+		clearTimeout(rebuildTimer);
+		rebuildTimer = setTimeout(scheduledBuild, 100);
+	}
+});
 
 const serverProcess = Bun.spawn(['bun', '--watch', 'src/server.ts'], {
 	stdout: 'inherit',
@@ -24,26 +57,21 @@ const serverProcess = Bun.spawn(['bun', '--watch', 'src/server.ts'], {
 });
 
 function shutdown() {
-	styleProcess.kill();
+	clearTimeout(rebuildTimer);
+	watcher.close();
 	serverProcess.kill();
 }
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-const exitCode = await Promise.race([
-	styleProcess.exited.then((value) => ({ processName: 'styleProcess', value })),
-	serverProcess.exited.then((value) => ({ processName: 'serverProcess', value })),
-]);
+const exitCode = await serverProcess.exited;
 
 shutdown();
 
-if (exitCode.value !== 0) {
-	logger.error(
-		{ processName: exitCode.processName, exitCode: exitCode.value },
-		'Development process exited with non-zero code',
-	);
-	process.exit(exitCode.value);
+if (exitCode !== 0) {
+	logger.error({ exitCode }, 'Development server exited with non-zero code');
+	process.exit(exitCode ?? 1);
 }
 
 export {};

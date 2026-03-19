@@ -15,7 +15,8 @@
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.27.0",
 		"@t3-oss/env-core": "^0.13.0",
-		"@tailwindcss/cli": "^4.2.1",
+		"@tailwindcss/postcss": "^4.2.1",
+		"postcss": "^8.5.0",
 		"@template/database": "workspace:*",
 		"@template/mcp": "workspace:*",
 		"drizzle-orm": "^0.41.0",

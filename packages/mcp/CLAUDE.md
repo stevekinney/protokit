@@ -45,6 +45,19 @@ MCP server factory, tool/resource/prompt definitions, and shared logger.
 
 Prompts can import Markdown files as template strings: `import template from './templates/my-template.md';`. The `markdown.d.ts` declaration provides TypeScript support for this pattern.
 
+## Adding an MCP App
+
+MCP Apps are interactive HTML interfaces rendered in sandboxed iframes inside host applications. App source lives in `packages/mcp-apps`, which builds self-contained HTML strings importable by this package.
+
+1. Create `packages/mcp-apps/src/applications/{app-name}/{app-name}.tsx`
+2. Add the app entry to `packages/mcp-apps/package.json` exports: `"./{app-name}": "./dist/{app-name}.js"`
+3. Create a resource in `src/resources/` that imports the built HTML: `import html from '@template/mcp-apps/{app-name}'`
+   - Use `RESOURCE_MIME_TYPE` from `@modelcontextprotocol/ext-apps/server` for the mimeType
+   - Add a type declaration in `src/application-html.d.ts` for the new import
+4. Create a tool in `src/tools/` with `_meta: { ui: { resourceUri: 'ui://{app-name}' } }`
+5. Optionally add app-only tools with `visibility: ['app']` in `_meta.ui` — these are callable by the app via `callServerTool()` but hidden from the LLM
+6. Register everything in `src/server.ts`, re-export from `src/index.ts`
+
 ## Logging Conventions
 
 - Always use `logger` from this package, never `console.log`
