@@ -103,9 +103,8 @@ export const renderAccountDashboardTool = {
 			],
 			structuredContent: state,
 			_meta: {
-				'io.modelcontextprotocol/ui': {
-					resource: 'ui://account-dashboard',
-					state,
+				ui: {
+					resourceUri: 'ui://account-dashboard',
 				},
 			},
 		};

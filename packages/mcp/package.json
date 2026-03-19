@@ -15,9 +15,11 @@
 		"lint": "eslint src/"
 	},
 	"dependencies": {
+		"@modelcontextprotocol/ext-apps": "^1.2.2",
 		"@modelcontextprotocol/sdk": "^1.27.0",
 		"@t3-oss/env-core": "^0.13.0",
 		"@template/database": "workspace:*",
+		"@template/mcp-apps": "workspace:*",
 		"drizzle-orm": "^0.41.0",
 		"pino": "^9.6.0",
 		"zod": "^4.0.0"

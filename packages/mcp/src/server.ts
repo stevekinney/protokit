@@ -6,13 +6,15 @@ import { userProfileResource } from './resources/user-profile.js';
 import { accountDashboardApplicationResource } from './resources/account-dashboard-application.js';
 import { summarizePrompt } from './prompts/summarize.js';
 import instructions from './instructions.md';
-import {
-	mcpUiExtensionIdentifier,
-	mcpOauthClientCredentialsExtensionIdentifier,
-	mcpEnterpriseAuthorizationExtensionIdentifier,
-} from './protocol-extensions.js';
+import { EXTENSION_ID } from '@modelcontextprotocol/ext-apps/server';
+import { refreshAccountDashboardTool } from './tools/refresh-account-dashboard.js';
 import { registerConformanceFixtures } from './conformance-fixture-registration.js';
 import { environment } from './env.js';
+
+const oauthClientCredentialsExtensionIdentifier =
+	'io.modelcontextprotocol/oauth-client-credentials';
+const enterpriseAuthorizationExtensionIdentifier =
+	'io.modelcontextprotocol/enterprise-managed-authorization';
 
 export function createMcpServer(context: {
 	userId: string;
@@ -24,13 +26,13 @@ export function createMcpServer(context: {
 	const enableConformanceMode = context.enableConformanceMode ?? environment.MCP_CONFORMANCE_MODE;
 	const experimentalCapabilities: Record<string, object> = {};
 	if (context.enableUiExtension) {
-		experimentalCapabilities[mcpUiExtensionIdentifier] = { version: '1.0.0' };
+		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
 	}
 	if (context.enableClientCredentialsExtension) {
-		experimentalCapabilities[mcpOauthClientCredentialsExtensionIdentifier] = { version: '1.0.0' };
+		experimentalCapabilities[oauthClientCredentialsExtensionIdentifier] = { version: '1.0.0' };
 	}
 	if (context.enableEnterpriseAuthorizationExtension) {
-		experimentalCapabilities[mcpEnterpriseAuthorizationExtensionIdentifier] = { version: '1.0.0' };
+		experimentalCapabilities[enterpriseAuthorizationExtensionIdentifier] = { version: '1.0.0' };
 	}
 
 	const server = new McpServer(
@@ -66,12 +68,27 @@ export function createMcpServer(context: {
 			description: renderAccountDashboardTool.description,
 			inputSchema: renderAccountDashboardTool.inputSchema,
 			_meta: {
-				'io.modelcontextprotocol/ui': {
-					resource: 'ui://account-dashboard',
+				ui: {
+					resourceUri: 'ui://account-dashboard',
 				},
 			},
 		},
 		async (input, extra) => renderAccountDashboardTool.handler(input, context, extra),
+	);
+
+	server.registerTool(
+		refreshAccountDashboardTool.name,
+		{
+			description: refreshAccountDashboardTool.description,
+			inputSchema: refreshAccountDashboardTool.inputSchema,
+			_meta: {
+				ui: {
+					resourceUri: 'ui://account-dashboard',
+					visibility: ['app'],
+				},
+			},
+		},
+		async (input) => refreshAccountDashboardTool.handler(input, context),
 	);
 
 	server.registerTool(
