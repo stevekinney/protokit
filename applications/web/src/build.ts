@@ -28,17 +28,18 @@ if (cleanResult.exitCode !== 0) {
 	process.exit(cleanResult.exitCode);
 }
 
-const serverBuildResult = Bun.spawnSync(
-	['bun', 'build', 'src/server.ts', '--target', 'bun', '--outdir', 'dist', '--sourcemap'],
-	{
-		stdout: 'inherit',
-		stderr: 'inherit',
-		stdin: 'inherit',
-	},
-);
+const serverBuildOutput = await Bun.build({
+	entrypoints: ['src/server.ts'],
+	target: 'bun',
+	outdir: 'dist',
+	sourcemap: 'external',
+});
 
-if (serverBuildResult.exitCode !== 0) {
-	process.exit(serverBuildResult.exitCode);
+if (!serverBuildOutput.success) {
+	for (const message of serverBuildOutput.logs) {
+		console.error(message);
+	}
+	process.exit(1);
 }
 
 const copyPublicDirectoryResult = Bun.spawnSync(['cp', '-R', 'public', 'dist/public'], {
@@ -50,3 +51,5 @@ const copyPublicDirectoryResult = Bun.spawnSync(['cp', '-R', 'public', 'dist/pub
 if (copyPublicDirectoryResult.exitCode !== 0) {
 	process.exit(copyPublicDirectoryResult.exitCode);
 }
+
+export {};

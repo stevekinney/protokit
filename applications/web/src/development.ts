@@ -1,3 +1,5 @@
+import { logger } from '@template/mcp/logger';
+
 const styleProcess = Bun.spawn(
 	[
 		'bunx',
@@ -37,7 +39,10 @@ const exitCode = await Promise.race([
 shutdown();
 
 if (exitCode.value !== 0) {
-	console.error(`${exitCode.processName} exited with code ${exitCode.value}`);
+	logger.error(
+		{ processName: exitCode.processName, exitCode: exitCode.value },
+		'Development process exited with non-zero code',
+	);
 	process.exit(exitCode.value);
 }
 

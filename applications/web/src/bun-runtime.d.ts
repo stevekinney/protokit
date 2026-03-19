@@ -48,7 +48,21 @@ declare namespace Bun {
 
 	type ServeOptions = {
 		port?: number;
+		static?: Record<string, Response>;
 		fetch: (request: Request, server: Server) => Response | Promise<Response>;
+	};
+
+	type BuildConfig = {
+		entrypoints: string[];
+		target?: 'bun' | 'node' | 'browser';
+		outdir?: string;
+		sourcemap?: 'external' | 'inline' | 'none';
+	};
+
+	type BuildOutput = {
+		success: boolean;
+		logs: Array<string>;
+		outputs: Array<Blob>;
 	};
 }
 
@@ -57,4 +71,5 @@ declare const Bun: {
 	spawn: (command: string[], options?: Record<string, unknown>) => Bun.SpawnedProcess;
 	spawnSync: (command: string[], options?: Record<string, unknown>) => Bun.SpawnSyncResult;
 	file: (path: string | URL) => Bun.FileReference;
+	build: (config: Bun.BuildConfig) => Promise<Bun.BuildOutput>;
 };
