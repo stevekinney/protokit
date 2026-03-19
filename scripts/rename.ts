@@ -1,9 +1,9 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
-const TARGET_EXTENSIONS = ['.json', '.ts', '.js', '.svelte', '.md'];
+const TARGET_EXTENSIONS = ['.json', '.ts', '.tsx', '.js', '.md'];
 const TARGET_FILENAMES = ['Dockerfile'];
-const IGNORE_DIRECTORIES = ['node_modules', '.svelte-kit', '.turbo', 'build', 'dist', '.git'];
+const IGNORE_DIRECTORIES = ['node_modules', '.turbo', 'build', 'dist', '.git'];
 
 async function collectFiles(directory: string): Promise<string[]> {
 	const entries = await readdir(directory, { withFileTypes: true });

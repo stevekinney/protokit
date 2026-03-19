@@ -1,11 +1,10 @@
-import type { RequestEvent } from '@sveltejs/kit';
-import { environment } from '../env.js';
-import { getRedisClient } from '$lib/redis-client';
-import { getRequestClientIdentifier } from '$lib/request-client-identifier';
+import { environment } from '@web/env';
+import { getRedisClient } from '@web/lib/redis-client';
+import { getRequestClientIdentifier } from '@web/lib/request-client-identifier';
 import {
 	SlidingWindowRateLimiter,
 	type SlidingWindowRateLimiterResult,
-} from '$lib/sliding-window-rate-limiter';
+} from '@web/lib/sliding-window-rate-limiter';
 
 const slidingWindowRateLimiter = new SlidingWindowRateLimiter();
 
@@ -14,7 +13,7 @@ function buildRateLimitKey(route: string, identifier: string): string {
 }
 
 async function consumeRateLimit(input: {
-	route: 'register' | 'token';
+	route: 'oauth_register' | 'oauth_token';
 	identifier: string;
 	maximumRequests: number;
 	windowSeconds: number;
@@ -47,28 +46,30 @@ async function consumeRateLimit(input: {
 	});
 }
 
-export async function enforceRegistrationRateLimit(
-	event: Pick<RequestEvent, 'request' | 'getClientAddress'>,
-): Promise<SlidingWindowRateLimiterResult> {
-	const clientIdentifier = getRequestClientIdentifier(event);
+export async function enforceOauthRegistrationRateLimit(input: {
+	request: Request;
+	fallbackClientAddress?: string;
+}): Promise<SlidingWindowRateLimiterResult> {
+	const clientIdentifier = getRequestClientIdentifier(input);
 
 	return consumeRateLimit({
-		route: 'register',
+		route: 'oauth_register',
 		identifier: clientIdentifier,
 		maximumRequests: environment.RATE_LIMIT_REGISTER_MAX,
 		windowSeconds: environment.RATE_LIMIT_REGISTER_WINDOW_SECONDS,
 	});
 }
 
-export async function enforceTokenRateLimit(
-	event: Pick<RequestEvent, 'request' | 'getClientAddress'>,
-	clientId?: string,
-): Promise<SlidingWindowRateLimiterResult> {
-	const clientIdentifier = getRequestClientIdentifier(event);
-	const identifier = clientId ? `${clientIdentifier}:${clientId}` : clientIdentifier;
+export async function enforceOauthTokenRateLimit(input: {
+	request: Request;
+	clientId?: string;
+	fallbackClientAddress?: string;
+}): Promise<SlidingWindowRateLimiterResult> {
+	const clientIdentifier = getRequestClientIdentifier(input);
+	const identifier = input.clientId ? `${clientIdentifier}:${input.clientId}` : clientIdentifier;
 
 	return consumeRateLimit({
-		route: 'token',
+		route: 'oauth_token',
 		identifier,
 		maximumRequests: environment.RATE_LIMIT_TOKEN_MAX,
 		windowSeconds: environment.RATE_LIMIT_TOKEN_WINDOW_SECONDS,

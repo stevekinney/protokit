@@ -1,4 +1,4 @@
-import { environment } from '../env.js';
+import { environment } from '@web/env';
 
 function parseAllowedOrigins(): Set<string> {
 	const rawAllowedOrigins = environment.MCP_ALLOWED_ORIGINS ?? 'http://localhost:3000';

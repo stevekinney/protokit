@@ -1,4 +1,4 @@
-import { getRedisClient } from '$lib/redis-client';
+import { getRedisClient } from '@web/lib/redis-client';
 
 const SESSION_KEY_PREFIX = 'mcp_session';
 

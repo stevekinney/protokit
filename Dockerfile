@@ -16,17 +16,19 @@ ENV NODE_ENV=production
 
 RUN bun turbo build --filter=./applications/web
 
-FROM node:22-slim AS runner
+FROM oven/bun:1 AS runner
 
 WORKDIR /app
 
-COPY --from=builder /app/applications/web/build ./build
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/applications/web/package.json ./
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/applications/web/package.json ./applications/web/package.json
+COPY --from=builder /app/applications/web/dist ./applications/web/dist
+COPY --from=builder /app/applications/web/public ./applications/web/public
 
 ENV NODE_ENV=production
 ENV PORT=3000
 
 EXPOSE 3000
 
-CMD ["node", "build/index.js"]
+CMD ["bun", "applications/web/dist/server.js"]

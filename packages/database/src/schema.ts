@@ -1,67 +1,50 @@
-import { boolean, pgSchema, pgTable, text, timestamp, uuid, jsonb } from 'drizzle-orm/pg-core';
+import { boolean, jsonb, pgTable, text, timestamp, uuid, uniqueIndex } from 'drizzle-orm/pg-core';
 
-/**
- * Neon Auth tables — managed by Neon, referenced via foreign key.
- * These tables are NOT migrated by Drizzle. They exist in the `neon_auth` schema
- * and are provisioned when Neon Auth is enabled in the Neon Console.
- */
-const neonAuthSchema = pgSchema('neon_auth');
+export const users = pgTable(
+	'users',
+	{
+		id: uuid('id').defaultRandom().primaryKey(),
+		email: text('email').notNull(),
+		name: text('name').notNull(),
+		image: text('image'),
+		emailVerified: boolean('email_verified').notNull().default(false),
+		role: text('role').notNull().default('user'),
+		createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+	},
+	(table) => ({
+		emailUniqueIndex: uniqueIndex('users_email_unique').on(table.email),
+	}),
+);
 
-export const neonAuthUsers = neonAuthSchema.table('user', {
-	id: uuid('id').primaryKey(),
-	name: text('name').notNull(),
-	email: text('email').notNull(),
-	emailVerified: boolean('emailVerified').notNull(),
-	image: text('image'),
-	createdAt: timestamp('createdAt', { withTimezone: true }).notNull(),
-	updatedAt: timestamp('updatedAt', { withTimezone: true }).notNull(),
-	role: text('role'),
-	banned: boolean('banned'),
-	banReason: text('banReason'),
-	banExpires: timestamp('banExpires', { withTimezone: true }),
-});
-
-export const neonAuthSessions = neonAuthSchema.table('session', {
-	id: uuid('id').primaryKey(),
-	expiresAt: timestamp('expiresAt', { withTimezone: true }).notNull(),
-	token: text('token').notNull().unique(),
-	createdAt: timestamp('createdAt', { withTimezone: true }).notNull(),
-	updatedAt: timestamp('updatedAt', { withTimezone: true }).notNull(),
-	ipAddress: text('ipAddress'),
-	userAgent: text('userAgent'),
-	userId: uuid('userId')
+export const userSessions = pgTable('user_sessions', {
+	sessionTokenHash: text('session_token_hash').primaryKey(),
+	userId: uuid('user_id')
 		.notNull()
-		.references(() => neonAuthUsers.id),
-	impersonatedBy: text('impersonatedBy'),
-	activeOrganizationId: text('activeOrganizationId'),
+		.references(() => users.id),
+	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+	ipAddress: text('ip_address'),
+	userAgent: text('user_agent'),
+	revokedAt: timestamp('revoked_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+	updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const neonAuthAccounts = neonAuthSchema.table('account', {
-	id: uuid('id').primaryKey(),
-	accountId: text('accountId').notNull(),
-	providerId: text('providerId').notNull(),
-	userId: uuid('userId')
-		.notNull()
-		.references(() => neonAuthUsers.id),
-	accessToken: text('accessToken'),
-	refreshToken: text('refreshToken'),
-	idToken: text('idToken'),
-	accessTokenExpiresAt: timestamp('accessTokenExpiresAt', { withTimezone: true }),
-	refreshTokenExpiresAt: timestamp('refreshTokenExpiresAt', { withTimezone: true }),
-	scope: text('scope'),
-	password: text('password'),
-	createdAt: timestamp('createdAt', { withTimezone: true }).notNull(),
-	updatedAt: timestamp('updatedAt', { withTimezone: true }).notNull(),
-});
-
-export const neonAuthVerifications = neonAuthSchema.table('verification', {
-	id: uuid('id').primaryKey(),
-	identifier: text('identifier').notNull(),
-	value: text('value').notNull(),
-	expiresAt: timestamp('expiresAt', { withTimezone: true }).notNull(),
-	createdAt: timestamp('createdAt', { withTimezone: true }).notNull(),
-	updatedAt: timestamp('updatedAt', { withTimezone: true }).notNull(),
-});
+export const userGoogleAccounts = pgTable(
+	'user_google_accounts',
+	{
+		googleSubject: text('google_subject').primaryKey(),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id),
+		email: text('email').notNull(),
+		createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+	},
+	(table) => ({
+		userIdUniqueIndex: uniqueIndex('user_google_accounts_user_id_unique').on(table.userId),
+	}),
+);
 
 export const oauthClients = pgTable('oauth_clients', {
 	clientId: text('client_id').primaryKey(),
@@ -71,7 +54,7 @@ export const oauthClients = pgTable('oauth_clients', {
 	tokenEndpointAuthMethod: text('token_endpoint_auth_method')
 		.notNull()
 		.default('client_secret_post'),
-	serviceAccountUserId: uuid('service_account_user_id').references(() => neonAuthUsers.id),
+	serviceAccountUserId: uuid('service_account_user_id').references(() => users.id),
 	redirectUris: jsonb('redirect_uris').$type<string[]>().notNull().default([]),
 	grantTypes: jsonb('grant_types').$type<string[]>().notNull().default([]),
 	responseTypes: jsonb('response_types').$type<string[]>().notNull().default([]),
@@ -85,7 +68,7 @@ export const oauthCodes = pgTable('oauth_codes', {
 		.references(() => oauthClients.clientId),
 	userId: uuid('user_id')
 		.notNull()
-		.references(() => neonAuthUsers.id),
+		.references(() => users.id),
 	redirectUri: text('redirect_uri').notNull(),
 	codeChallenge: text('code_challenge').notNull(),
 	codeChallengeMethod: text('code_challenge_method').notNull().default('S256'),
@@ -103,7 +86,7 @@ export const oauthTokens = pgTable('oauth_tokens', {
 		.references(() => oauthClients.clientId),
 	userId: uuid('user_id')
 		.notNull()
-		.references(() => neonAuthUsers.id),
+		.references(() => users.id),
 	scope: text('scope').default(''),
 	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 	revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -117,7 +100,7 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
 		.references(() => oauthClients.clientId),
 	userId: uuid('user_id')
 		.notNull()
-		.references(() => neonAuthUsers.id),
+		.references(() => users.id),
 	scope: text('scope').default(''),
 	accessTokenHash: text('access_token_hash').notNull(),
 	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
@@ -129,7 +112,7 @@ export const mcpSessions = pgTable('mcp_sessions', {
 	sessionId: text('session_id').primaryKey(),
 	userId: uuid('user_id')
 		.notNull()
-		.references(() => neonAuthUsers.id),
+		.references(() => users.id),
 	clientId: text('client_id').references(() => oauthClients.clientId),
 	createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 	lastActiveAt: timestamp('last_active_at', { withTimezone: true }).defaultNow().notNull(),
