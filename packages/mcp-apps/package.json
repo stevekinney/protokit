@@ -3,9 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"exports": {
-		"./account-dashboard": "./dist/account-dashboard.js"
-	},
+	"exports": {},
 	"scripts": {
 		"build": "bun run src/build.ts",
 		"typecheck": "tsc --noEmit",
