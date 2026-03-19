@@ -65,6 +65,13 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-await serverProcess.exited;
+const exitCode = await serverProcess.exited;
+
+shutdown();
+
+if (exitCode !== 0) {
+	logger.error({ exitCode }, 'Development server exited with non-zero code');
+	process.exit(exitCode ?? 1);
+}
 
 export {};
