@@ -132,8 +132,8 @@ async function setupGoogle() {
 	}
 }
 
-async function setupBetterAuth() {
-	console.log('\n--- Better Auth ---\n');
+async function setupSessionConfiguration() {
+	console.log('\n--- Session Configuration ---\n');
 
 	const existingSecret = getEnvironmentValue('BETTER_AUTH_SECRET');
 
@@ -337,7 +337,7 @@ async function runFullSetup() {
 	console.log('All prerequisites found.');
 
 	const neonResult = await setupNeon();
-	await setupBetterAuth();
+	await setupSessionConfiguration();
 	await setupGoogle();
 	await setupRedis();
 	await setupMcpProtocolAndExtensions();
@@ -365,8 +365,8 @@ const phases: Record<string, () => Promise<void>> = {
 	google: async () => {
 		await setupGoogle();
 	},
-	'better-auth': async () => {
-		await setupBetterAuth();
+	session: async () => {
+		await setupSessionConfiguration();
 	},
 	redis: async () => {
 		await setupRedis();

@@ -57,7 +57,9 @@ async function serveStaticFile(pathname: string): Promise<Response | null> {
 			continue;
 		}
 
-		const response = new Response(staticFile);
+		const response = new Response(staticFile, {
+			headers: { 'Content-Type': staticFile.type },
+		});
 		if (pathname.startsWith('/assets/')) {
 			response.headers.set('Cache-Control', 'public, max-age=31536000, immutable');
 		}

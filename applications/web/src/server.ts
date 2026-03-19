@@ -10,8 +10,23 @@ const staticHeaders = {
 
 const staticRoutes: Record<string, Response> = {};
 
-const faviconFile = Bun.file('public/favicon.png');
-if (await faviconFile.exists()) {
+const publicDirectoryUrls = [
+	new URL('./public/', import.meta.url),
+	new URL('../public/', import.meta.url),
+];
+
+async function resolvePublicFile(
+	relativePath: string,
+): Promise<ReturnType<typeof Bun.file> | null> {
+	for (const publicDirectoryUrl of publicDirectoryUrls) {
+		const file = Bun.file(new URL(relativePath, publicDirectoryUrl));
+		if (await file.exists()) return file;
+	}
+	return null;
+}
+
+const faviconFile = await resolvePublicFile('favicon.png');
+if (faviconFile) {
 	staticRoutes['/favicon.png'] = new Response(faviconFile, {
 		headers: {
 			...staticHeaders,
@@ -21,8 +36,8 @@ if (await faviconFile.exists()) {
 	});
 }
 
-const stylesheetFile = Bun.file('public/assets/application.css');
-if (await stylesheetFile.exists()) {
+const stylesheetFile = await resolvePublicFile('assets/application.css');
+if (stylesheetFile) {
 	staticRoutes['/assets/application.css'] = new Response(stylesheetFile, {
 		headers: {
 			...staticHeaders,

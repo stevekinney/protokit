@@ -1,3 +1,5 @@
+import { cpSync, rmSync } from 'node:fs';
+
 const styleBuildResult = Bun.spawnSync(
 	[
 		'bunx',
@@ -19,14 +21,7 @@ if (styleBuildResult.exitCode !== 0) {
 	process.exit(styleBuildResult.exitCode);
 }
 
-const cleanResult = Bun.spawnSync(['rm', '-rf', 'dist'], {
-	stdout: 'inherit',
-	stderr: 'inherit',
-	stdin: 'inherit',
-});
-if (cleanResult.exitCode !== 0) {
-	process.exit(cleanResult.exitCode);
-}
+rmSync('dist', { recursive: true, force: true });
 
 const serverBuildOutput = await Bun.build({
 	entrypoints: ['src/server.ts'],
@@ -42,14 +37,6 @@ if (!serverBuildOutput.success) {
 	process.exit(1);
 }
 
-const copyPublicDirectoryResult = Bun.spawnSync(['cp', '-R', 'public', 'dist/public'], {
-	stdout: 'inherit',
-	stderr: 'inherit',
-	stdin: 'inherit',
-});
-
-if (copyPublicDirectoryResult.exitCode !== 0) {
-	process.exit(copyPublicDirectoryResult.exitCode);
-}
+cpSync('public', 'dist/public', { recursive: true });
 
 export {};
