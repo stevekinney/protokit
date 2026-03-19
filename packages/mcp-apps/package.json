@@ -3,7 +3,9 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"exports": {},
+	"exports": {
+		"./*": "./dist/*.js"
+	},
 	"scripts": {
 		"build": "bun run src/build.ts",
 		"typecheck": "tsc --noEmit",

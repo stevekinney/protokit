@@ -22,11 +22,31 @@ async function buildStyles() {
 await buildStyles();
 
 let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+let building = false;
+let rebuildQueued = false;
+
+async function scheduledBuild() {
+	if (building) {
+		rebuildQueued = true;
+		return;
+	}
+	building = true;
+	try {
+		await buildStyles();
+	} finally {
+		building = false;
+		if (rebuildQueued) {
+			rebuildQueued = false;
+			await scheduledBuild();
+		}
+	}
+}
+
 const watcher = watch('src', { recursive: true }, (_event, filename) => {
 	if (!filename) return;
 	if (filename.endsWith('.css') || filename.endsWith('.tsx') || filename.endsWith('.ts')) {
 		clearTimeout(rebuildTimer);
-		rebuildTimer = setTimeout(buildStyles, 100);
+		rebuildTimer = setTimeout(scheduledBuild, 100);
 	}
 });
 
