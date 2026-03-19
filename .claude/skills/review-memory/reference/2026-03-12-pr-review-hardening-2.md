@@ -1,3 +1,0 @@
-- Do not auto-link or relink external identity subjects based only on email match; require subject match or explicit account-linking flow.
-- Keep web request dispatch files thin and delegate domain-specific handlers to dedicated route modules to preserve reviewability.
-- Shared request context and HTML response helpers reduce coupling when decomposing large route files.

@@ -1,5 +1,0 @@
-- Cookie parsing must never throw on malformed percent-encoding from request headers; decode defensively and fall back to raw values.
-- PKCE `code_challenge_method` validation must be enforced at every authorization-code creation path, not only in initial authorize rendering.
-- Static asset serving for Bun bundles should support both source-tree and built-artifact layouts to avoid runtime path drift.
-- Static file requests should bypass session hydration to avoid unnecessary database access.
-- When enforcing one-to-one external identity linkage, check for existing user-linked identity rows before insert to prevent unique constraint failures.
