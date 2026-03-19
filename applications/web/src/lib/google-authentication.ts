@@ -33,7 +33,7 @@ function sanitizeCallbackPath(value: string | null): string {
 		return '/';
 	}
 
-	if (value.startsWith('//')) {
+	if (value.startsWith('//') || value.startsWith('/\\')) {
 		return '/';
 	}
 
