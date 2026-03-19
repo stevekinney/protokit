@@ -1,11 +1,24 @@
+import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createApplicationHtml } from './html-shell.js';
 
 const sourceDirectory = resolve(import.meta.dirname, 'applications');
 const outputDirectory = resolve(import.meta.dirname, '..', 'dist');
 
+mkdirSync(outputDirectory, { recursive: true });
+
+if (!existsSync(sourceDirectory)) {
+	console.log('No applications directory found — nothing to build.');
+	process.exit(0);
+}
+
 const glob = new Bun.Glob('*/');
 const applicationNames = [...glob.scanSync(sourceDirectory)].map((match) => match.slice(0, -1));
+
+if (applicationNames.length === 0) {
+	console.log('No applications found — nothing to build.');
+	process.exit(0);
+}
 
 let hasErrors = false;
 

@@ -22,7 +22,7 @@ async function buildStyles() {
 await buildStyles();
 
 let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
-watch('src', { recursive: true }, (_event, filename) => {
+const watcher = watch('src', { recursive: true }, (_event, filename) => {
 	if (!filename) return;
 	if (filename.endsWith('.css') || filename.endsWith('.tsx') || filename.endsWith('.ts')) {
 		clearTimeout(rebuildTimer);
@@ -36,8 +36,14 @@ const serverProcess = Bun.spawn(['bun', '--watch', 'src/server.ts'], {
 	stdin: 'inherit',
 });
 
-process.on('SIGINT', () => serverProcess.kill());
-process.on('SIGTERM', () => serverProcess.kill());
+function shutdown() {
+	clearTimeout(rebuildTimer);
+	watcher.close();
+	serverProcess.kill();
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 await serverProcess.exited;
 
