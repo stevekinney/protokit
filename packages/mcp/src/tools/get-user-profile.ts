@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { createToolJsonResponse, createToolErrorResponse } from '../tool-response.js';
 
 export const getUserProfileTool = {
 	name: 'get_user_profile' as const,
@@ -23,32 +24,19 @@ export const getUserProfileTool = {
 			requestLogger.info({ durationMs }, 'Tool completed');
 
 			if (!user) {
-				return {
-					content: [{ type: 'text' as const, text: 'User not found.' }],
-					isError: true,
-				};
+				return createToolErrorResponse('User not found.');
 			}
 
-			return {
-				content: [
-					{
-						type: 'text' as const,
-						text: JSON.stringify({
-							id: user.id,
-							name: user.name,
-							email: user.email,
-							image: user.image,
-						}),
-					},
-				],
-			};
+			return createToolJsonResponse({
+				id: user.id,
+				name: user.name,
+				email: user.email,
+				image: user.image,
+			});
 		} catch (error) {
 			const durationMs = Date.now() - start;
 			requestLogger.error({ err: error, durationMs }, 'Tool failed');
-			return {
-				content: [{ type: 'text' as const, text: 'Failed to retrieve user profile.' }],
-				isError: true,
-			};
+			return createToolErrorResponse('Failed to retrieve user profile.');
 		}
 	},
 };

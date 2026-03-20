@@ -8,6 +8,8 @@ import { handleMcpRequest } from '@web/lib/mcp-handler';
 import { createMcpCorsHeaders, validateMcpRequestOrigin } from '@web/lib/mcp-origin-validation';
 import { mcpProtocolVersion } from '@web/lib/mcp-protocol-constants';
 import { createMcpProtocolErrorResponse } from '@web/lib/mcp-protocol-error-response';
+import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { enforceMcpRateLimit } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
 import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-authorization-policy';
 
@@ -115,8 +117,16 @@ export async function handleMcpRequestWithAuthentication(
 		return authenticationResult;
 	}
 
-	const response = await handleMcpRequest(context.request, authenticationResult.userId);
 	const mcpCorsHeaders = createMcpCorsHeaders(context.request);
+	const rateLimitResult = await enforceMcpRateLimit({ userId: authenticationResult.userId });
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
+			...mcpCorsHeaders,
+			'MCP-Protocol-Version': mcpProtocolVersion,
+		});
+	}
+
+	const response = await handleMcpRequest(context.request, authenticationResult.userId);
 	for (const [headerName, headerValue] of Object.entries(mcpCorsHeaders)) {
 		response.headers.set(headerName, headerValue);
 	}

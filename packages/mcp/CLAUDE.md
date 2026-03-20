@@ -9,7 +9,7 @@ MCP server factory, tool/resource/prompt definitions, and shared logger.
 - `src/resources/` — One file per resource. Each exports a resource object with `name`, `uri`, `description`, `mimeType`, and `handler`.
 - `src/prompts/` — One file per prompt. Each exports a prompt object with `name`, `description`, `arguments`, and `handler`.
 - `src/logger.ts` — Shared pino logger. JSON in production, pretty-print in development.
-- `src/env.ts` — Owns `MCP_TOKEN_TTL_SECONDS`.
+- `src/env.ts` — Owns `MCP_CONFORMANCE_MODE` and `LOG_LEVEL`.
 - `src/markdown.d.ts` — Type declarations for importing `.md` files as strings (used by prompt templates and server instructions).
 - `src/instructions.md` — Server instructions passed to the MCP client on initialize.
 

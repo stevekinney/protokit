@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { createToolTextResponse } from '../tool-response.js';
 
 const auditEvents = Array.from({ length: 50 }, (_, index) => ({
 	identifier: `event-${String(index + 1).padStart(3, '0')}`,
@@ -24,12 +25,7 @@ export const listAuditEventsTool = {
 		const nextCursor = end < auditEvents.length ? String(end) : null;
 
 		return {
-			content: [
-				{
-					type: 'text' as const,
-					text: `Returned ${end - start} audit events.`,
-				},
-			],
+			...createToolTextResponse(`Returned ${end - start} audit events.`),
 			structuredContent: {
 				items: auditEvents.slice(start, end),
 				next_cursor: nextCursor,

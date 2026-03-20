@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { logger } from '@template/mcp/logger';
 import { getBaseUrl } from '@web/lib/base-url';
 import { createCorsPreflightResponse, oauthCorsHeaders } from '@web/lib/cors';
 import { createHtmlResponse } from '@web/lib/html-response';
@@ -20,15 +22,28 @@ import {
 	handleOauthProtectedResourceMcpMetadataGet,
 	handleOauthProtectedResourceMetadataGet,
 	handleOauthRegisterPost,
+	handleOauthRevokePost,
 	handleOauthTokenPost,
 } from '@web/routes/oauth-routes';
 import { HomePage } from '@web/views/home-page';
+
+const defaultContentSecurityPolicy =
+	"default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
+
+function isHtmlResponse(response: Response): boolean {
+	const contentType = response.headers.get('content-type') ?? '';
+	return contentType.includes('text/html');
+}
 
 function withSecurityHeaders(inputResponse: Response, requestPathname: string): Response {
 	inputResponse.headers.set('X-Content-Type-Options', 'nosniff');
 	inputResponse.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
 	if (requestPathname === '/oauth/authorize') {
 		inputResponse.headers.set('X-Frame-Options', 'DENY');
+	}
+
+	if (isHtmlResponse(inputResponse)) {
+		inputResponse.headers.set('Content-Security-Policy', defaultContentSecurityPolicy);
 	}
 
 	return inputResponse;
@@ -106,6 +121,14 @@ async function dispatch(context: RequestContext): Promise<Response> {
 		return handleOauthTokenPost(context);
 	}
 
+	if (requestUrl.pathname === '/oauth/revoke' && request.method === 'OPTIONS') {
+		return createCorsPreflightResponse(oauthCorsHeaders);
+	}
+
+	if (requestUrl.pathname === '/oauth/revoke' && request.method === 'POST') {
+		return handleOauthRevokePost(context);
+	}
+
 	if (
 		requestUrl.pathname === '/.well-known/oauth-authorization-server' &&
 		(request.method === 'GET' || request.method === 'OPTIONS')
@@ -151,7 +174,9 @@ export async function handleApplicationRequest(
 	request: Request,
 	input?: { clientAddress?: string },
 ): Promise<Response> {
+	const requestId = randomUUID();
 	const requestUrl = new URL(request.url);
+	const startTime = Date.now();
 
 	const staticFileResponse = await serveStaticFile(requestUrl.pathname);
 	if (staticFileResponse) {
@@ -167,6 +192,36 @@ export async function handleApplicationRequest(
 		sessionToken: session.sessionToken,
 	};
 
-	const response = await dispatch(context);
+	let response: Response;
+	try {
+		response = await dispatch(context);
+	} catch (error) {
+		logger.error(
+			{ err: error, requestId, method: request.method, path: requestUrl.pathname },
+			'Unhandled error in request dispatch',
+		);
+		response = jsonResponse(
+			{ error: 'internal_error', error_description: 'An unexpected error occurred' },
+			{ status: 500 },
+		);
+	}
+
+	const durationMs = Date.now() - startTime;
+	const isHealthCheck = requestUrl.pathname === '/health';
+	if (!isHealthCheck) {
+		logger.info(
+			{
+				requestId,
+				method: request.method,
+				path: requestUrl.pathname,
+				status: response.status,
+				durationMs,
+				userId: context.user?.id,
+			},
+			'Request handled',
+		);
+	}
+
+	response.headers.set('X-Request-Id', requestId);
 	return withSecurityHeaders(response, requestUrl.pathname);
 }

@@ -13,7 +13,7 @@ function buildRateLimitKey(route: string, identifier: string): string {
 }
 
 async function consumeRateLimit(input: {
-	route: 'oauth_register' | 'oauth_token';
+	route: 'oauth_register' | 'oauth_token' | 'mcp';
 	identifier: string;
 	maximumRequests: number;
 	windowSeconds: number;
@@ -73,5 +73,16 @@ export async function enforceOauthTokenRateLimit(input: {
 		identifier,
 		maximumRequests: environment.RATE_LIMIT_TOKEN_MAX,
 		windowSeconds: environment.RATE_LIMIT_TOKEN_WINDOW_SECONDS,
+	});
+}
+
+export async function enforceMcpRateLimit(input: {
+	userId: string;
+}): Promise<SlidingWindowRateLimiterResult> {
+	return consumeRateLimit({
+		route: 'mcp',
+		identifier: input.userId,
+		maximumRequests: environment.RATE_LIMIT_MCP_MAX,
+		windowSeconds: environment.RATE_LIMIT_MCP_WINDOW_SECONDS,
 	});
 }

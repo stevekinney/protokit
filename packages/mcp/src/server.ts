@@ -42,6 +42,9 @@ export function createMcpServer(context: {
 			capabilities: {
 				logging: {},
 				tools: { listChanged: true },
+				// Resource subscriptions require a persistent connection and server-side change
+				// detection (e.g., polling or database triggers). Enable by setting subscribe: true
+				// and implementing notification logic in each resource handler.
 				resources: { listChanged: true, subscribe: false },
 				prompts: { listChanged: true },
 				...(enableConformanceMode ? { sampling: {}, elicitation: {} } : {}),

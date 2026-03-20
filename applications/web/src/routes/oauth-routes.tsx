@@ -2,7 +2,6 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, gt, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { database, schema } from '@template/database';
-import { environment as mcpEnvironment } from '@template/mcp/env';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { oauthCorsHeaders } from '@web/lib/cors';
@@ -80,8 +79,8 @@ function parseRequestBodyForTokenEndpoint(request: Request): Promise<Record<stri
 function issueTokens() {
 	const accessToken = randomBytes(48).toString('hex');
 	const refreshToken = randomBytes(48).toString('hex');
-	const tokenTimeToLiveSeconds = mcpEnvironment.MCP_TOKEN_TTL_SECONDS;
-	const refreshTimeToLiveSeconds = mcpEnvironment.MCP_REFRESH_TOKEN_TTL_SECONDS;
+	const tokenTimeToLiveSeconds = environment.MCP_TOKEN_TTL_SECONDS;
+	const refreshTimeToLiveSeconds = environment.MCP_REFRESH_TOKEN_TTL_SECONDS;
 
 	return {
 		accessToken,
@@ -127,7 +126,6 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	const codeChallenge = context.requestUrl.searchParams.get('code_challenge');
 	const codeChallengeMethod = context.requestUrl.searchParams.get('code_challenge_method');
 	const state = context.requestUrl.searchParams.get('state') || '';
-	const scope = context.requestUrl.searchParams.get('scope') || '';
 
 	if (!clientId || !redirectUri || responseType !== 'code' || !codeChallenge) {
 		return createHtmlResponse({
@@ -185,7 +183,6 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 				codeChallenge={codeChallenge}
 				codeChallengeMethod={codeChallengeMethod || 'S256'}
 				state={state}
-				scope={scope}
 				user={context.user}
 			/>
 		),
@@ -203,7 +200,6 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 	const codeChallenge = getFormString(formData, 'code_challenge');
 	const codeChallengeMethod = getFormString(formData, 'code_challenge_method') || 'S256';
 	const state = getFormString(formData, 'state');
-	const scope = getFormString(formData, 'scope') || '';
 
 	if (!clientId || !redirectUri || !codeChallenge) {
 		return jsonResponse(
@@ -238,7 +234,6 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 		redirectUri,
 		codeChallenge,
 		codeChallengeMethod,
-		scope,
 		state,
 		expiresAt: new Date(Date.now() + 10 * 60 * 1000),
 	});
@@ -798,6 +793,90 @@ async function handleOauthTokenClientCredentialsGrant(
 	);
 }
 
+export async function handleOauthRevokePost(context: RequestContext): Promise<Response> {
+	const rateLimitResult = await enforceOauthTokenRateLimit({
+		request: context.request,
+		fallbackClientAddress: context.clientAddress,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
+			'Cache-Control': 'no-store',
+			Pragma: 'no-cache',
+			...oauthCorsHeaders,
+		});
+	}
+
+	const revocationResponseHeaders = {
+		'Cache-Control': 'no-store',
+		Pragma: 'no-cache',
+		...oauthCorsHeaders,
+	};
+
+	let body: Record<string, string>;
+	try {
+		body = await parseRequestBodyForTokenEndpoint(context.request);
+	} catch {
+		return jsonResponse(
+			{ error: 'unsupported_content_type' },
+			{ status: 400, headers: revocationResponseHeaders },
+		);
+	}
+
+	const { token, token_type_hint } = body;
+	if (!token) {
+		return jsonResponse(
+			{ error: 'invalid_request', error_description: 'Missing token parameter' },
+			{ status: 400, headers: revocationResponseHeaders },
+		);
+	}
+
+	const tokenHash = hashCredential(token);
+
+	if (token_type_hint !== 'refresh_token') {
+		const [revokedAccessToken] = await database
+			.update(schema.oauthTokens)
+			.set({ revokedAt: new Date() })
+			.where(
+				and(eq(schema.oauthTokens.accessToken, tokenHash), isNull(schema.oauthTokens.revokedAt)),
+			)
+			.returning();
+
+		if (revokedAccessToken) {
+			return new Response(null, { status: 200, headers: revocationResponseHeaders });
+		}
+	}
+
+	if (token_type_hint !== 'access_token') {
+		const [revokedRefreshToken] = await database
+			.update(schema.oauthRefreshTokens)
+			.set({ revokedAt: new Date() })
+			.where(
+				and(
+					eq(schema.oauthRefreshTokens.refreshToken, tokenHash),
+					isNull(schema.oauthRefreshTokens.revokedAt),
+				),
+			)
+			.returning();
+
+		if (revokedRefreshToken) {
+			await database
+				.update(schema.oauthTokens)
+				.set({ revokedAt: new Date() })
+				.where(
+					and(
+						eq(schema.oauthTokens.accessToken, revokedRefreshToken.accessTokenHash),
+						isNull(schema.oauthTokens.revokedAt),
+					),
+				);
+
+			return new Response(null, { status: 200, headers: revocationResponseHeaders });
+		}
+	}
+
+	// RFC 7009: Return 200 even if token was not found or already revoked
+	return new Response(null, { status: 200, headers: revocationResponseHeaders });
+}
+
 export async function handleOauthTokenPost(context: RequestContext): Promise<Response> {
 	let body: Record<string, string>;
 	try {
@@ -862,6 +941,7 @@ export async function handleOauthAuthorizationMetadataGet(
 			authorization_endpoint: `${baseUrl}/oauth/authorize`,
 			token_endpoint: `${baseUrl}/oauth/token`,
 			registration_endpoint: `${baseUrl}/oauth/register`,
+			revocation_endpoint: `${baseUrl}/oauth/revoke`,
 			response_types_supported: ['code'],
 			grant_types_supported: environment.MCP_ENABLE_CLIENT_CREDENTIALS
 				? ['authorization_code', 'refresh_token', 'client_credentials']

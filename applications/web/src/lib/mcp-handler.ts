@@ -191,7 +191,7 @@ async function verifySessionOwnership(input: {
 	return { status: 'ok', transport: activeTransportEntry.transport };
 }
 
-setInterval(() => {
+const evictionInterval = setInterval(() => {
 	const now = Date.now();
 	for (const [sessionId, entry] of activeTransports) {
 		if (now - entry.lastActivity > SESSION_IDLE_TIMEOUT_MS) {
@@ -202,6 +202,17 @@ setInterval(() => {
 		}
 	}
 }, EVICTION_INTERVAL_MS);
+
+export async function shutdownMcpTransports(): Promise<void> {
+	clearInterval(evictionInterval);
+	const closePromises: Promise<void>[] = [];
+	for (const [sessionId, entry] of activeTransports) {
+		logger.info({ sessionId, userId: entry.userId }, 'Closing MCP session for shutdown');
+		closePromises.push(entry.transport.close().catch(() => {}));
+	}
+	await Promise.allSettled(closePromises);
+	activeTransports.clear();
+}
 
 export async function handleMcpRequest(request: Request, userId: string): Promise<Response> {
 	const requestLogger = logger.child({ component: 'mcp-handler', userId, instanceIdentifier });
@@ -317,10 +328,17 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 				enableConformanceMode: environment.MCP_CONFORMANCE_MODE,
 			});
 			await statelessServer.connect(statelessTransport);
-			return attachCommonMcpResponseHeaders(
-				await statelessTransport.handleRequest(request, { parsedBody: postPayload.parsedBody }),
-				request,
-			);
+			try {
+				return attachCommonMcpResponseHeaders(
+					await statelessTransport.handleRequest(request, {
+						parsedBody: postPayload.parsedBody,
+					}),
+					request,
+				);
+			} finally {
+				await statelessTransport.close().catch(() => {});
+				await statelessServer.close().catch(() => {});
+			}
 		}
 
 		if (activeTransports.size >= MAX_ACTIVE_SESSIONS) {
@@ -329,7 +347,10 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 				status: 503,
 				error: 'internal_error',
 				errorDescription: 'Too many active sessions.',
-				headers: buildMcpResponseHeaders(request),
+				headers: {
+					...buildMcpResponseHeaders(request),
+					'Retry-After': '30',
+				},
 			});
 		}
 

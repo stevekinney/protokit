@@ -14,7 +14,6 @@ type OAuthAuthorizePageInput =
 			codeChallenge: string;
 			codeChallengeMethod: string;
 			state: string;
-			scope: string;
 			user: ApplicationUser;
 	  };
 
@@ -44,11 +43,6 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 					{input.clientName} is requesting access as{' '}
 					<strong className="text-slate-900">{input.user.email}</strong>.
 				</p>
-				{input.scope ? (
-					<p className="mt-2 text-sm text-slate-600">
-						Requested scopes: <code className="text-indigo-700">{input.scope}</code>
-					</p>
-				) : null}
 
 				<div className="mt-8 flex flex-wrap items-center gap-4">
 					<form method="POST" action="/oauth/authorize/approve" className="inline">
@@ -57,7 +51,6 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 						<input type="hidden" name="code_challenge" value={input.codeChallenge} />
 						<input type="hidden" name="code_challenge_method" value={input.codeChallengeMethod} />
 						<input type="hidden" name="state" value={input.state} />
-						<input type="hidden" name="scope" value={input.scope} />
 						<button
 							type="submit"
 							className="rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-500"
