@@ -41,7 +41,9 @@ function sanitizeCallbackPath(value: string | null): string {
 }
 
 function createSignature(payload: string): string {
-	return createHmac('sha256', environment.BETTER_AUTH_SECRET).update(payload).digest('base64url');
+	return createHmac('sha256', environment.SESSION_SIGNING_SECRET)
+		.update(payload)
+		.digest('base64url');
 }
 
 function encodeGoogleStatePayload(payload: GoogleOauthCookiePayload): string {

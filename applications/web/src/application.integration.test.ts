@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it } from 'bun:test';
 process.env.SKIP_ENV_VALIDATION = 'true';
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
-process.env.BETTER_AUTH_SECRET =
-	process.env.BETTER_AUTH_SECRET ?? 'development-session-secret-with-at-least-32-characters';
+process.env.SESSION_SIGNING_SECRET =
+	process.env.SESSION_SIGNING_SECRET ?? 'development-session-secret-with-at-least-32-characters';
 process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 process.env.MCP_ALLOWED_ORIGINS = process.env.MCP_ALLOWED_ORIGINS ?? 'http://localhost:3000';
 

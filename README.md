@@ -38,7 +38,7 @@ bun install
 DATABASE_URL=<pooled connection string>
 DATABASE_URL_UNPOOLED=<direct connection string>
 REDIS_URL=<redis connection string>
-BETTER_AUTH_SECRET=<random string, at least 32 characters>
+SESSION_SIGNING_SECRET=<random string, at least 32 characters>
 GOOGLE_CLIENT_ID=<google oauth client id>
 GOOGLE_CLIENT_SECRET=<google oauth client secret>
 MCP_ALLOWED_ORIGINS=http://localhost:3000
@@ -63,7 +63,7 @@ The web server runs on `http://localhost:3000`.
 
 Required in `applications/web`:
 
-- `BETTER_AUTH_SECRET` (used as session/signing secret)
+- `SESSION_SIGNING_SECRET` (used as session/signing secret)
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `REDIS_URL`

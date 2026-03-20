@@ -135,14 +135,14 @@ async function setupGoogle() {
 async function setupSessionConfiguration() {
 	console.log('\n--- Session Configuration ---\n');
 
-	const existingSecret = getEnvironmentValue('BETTER_AUTH_SECRET');
+	const existingSecret = getEnvironmentValue('SESSION_SIGNING_SECRET');
 
 	if (existingSecret) {
-		console.log('BETTER_AUTH_SECRET already exists in .env.local.');
+		console.log('SESSION_SIGNING_SECRET already exists in .env.local.');
 	} else {
 		const secret = randomBytes(32).toString('hex');
-		appendToEnvironmentFile('BETTER_AUTH_SECRET', secret);
-		console.log('Generated BETTER_AUTH_SECRET and written to .env.local');
+		appendToEnvironmentFile('SESSION_SIGNING_SECRET', secret);
+		console.log('Generated SESSION_SIGNING_SECRET and written to .env.local');
 	}
 
 	if (!getEnvironmentValue('SESSION_COOKIE_NAME')) {

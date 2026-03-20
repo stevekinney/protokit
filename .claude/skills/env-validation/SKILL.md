@@ -6,11 +6,11 @@ Patterns for managing environment variables with `@t3-oss/env-core`.
 
 Each package owns its environment variables in its own `src/env.ts`:
 
-| Package             | Variables                                                                           |
-| ------------------- | ----------------------------------------------------------------------------------- |
-| `packages/database` | `DATABASE_URL`, `DATABASE_URL_UNPOOLED`                                             |
-| `packages/mcp`      | `MCP_TOKEN_TTL_SECONDS`                                                             |
-| `applications/web`  | `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| Package             | Variables                                                            |
+| ------------------- | -------------------------------------------------------------------- |
+| `packages/database` | `DATABASE_URL`, `DATABASE_URL_UNPOOLED`                              |
+| `packages/mcp`      | `MCP_TOKEN_TTL_SECONDS`                                              |
+| `applications/web`  | `SESSION_SIGNING_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
 
 ## Adding a New Variable
 
