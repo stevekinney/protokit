@@ -15,3 +15,15 @@ export {
 	isLoopbackHostname,
 } from './localhost-request-validation.js';
 export { EXTENSION_ID, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
+export {
+	readProgressToken,
+	readSessionIdentifier,
+	readNotificationSender,
+	readRequestSender,
+	stringifyUnknown,
+	parseSampledText,
+	assertSamplingSupport,
+} from './handler-context.js';
+export { metricsCollector } from './metrics.js';
+export type { ToolMetricEntry, MetricsSnapshot } from './metrics.js';
+export type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';

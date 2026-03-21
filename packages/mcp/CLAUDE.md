@@ -53,10 +53,45 @@ MCP Apps are interactive HTML interfaces rendered in sandboxed iframes inside ho
 2. Add the app entry to `packages/mcp-apps/package.json` exports: `"./{app-name}": "./dist/{app-name}.js"`
 3. Create a resource in `src/resources/` that imports the built HTML: `import html from '@template/mcp-apps/{app-name}'`
    - Use `RESOURCE_MIME_TYPE` from `@modelcontextprotocol/ext-apps/server` for the mimeType
-   - Add a type declaration in `src/application-html.d.ts` for the new import
+   - Type declarations are auto-generated during build (`dist/{app-name}.d.ts`). Ensure `@template/mcp-apps` is built before importing
 4. Create a tool in `src/tools/` with `_meta: { ui: { resourceUri: 'ui://{app-name}' } }`
 5. Optionally add app-only tools with `visibility: ['app']` in `_meta.ui` — these are callable by the app via `callServerTool()` but hidden from the LLM
 6. Register everything in `src/server.ts`, re-export from `src/index.ts`
+
+## Testing
+
+Run tests with `bun test` from this package directory.
+
+### Test Utilities
+
+Import from `@template/mcp/testing` (or `../testing/...` within this package):
+
+- `createTestContext(overrides?)` — returns `{ userId: 'test-user-00000000-...' }` by default
+- `expectToolSuccess(result)` — asserts `content` array exists, `isError` is not true
+- `expectToolError(result)` — asserts `content` array exists, `isError` is true
+- `expectToolJsonContent(result)` — calls `expectToolSuccess`, parses `content[0].text` as JSON, returns parsed value
+
+### Test Layers
+
+1. **Shape tests** — verify name, description, schema, handler exist (all tools/resources/prompts have these)
+2. **Handler tests (pure)** — invoke handler directly, no mocks needed (e.g., `list-audit-events`)
+3. **Handler tests (with `mock.module`)** — mock `@template/database` with chainable `.select().from().where().limit()`, test success/not-found/error paths (e.g., `get-user-profile`, `user-profile` resource)
+
+### Mock Pattern for Database
+
+```typescript
+mock.module('@template/database', () => ({
+	database: {
+		select: () => ({
+			from: () => ({ where: () => ({ limit: () => Promise.resolve([mockUser]) }) }),
+		}),
+	},
+	schema: { users: { id: 'id' } },
+}));
+mock.module('drizzle-orm', () => ({
+	eq: (column: unknown, value: unknown) => ({ column, value }),
+}));
+```
 
 ## Logging Conventions
 

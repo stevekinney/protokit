@@ -8,7 +8,6 @@ export const getUserProfileTool = {
 	inputSchema: z.object({}),
 	handler: async (_input: Record<string, never>, context: { userId: string }) => {
 		const requestLogger = logger.child({ tool: 'get_user_profile', userId: context.userId });
-		const start = Date.now();
 
 		try {
 			const { database, schema } = await import('@template/database');
@@ -19,9 +18,6 @@ export const getUserProfileTool = {
 				.from(schema.users)
 				.where(eq(schema.users.id, context.userId))
 				.limit(1);
-
-			const durationMs = Date.now() - start;
-			requestLogger.info({ durationMs }, 'Tool completed');
 
 			if (!user) {
 				return createToolErrorResponse('User not found.');
@@ -34,8 +30,7 @@ export const getUserProfileTool = {
 				image: user.image,
 			});
 		} catch (error) {
-			const durationMs = Date.now() - start;
-			requestLogger.error({ err: error, durationMs }, 'Tool failed');
+			requestLogger.error({ err: error }, 'Tool failed');
 			return createToolErrorResponse('Failed to retrieve user profile.');
 		}
 	},

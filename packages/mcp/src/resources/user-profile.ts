@@ -7,7 +7,6 @@ export const userProfileResource = {
 	mimeType: 'application/json',
 	handler: async (uri: URL, context: { userId: string }) => {
 		const requestLogger = logger.child({ resource: 'user_profile', userId: context.userId });
-		const start = Date.now();
 
 		try {
 			const { database, schema } = await import('@template/database');
@@ -18,9 +17,6 @@ export const userProfileResource = {
 				.from(schema.users)
 				.where(eq(schema.users.id, context.userId))
 				.limit(1);
-
-			const durationMs = Date.now() - start;
-			requestLogger.info({ durationMs }, 'Resource read completed');
 
 			if (!user) {
 				return {
@@ -49,8 +45,7 @@ export const userProfileResource = {
 				],
 			};
 		} catch (error) {
-			const durationMs = Date.now() - start;
-			requestLogger.error({ err: error, durationMs }, 'Resource read failed');
+			requestLogger.error({ err: error }, 'Resource read failed');
 			return {
 				contents: [
 					{

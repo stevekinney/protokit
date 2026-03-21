@@ -13,6 +13,7 @@ import {
 	handleSignOut,
 } from '@web/routes/google-authentication-routes';
 import { handleHealthGet } from '@web/routes/health-routes';
+import { handleMetricsGet } from '@web/routes/metrics-routes';
 import { handleMcpRequestWithAuthentication } from '@web/routes/mcp-routes';
 import {
 	handleOauthAuthorizationMetadataGet,
@@ -163,6 +164,10 @@ async function dispatch(context: RequestContext): Promise<Response> {
 		return handleHealthGet();
 	}
 
+	if (requestUrl.pathname === '/metrics' && request.method === 'GET') {
+		return handleMetricsGet();
+	}
+
 	if (requestUrl.pathname === '/mcp') {
 		return handleMcpRequestWithAuthentication(context);
 	}
@@ -187,6 +192,7 @@ export async function handleApplicationRequest(
 	const context: RequestContext = {
 		request,
 		requestUrl,
+		requestId,
 		clientAddress: input?.clientAddress,
 		user: session.user,
 		sessionToken: session.sessionToken,

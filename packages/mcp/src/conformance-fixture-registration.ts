@@ -5,11 +5,18 @@ import { completable } from '@modelcontextprotocol/sdk/server/completable.js';
 import {
 	CreateMessageResultSchema,
 	ElicitResultSchema,
-	ErrorCode,
-	McpError,
 	SubscribeRequestSchema,
 	UnsubscribeRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import {
+	readProgressToken,
+	readSessionIdentifier,
+	readNotificationSender,
+	readRequestSender,
+	stringifyUnknown,
+	parseSampledText,
+} from './handler-context.js';
+import type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
 
 const oneByOnePngBase64 =
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5m0QAAAABJRU5ErkJggg==';
@@ -22,101 +29,30 @@ function delay(milliseconds: number): Promise<void> {
 	});
 }
 
-function readProgressToken(extra: unknown): string | number | undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	const meta = (extra as { _meta?: { progressToken?: string | number } })._meta;
-	return meta?.progressToken;
-}
-
-function readSessionIdentifier(extra: unknown): string | undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	return (extra as { sessionId?: string }).sessionId;
-}
-
-function readNotificationSender(
-	extra: unknown,
-):
-	| ((notification: { method: string; params: Record<string, unknown> }) => Promise<void>)
-	| undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	const sendNotification = (extra as { sendNotification?: unknown }).sendNotification;
-	if (typeof sendNotification !== 'function') return undefined;
-	return sendNotification as (notification: {
-		method: string;
-		params: Record<string, unknown>;
-	}) => Promise<void>;
-}
-
-function readRequestSender(
-	extra: unknown,
-):
-	| ((
-			request: { method: string; params: Record<string, unknown> },
-			resultSchema: unknown,
-	  ) => Promise<unknown>)
-	| undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	const sendRequest = (extra as { sendRequest?: unknown }).sendRequest;
-	if (typeof sendRequest !== 'function') return undefined;
-	return sendRequest as (
-		request: { method: string; params: Record<string, unknown> },
-		resultSchema: unknown,
-	) => Promise<unknown>;
-}
-
-function stringifyUnknown(value: unknown): string {
-	if (typeof value === 'string') return value;
-	try {
-		return JSON.stringify(value);
-	} catch {
-		return String(value);
-	}
-}
-
-function parseSampledText(result: unknown): string {
-	const content = (result as { content?: unknown }).content;
-	if (Array.isArray(content) && content.length > 0) {
-		const first = content[0] as { text?: unknown };
-		if (typeof first?.text === 'string') {
-			return first.text;
-		}
-	}
-	if (content && typeof content === 'object') {
-		const text = (content as { text?: unknown }).text;
-		if (typeof text === 'string') {
-			return text;
-		}
-	}
-	return stringifyUnknown(result);
-}
-
-export function registerConformanceFixtures(server: McpServer): void {
+export function registerConformanceFixtures(
+	server: McpServer,
+	subscriptionBackend?: ResourceSubscriptionBackend,
+): void {
 	const resourceSubscriptions = new Map<string, Set<string>>();
 
-	server.server.registerCapabilities({
-		resources: {
-			subscribe: true,
-			listChanged: true,
-		},
-	});
-
-	server.server.setRequestHandler(SubscribeRequestSchema, async (request, extra) => {
-		const sessionIdentifier = extra.sessionId ?? 'stateless';
-		const subscriptionsForSession =
-			resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
-		subscriptionsForSession.add(request.params.uri);
-		resourceSubscriptions.set(sessionIdentifier, subscriptionsForSession);
-		return {};
-	});
-
-	server.server.setRequestHandler(UnsubscribeRequestSchema, async (request, extra) => {
-		const sessionIdentifier = extra.sessionId ?? 'stateless';
-		const subscriptionsForSession =
-			resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
-		subscriptionsForSession.delete(request.params.uri);
-		resourceSubscriptions.set(sessionIdentifier, subscriptionsForSession);
-		return {};
-	});
+	if (!subscriptionBackend) {
+		server.server.setRequestHandler(SubscribeRequestSchema, async (request, extra) => {
+			const sessionIdentifier = extra.sessionId ?? 'stateless';
+			const subscriptionsForSession =
+				resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
+			subscriptionsForSession.add(request.params.uri);
+			resourceSubscriptions.set(sessionIdentifier, subscriptionsForSession);
+			return {};
+		});
+		server.server.setRequestHandler(UnsubscribeRequestSchema, async (request, extra) => {
+			const sessionIdentifier = extra.sessionId ?? 'stateless';
+			const subscriptionsForSession =
+				resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
+			subscriptionsForSession.delete(request.params.uri);
+			resourceSubscriptions.set(sessionIdentifier, subscriptionsForSession);
+			return {};
+		});
+	}
 
 	server.registerTool(
 		'test_image_content',
@@ -710,11 +646,20 @@ export function registerConformanceFixtures(server: McpServer): void {
 			inputSchema: z.object({}),
 		},
 		async (_input, extra) => {
-			const sessionIdentifier = readSessionIdentifier(extra) ?? 'stateless';
-			const subscriptionsForSession =
-				resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
-			for (const uri of subscriptionsForSession) {
-				await server.server.sendResourceUpdated({ uri });
+			if (subscriptionBackend) {
+				const sessionIdentifier = readSessionIdentifier(extra) ?? 'stateless';
+				const subscriptionsForSession =
+					resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
+				for (const uri of subscriptionsForSession) {
+					await subscriptionBackend.publishResourceUpdate(uri);
+				}
+			} else {
+				const sessionIdentifier = readSessionIdentifier(extra) ?? 'stateless';
+				const subscriptionsForSession =
+					resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
+				for (const uri of subscriptionsForSession) {
+					await server.server.sendResourceUpdated({ uri });
+				}
 			}
 			return {
 				content: [
@@ -726,11 +671,4 @@ export function registerConformanceFixtures(server: McpServer): void {
 			};
 		},
 	);
-}
-
-export function assertSamplingSupport(extra: unknown): void {
-	const requestSender = readRequestSender(extra);
-	if (!requestSender) {
-		throw new McpError(ErrorCode.InvalidRequest, 'Client does not support sampling');
-	}
 }

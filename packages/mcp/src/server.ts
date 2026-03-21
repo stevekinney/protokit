@@ -1,4 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+	SubscribeRequestSchema,
+	UnsubscribeRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { getUserProfileTool } from './tools/get-user-profile.js';
 import { listAuditEventsTool } from './tools/list-audit-events.js';
 import { userProfileResource } from './resources/user-profile.js';
@@ -7,6 +11,8 @@ import instructions from './instructions.md';
 import { EXTENSION_ID } from '@modelcontextprotocol/ext-apps/server';
 import { registerConformanceFixtures } from './conformance-fixture-registration.js';
 import { environment } from './env.js';
+import { metricsCollector } from './metrics.js';
+import type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
 
 const oauthClientCredentialsExtensionIdentifier =
 	'io.modelcontextprotocol/oauth-client-credentials';
@@ -19,6 +25,7 @@ export function createMcpServer(context: {
 	enableClientCredentialsExtension: boolean;
 	enableEnterpriseAuthorizationExtension: boolean;
 	enableConformanceMode?: boolean;
+	subscriptionBackend?: ResourceSubscriptionBackend;
 }): McpServer {
 	const enableConformanceMode = context.enableConformanceMode ?? environment.MCP_CONFORMANCE_MODE;
 	const experimentalCapabilities: Record<string, object> = {};
@@ -42,12 +49,9 @@ export function createMcpServer(context: {
 			capabilities: {
 				logging: {},
 				tools: { listChanged: true },
-				// Resource subscriptions require a persistent connection and server-side change
-				// detection (e.g., polling or database triggers). Enable by setting subscribe: true
-				// and implementing notification logic in each resource handler.
-				resources: { listChanged: true, subscribe: false },
+				resources: { listChanged: true, subscribe: true },
 				prompts: { listChanged: true },
-				...(enableConformanceMode ? { sampling: {}, elicitation: {} } : {}),
+				...{ sampling: {}, elicitation: {} },
 				experimental: experimentalCapabilities,
 			},
 		},
@@ -59,7 +63,16 @@ export function createMcpServer(context: {
 			description: getUserProfileTool.description,
 			inputSchema: getUserProfileTool.inputSchema,
 		},
-		async () => getUserProfileTool.handler({}, context),
+		async () => {
+			const start = Date.now();
+			const result = await getUserProfileTool.handler({}, context);
+			metricsCollector.recordToolInvocation(
+				getUserProfileTool.name,
+				Date.now() - start,
+				'isError' in result && result.isError === true,
+			);
+			return result;
+		},
 	);
 
 	server.registerTool(
@@ -68,7 +81,16 @@ export function createMcpServer(context: {
 			description: listAuditEventsTool.description,
 			inputSchema: listAuditEventsTool.inputSchema,
 		},
-		async (input) => listAuditEventsTool.handler(input),
+		async (input) => {
+			const start = Date.now();
+			const result = await listAuditEventsTool.handler(input);
+			metricsCollector.recordToolInvocation(
+				listAuditEventsTool.name,
+				Date.now() - start,
+				'isError' in result && result.isError === true,
+			);
+			return result;
+		},
 	);
 
 	server.registerResource(
@@ -84,8 +106,22 @@ export function createMcpServer(context: {
 		async (arguments_) => summarizePrompt.handler(arguments_, context),
 	);
 
+	if (context.subscriptionBackend) {
+		const backend = context.subscriptionBackend;
+		server.server.setRequestHandler(SubscribeRequestSchema, async (request, extra) => {
+			const sessionIdentifier = extra.sessionId ?? 'stateless';
+			await backend.subscribe(sessionIdentifier, request.params.uri);
+			return {};
+		});
+		server.server.setRequestHandler(UnsubscribeRequestSchema, async (request, extra) => {
+			const sessionIdentifier = extra.sessionId ?? 'stateless';
+			await backend.unsubscribe(sessionIdentifier, request.params.uri);
+			return {};
+		});
+	}
+
 	if (enableConformanceMode) {
-		registerConformanceFixtures(server);
+		registerConformanceFixtures(server, context.subscriptionBackend);
 	}
 
 	return server;

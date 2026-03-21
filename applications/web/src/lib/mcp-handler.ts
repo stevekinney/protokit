@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { isInitializeRequest, JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createMcpServer } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
+import { metricsCollector } from '@template/mcp/metrics';
 import { database, schema } from '@template/database';
 import { eq, and } from 'drizzle-orm';
 import { mcpSessionStore } from '@web/lib/mcp-session-store';
@@ -11,6 +13,8 @@ import { environment } from '@web/env';
 import { createMcpProtocolErrorResponse } from '@web/lib/mcp-protocol-error-response';
 import { createMcpCorsHeaders, validateMcpRequestOrigin } from '@web/lib/mcp-origin-validation';
 import { mcpProtocolVersion } from '@web/lib/mcp-protocol-constants';
+import { resourceSubscriptionManager } from '@web/lib/resource-subscription-manager';
+import { disconnectRedisSubscriberClient } from '@web/lib/redis-client';
 
 const MAX_ACTIVE_SESSIONS = 1000;
 const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -19,11 +23,18 @@ const SESSION_TIME_TO_LIVE_SECONDS = Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000);
 
 type ActiveTransportEntry = {
 	transport: WebStandardStreamableHTTPServerTransport;
+	server: McpServer;
 	userId: string;
 	lastActivity: number;
 };
 
 const activeTransports = new Map<string, ActiveTransportEntry>();
+
+resourceSubscriptionManager.onResourceUpdated((uri) => {
+	for (const [, entry] of activeTransports) {
+		entry.server.server.sendResourceUpdated({ uri }).catch(() => {});
+	}
+});
 
 type ParsedMcpPostBody = {
 	parsedBody: unknown;
@@ -198,6 +209,8 @@ const evictionInterval = setInterval(() => {
 			logger.info({ sessionId, userId: entry.userId }, 'Evicting idle MCP session');
 			entry.transport.close().catch(() => {});
 			activeTransports.delete(sessionId);
+			metricsCollector.decrementActiveSessions();
+			void resourceSubscriptionManager.unsubscribeAll(sessionId);
 			void mcpSessionStore.deleteSession(sessionId);
 		}
 	}
@@ -209,9 +222,11 @@ export async function shutdownMcpTransports(): Promise<void> {
 	for (const [sessionId, entry] of activeTransports) {
 		logger.info({ sessionId, userId: entry.userId }, 'Closing MCP session for shutdown');
 		closePromises.push(entry.transport.close().catch(() => {}));
+		closePromises.push(resourceSubscriptionManager.unsubscribeAll(sessionId).catch(() => {}));
 	}
 	await Promise.allSettled(closePromises);
 	activeTransports.clear();
+	await disconnectRedisSubscriberClient().catch(() => {});
 }
 
 export async function handleMcpRequest(request: Request, userId: string): Promise<Response> {
@@ -254,6 +269,8 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 			requestLogger.info({ sessionId }, 'Closing MCP session');
 			await transport.close();
 			activeTransports.delete(sessionId);
+			metricsCollector.decrementActiveSessions();
+			await resourceSubscriptionManager.unsubscribeAll(sessionId);
 			await mcpSessionStore.deleteSession(sessionId);
 			await database
 				.update(schema.mcpSessions)
@@ -326,6 +343,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 				enableClientCredentialsExtension: environment.MCP_ENABLE_CLIENT_CREDENTIALS,
 				enableEnterpriseAuthorizationExtension: environment.MCP_ENABLE_ENTERPRISE_AUTH,
 				enableConformanceMode: environment.MCP_CONFORMANCE_MODE,
+				subscriptionBackend: resourceSubscriptionManager,
 			});
 			await statelessServer.connect(statelessTransport);
 			try {
@@ -367,15 +385,19 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 			enableClientCredentialsExtension: environment.MCP_ENABLE_CLIENT_CREDENTIALS,
 			enableEnterpriseAuthorizationExtension: environment.MCP_ENABLE_ENTERPRISE_AUTH,
 			enableConformanceMode: environment.MCP_CONFORMANCE_MODE,
+			subscriptionBackend: resourceSubscriptionManager,
 		});
 
 		transport.onclose = () => {
 			requestLogger.info({ sessionId: newSessionId }, 'Transport closed');
 			activeTransports.delete(newSessionId);
+			metricsCollector.decrementActiveSessions();
+			void resourceSubscriptionManager.unsubscribeAll(newSessionId);
 			void mcpSessionStore.deleteSession(newSessionId);
 		};
 
-		activeTransports.set(newSessionId, { transport, userId, lastActivity: Date.now() });
+		activeTransports.set(newSessionId, { transport, server, userId, lastActivity: Date.now() });
+		metricsCollector.incrementActiveSessions();
 
 		await mcpSessionStore.createSession({
 			sessionId: newSessionId,

@@ -45,6 +45,44 @@ export async function getRedisClient(): Promise<RedisClient> {
 	}
 }
 
+let subscriberClient: RedisClient | null = null;
+let subscriberClientPromise: Promise<RedisClient> | null = null;
+
+export async function getRedisSubscriberClient(): Promise<RedisClient> {
+	if (subscriberClient?.isOpen) {
+		return subscriberClient;
+	}
+
+	if (subscriberClientPromise) {
+		return subscriberClientPromise;
+	}
+
+	subscriberClientPromise = (async () => {
+		const mainClient = await getRedisClient();
+		subscriberClient = mainClient.duplicate();
+
+		subscriberClient.on('error', (error) => {
+			logger.error({ err: error }, 'Redis subscriber client error');
+		});
+
+		await subscriberClient.connect();
+		return subscriberClient;
+	})();
+
+	try {
+		return await subscriberClientPromise;
+	} finally {
+		subscriberClientPromise = null;
+	}
+}
+
+export async function disconnectRedisSubscriberClient(): Promise<void> {
+	if (subscriberClient?.isOpen) {
+		await subscriberClient.quit();
+		subscriberClient = null;
+	}
+}
+
 export async function isRedisHealthy(): Promise<boolean> {
 	try {
 		const client = await getRedisClient();
