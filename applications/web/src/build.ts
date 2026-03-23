@@ -17,6 +17,22 @@ if (!styleBuildResult.success) {
 	process.exit(1);
 }
 
+const clientBuildResult = await Bun.build({
+	entrypoints: ['src/client/entry.tsx'],
+	target: 'browser',
+	outdir: 'public/assets',
+	naming: 'client.[ext]',
+	minify: true,
+	sourcemap: 'external',
+});
+
+if (!clientBuildResult.success) {
+	for (const message of clientBuildResult.logs) {
+		console.error(message);
+	}
+	process.exit(1);
+}
+
 const serverBuildResult = await Bun.build({
 	entrypoints: ['src/server.ts'],
 	target: 'bun',

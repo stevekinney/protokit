@@ -7,7 +7,7 @@ import { getBaseUrl } from '@web/lib/base-url';
 import { oauthCorsHeaders } from '@web/lib/cors';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import { hashCredential } from '@web/lib/hash-credential';
-import { createHtmlResponse } from '@web/lib/html-response';
+import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import {
 	mcpEnterpriseAuthorizationExtensionIdentifier,
@@ -128,7 +128,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	const state = context.requestUrl.searchParams.get('state') || '';
 
 	if (!clientId || !redirectUri || responseType !== 'code' || !codeChallenge) {
-		return createHtmlResponse({
+		return createStaticHtmlResponse({
 			title: 'OAuth Authorize',
 			status: 400,
 			body: (
@@ -141,7 +141,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	}
 
 	if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
-		return createHtmlResponse({
+		return createStaticHtmlResponse({
 			title: 'OAuth Authorize',
 			status: 400,
 			body: (
@@ -157,7 +157,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		.limit(1);
 
 	if (!client) {
-		return createHtmlResponse({
+		return createStaticHtmlResponse({
 			title: 'OAuth Authorize',
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error="Unknown OAuth client." />,
@@ -165,14 +165,14 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	}
 
 	if (client.redirectUris.length === 0 || !client.redirectUris.includes(redirectUri)) {
-		return createHtmlResponse({
+		return createStaticHtmlResponse({
 			title: 'OAuth Authorize',
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error="Invalid redirect URI." />,
 		});
 	}
 
-	return createHtmlResponse({
+	return createStaticHtmlResponse({
 		title: 'OAuth Authorize',
 		body: (
 			<OauthAuthorizePage

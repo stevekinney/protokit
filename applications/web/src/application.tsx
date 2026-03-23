@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@template/mcp/logger';
 import { getBaseUrl } from '@web/lib/base-url';
+import { getContentSecurityPolicy } from '@web/lib/content-security-policy';
 import { createCorsPreflightResponse, oauthCorsHeaders } from '@web/lib/cors';
-import { createHtmlResponse } from '@web/lib/html-response';
+import { createStreamingHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse } from '@web/lib/http-response';
 import type { RequestContext } from '@web/lib/request-context';
 import { hydrateSession } from '@web/lib/session-authentication';
@@ -26,10 +27,7 @@ import {
 	handleOauthRevokePost,
 	handleOauthTokenPost,
 } from '@web/routes/oauth-routes';
-import { HomePage } from '@web/views/home-page';
-
-const defaultContentSecurityPolicy =
-	"default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
+import { HomePage } from '@web/components/home-page';
 
 function isHtmlResponse(response: Response): boolean {
 	const contentType = response.headers.get('content-type') ?? '';
@@ -44,16 +42,28 @@ function withSecurityHeaders(inputResponse: Response, requestPathname: string): 
 	}
 
 	if (isHtmlResponse(inputResponse)) {
-		inputResponse.headers.set('Content-Security-Policy', defaultContentSecurityPolicy);
+		const allowScripts = requestPathname !== '/oauth/authorize';
+		inputResponse.headers.set(
+			'Content-Security-Policy',
+			getContentSecurityPolicy({ allowScripts }),
+		);
 	}
 
 	return inputResponse;
 }
 
 async function renderHomePage(context: RequestContext): Promise<Response> {
-	return createHtmlResponse({
+	const baseUrl = getBaseUrl(context.request);
+	return createStreamingHtmlResponse({
 		title: 'MCP OAuth Server',
-		body: <HomePage user={context.user} baseUrl={getBaseUrl(context.request)} />,
+		body: <HomePage user={context.user} baseUrl={baseUrl} />,
+		serverData: {
+			page: 'home',
+			user: context.user
+				? { email: context.user.email, name: context.user.name, image: context.user.image }
+				: null,
+			baseUrl,
+		},
 	});
 }
 

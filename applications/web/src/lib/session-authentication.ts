@@ -4,17 +4,12 @@ import { database, schema } from '@template/database';
 import { environment } from '@web/env';
 import { parseCookies, serializeCookie } from '@web/lib/cookies';
 import { hashCredential } from '@web/lib/hash-credential';
+import type { ApplicationUser } from '@web/types/user';
 
 const SESSION_COOKIE_NAME = environment.SESSION_COOKIE_NAME;
 const SESSION_TIME_TO_LIVE_SECONDS = environment.SESSION_TIME_TO_LIVE_SECONDS;
 
-export type ApplicationUser = {
-	id: string;
-	email: string;
-	name: string;
-	image: string | null;
-	role: string;
-};
+export type { ApplicationUser };
 
 export type SessionHydrationResult = {
 	user: ApplicationUser | null;

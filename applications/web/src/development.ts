@@ -19,7 +19,24 @@ async function buildStyles() {
 	}
 }
 
+async function buildClientBundle() {
+	const result = await Bun.build({
+		entrypoints: ['src/client/entry.tsx'],
+		target: 'browser',
+		outdir: 'public/assets',
+		naming: 'client.[ext]',
+		sourcemap: 'external',
+	});
+
+	if (!result.success) {
+		for (const message of result.logs) {
+			logger.error({ err: message }, 'Client bundle build error');
+		}
+	}
+}
+
 await buildStyles();
+await buildClientBundle();
 
 let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
 let building = false;
@@ -33,6 +50,7 @@ async function scheduledBuild() {
 	building = true;
 	try {
 		await buildStyles();
+		await buildClientBundle();
 	} finally {
 		building = false;
 		if (rebuildQueued) {

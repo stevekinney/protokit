@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
-import type { ApplicationUser } from '@web/lib/session-authentication';
+import type { ApplicationUser } from '@web/types/user';
+import { CopyButton } from '@web/components/copy-button';
 
 type HomePageProps = {
 	user: ApplicationUser | null;
@@ -7,6 +8,8 @@ type HomePageProps = {
 };
 
 export function HomePage(props: HomePageProps): JSX.Element {
+	const mcpEndpoint = `${props.baseUrl}/mcp`;
+
 	return (
 		<main className="mx-auto mt-12 w-full max-w-3xl px-6">
 			<div className="rounded-3xl border border-slate-200 bg-white p-10 shadow-lg shadow-slate-200/40">
@@ -51,8 +54,11 @@ export function HomePage(props: HomePageProps): JSX.Element {
 
 				<section className="mt-8 grid gap-4 rounded-2xl border border-slate-200 p-6 text-sm text-slate-600 md:grid-cols-2">
 					<div>
-						<p className="font-semibold text-slate-900">MCP Endpoint</p>
-						<code className="mt-1 block text-xs text-sky-700">{props.baseUrl}/mcp</code>
+						<div className="flex items-center gap-2">
+							<p className="font-semibold text-slate-900">MCP Endpoint</p>
+							<CopyButton text={mcpEndpoint} />
+						</div>
+						<code className="mt-1 block text-xs text-sky-700">{mcpEndpoint}</code>
 					</div>
 					<div>
 						<p className="font-semibold text-slate-900">Authorization Metadata</p>

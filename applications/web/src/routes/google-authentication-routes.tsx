@@ -9,7 +9,7 @@ import {
 	getGoogleUserProfile,
 	validateGoogleCallbackState,
 } from '@web/lib/google-authentication';
-import { createHtmlResponse } from '@web/lib/html-response';
+import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { redirectResponse } from '@web/lib/http-response';
 import type { RequestContext } from '@web/lib/request-context';
 import {
@@ -104,7 +104,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 	const requestUrl = context.requestUrl;
 	const code = requestUrl.searchParams.get('code');
 	if (!code) {
-		return createHtmlResponse({
+		return createStaticHtmlResponse({
 			title: 'Google Sign-In Error',
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error="Missing OAuth code." />,
@@ -113,7 +113,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 
 	const stateValidation = validateGoogleCallbackState(context.request);
 	if (!stateValidation.valid) {
-		return createHtmlResponse({
+		return createStaticHtmlResponse({
 			title: 'Google Sign-In Error',
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error={stateValidation.error} />,
@@ -137,7 +137,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 		return response;
 	} catch (error) {
 		if (error instanceof Error && error.message === GOOGLE_IDENTITY_CONFLICT_ERROR) {
-			return createHtmlResponse({
+			return createStaticHtmlResponse({
 				title: 'Google Sign-In Error',
 				status: 409,
 				body: (
@@ -150,7 +150,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 		}
 
 		logger.error({ err: error }, 'Google callback failed');
-		return createHtmlResponse({
+		return createStaticHtmlResponse({
 			title: 'Google Sign-In Error',
 			status: 500,
 			body: <OauthAuthorizePage mode="error" error="Google sign-in failed. Please try again." />,

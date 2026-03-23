@@ -60,6 +60,10 @@
 			"dependsOn": ["^build"],
 			"cache": true
 		},
+		"test:end-to-end": {
+			"dependsOn": ["build"],
+			"cache": false
+		},
 		"db:generate": {
 			"cache": false
 		},

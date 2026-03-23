@@ -36,6 +36,28 @@ if (stylesheetFile) {
 	});
 }
 
+const clientBundleFile = await resolvePublicFile('assets/client.js');
+if (clientBundleFile) {
+	staticRoutes['/assets/client.js'] = new Response(clientBundleFile, {
+		headers: {
+			...staticHeaders,
+			'Content-Type': 'application/javascript',
+			'Cache-Control': 'public, max-age=31536000, immutable',
+		},
+	});
+}
+
+const clientSourceMapFile = await resolvePublicFile('assets/client.js.map');
+if (clientSourceMapFile) {
+	staticRoutes['/assets/client.js.map'] = new Response(clientSourceMapFile, {
+		headers: {
+			...staticHeaders,
+			'Content-Type': 'application/json',
+			'Cache-Control': 'public, max-age=31536000, immutable',
+		},
+	});
+}
+
 const robotsFile = await resolvePublicFile('robots.txt');
 if (robotsFile) {
 	staticRoutes['/robots.txt'] = new Response(robotsFile, {

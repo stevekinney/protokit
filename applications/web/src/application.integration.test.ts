@@ -111,13 +111,22 @@ describe('application request routing', () => {
 });
 
 describe('security headers', () => {
-	it('sets Content-Security-Policy on HTML responses', async () => {
+	it('sets script-src self on the homepage', async () => {
 		const port = startServer();
 		const response = await fetch(`http://127.0.0.1:${port}/`);
 		expect(response.status).toBe(200);
 		const csp = response.headers.get('content-security-policy');
 		expect(csp).toContain("default-src 'self'");
-		expect(csp).toContain("script-src 'none'");
+		expect(csp).toContain("script-src 'self'");
+	});
+
+	it('sets script-src self on non-oauth HTML pages', async () => {
+		const port = startServer();
+		const response = await fetch(
+			`http://127.0.0.1:${port}/auth/google/callback?error=access_denied`,
+		);
+		const csp = response.headers.get('content-security-policy');
+		expect(csp).toContain("script-src 'self'");
 	});
 
 	it('does not set Content-Security-Policy on JSON responses', async () => {
@@ -139,6 +148,30 @@ describe('security headers', () => {
 		const port = startServer();
 		const response = await fetch(`http://127.0.0.1:${port}/`);
 		expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+	});
+});
+
+describe('client bundle and hydration', () => {
+	it('homepage HTML contains script tag and client.js reference', async () => {
+		const port = startServer();
+		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const body = await response.text();
+		expect(body).toContain('<script');
+		expect(body).toContain('/assets/client.js');
+	});
+
+	it('homepage HTML contains application-root hydration target', async () => {
+		const port = startServer();
+		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const body = await response.text();
+		expect(body).toContain('id="application-root"');
+	});
+
+	it('homepage HTML contains __SERVER_DATA__ script', async () => {
+		const port = startServer();
+		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const body = await response.text();
+		expect(body).toContain('__SERVER_DATA__');
 	});
 });
 

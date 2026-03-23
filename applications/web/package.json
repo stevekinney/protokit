@@ -10,7 +10,8 @@
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"test": "SKIP_ENV_VALIDATION=true bun test"
+		"test": "SKIP_ENV_VALIDATION=true bun test",
+		"test:end-to-end": "bunx playwright test"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.27.0",
@@ -27,6 +28,7 @@
 		"zod": "^4.0.0"
 	},
 	"devDependencies": {
+		"@playwright/test": "^1.58.2",
 		"@types/react": "^19.2.14",
 		"@types/react-dom": "^19.2.3",
 		"typescript": "^5.7.3"
