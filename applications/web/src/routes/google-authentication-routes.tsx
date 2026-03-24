@@ -26,7 +26,7 @@ function isGoogleAuthConfigured(): boolean {
 
 function googleAuthNotConfiguredResponse(): Response {
 	return createStaticHtmlResponse({
-		title: 'Google Sign-In Not Configured',
+		metadata: { title: 'Google Sign-In Not Configured' },
 		status: 503,
 		body: (
 			<OauthAuthorizePage
@@ -124,7 +124,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 	const code = requestUrl.searchParams.get('code');
 	if (!code) {
 		return createStaticHtmlResponse({
-			title: 'Google Sign-In Error',
+			metadata: { title: 'Google Sign-In Error' },
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error="Missing OAuth code." />,
 		});
@@ -133,7 +133,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 	const stateValidation = validateGoogleCallbackState(context.request);
 	if (!stateValidation.valid) {
 		return createStaticHtmlResponse({
-			title: 'Google Sign-In Error',
+			metadata: { title: 'Google Sign-In Error' },
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error={stateValidation.error} />,
 		});
@@ -157,7 +157,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 	} catch (error) {
 		if (error instanceof Error && error.message === GOOGLE_IDENTITY_CONFLICT_ERROR) {
 			return createStaticHtmlResponse({
-				title: 'Google Sign-In Error',
+				metadata: { title: 'Google Sign-In Error' },
 				status: 409,
 				body: (
 					<OauthAuthorizePage
@@ -170,7 +170,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 
 		logger.error({ err: error }, 'Google callback failed');
 		return createStaticHtmlResponse({
-			title: 'Google Sign-In Error',
+			metadata: { title: 'Google Sign-In Error' },
 			status: 500,
 			body: <OauthAuthorizePage mode="error" error="Google sign-in failed. Please try again." />,
 		});

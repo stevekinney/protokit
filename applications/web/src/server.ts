@@ -1,6 +1,8 @@
+import { basename } from 'node:path';
 import { logger } from '@template/mcp/logger';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';
+import { loadAssetManifest } from '@web/lib/asset-manifest';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 import { resolvePublicFile } from '@web/resolve-public-file';
@@ -8,65 +10,40 @@ import { resolvePublicFile } from '@web/resolve-public-file';
 const port = environment.PORT;
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10_000;
 
-const staticHeaders = {
-	'X-Content-Type-Options': 'nosniff',
-};
+const manifest = await loadAssetManifest();
+
+const staticFileEntries = [
+	{ urlPath: '/favicon.png', filePath: 'favicon.png', cacheControl: 'public, max-age=86400' },
+	{ urlPath: '/robots.txt', filePath: 'robots.txt', cacheControl: 'public, max-age=86400' },
+	{
+		urlPath: manifest.stylesheetPath,
+		filePath: `assets/${basename(manifest.stylesheetPath)}`,
+		cacheControl: 'public, max-age=31536000, immutable',
+	},
+	{
+		urlPath: manifest.clientBundlePath,
+		filePath: `assets/${basename(manifest.clientBundlePath)}`,
+		cacheControl: 'public, max-age=31536000, immutable',
+	},
+	{
+		urlPath: manifest.clientSourceMapPath,
+		filePath: `assets/${basename(manifest.clientSourceMapPath)}`,
+		cacheControl: 'public, max-age=31536000, immutable',
+	},
+];
 
 const staticRoutes: Record<string, Response> = {};
-
-const faviconFile = await resolvePublicFile('favicon.png');
-if (faviconFile) {
-	staticRoutes['/favicon.png'] = new Response(faviconFile, {
-		headers: {
-			...staticHeaders,
-			'Content-Type': 'image/png',
-			'Cache-Control': 'public, max-age=86400',
-		},
-	});
-}
-
-const stylesheetFile = await resolvePublicFile('assets/application.css');
-if (stylesheetFile) {
-	staticRoutes['/assets/application.css'] = new Response(stylesheetFile, {
-		headers: {
-			...staticHeaders,
-			'Content-Type': 'text/css',
-			'Cache-Control': 'public, max-age=31536000, immutable',
-		},
-	});
-}
-
-const clientBundleFile = await resolvePublicFile('assets/client.js');
-if (clientBundleFile) {
-	staticRoutes['/assets/client.js'] = new Response(clientBundleFile, {
-		headers: {
-			...staticHeaders,
-			'Content-Type': 'application/javascript',
-			'Cache-Control': 'public, max-age=31536000, immutable',
-		},
-	});
-}
-
-const clientSourceMapFile = await resolvePublicFile('assets/client.js.map');
-if (clientSourceMapFile) {
-	staticRoutes['/assets/client.js.map'] = new Response(clientSourceMapFile, {
-		headers: {
-			...staticHeaders,
-			'Content-Type': 'application/json',
-			'Cache-Control': 'public, max-age=31536000, immutable',
-		},
-	});
-}
-
-const robotsFile = await resolvePublicFile('robots.txt');
-if (robotsFile) {
-	staticRoutes['/robots.txt'] = new Response(robotsFile, {
-		headers: {
-			...staticHeaders,
-			'Content-Type': 'text/plain',
-			'Cache-Control': 'public, max-age=86400',
-		},
-	});
+for (const entry of staticFileEntries) {
+	const file = await resolvePublicFile(entry.filePath);
+	if (file) {
+		staticRoutes[entry.urlPath] = new Response(file, {
+			headers: {
+				'Content-Type': file.type,
+				'Cache-Control': entry.cacheControl,
+				'X-Content-Type-Options': 'nosniff',
+			},
+		});
+	}
 }
 
 const server = Bun.serve({

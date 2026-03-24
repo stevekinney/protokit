@@ -129,7 +129,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 
 	if (!clientId || !redirectUri || responseType !== 'code' || !codeChallenge) {
 		return createStaticHtmlResponse({
-			title: 'OAuth Authorize',
+			metadata: { title: 'OAuth Authorize' },
 			status: 400,
 			body: (
 				<OauthAuthorizePage
@@ -142,7 +142,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 
 	if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
 		return createStaticHtmlResponse({
-			title: 'OAuth Authorize',
+			metadata: { title: 'OAuth Authorize' },
 			status: 400,
 			body: (
 				<OauthAuthorizePage mode="error" error="Only S256 code challenge method is supported." />
@@ -158,7 +158,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 
 	if (!client) {
 		return createStaticHtmlResponse({
-			title: 'OAuth Authorize',
+			metadata: { title: 'OAuth Authorize' },
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error="Unknown OAuth client." />,
 		});
@@ -166,14 +166,14 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 
 	if (client.redirectUris.length === 0 || !client.redirectUris.includes(redirectUri)) {
 		return createStaticHtmlResponse({
-			title: 'OAuth Authorize',
+			metadata: { title: 'OAuth Authorize' },
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error="Invalid redirect URI." />,
 		});
 	}
 
 	return createStaticHtmlResponse({
-		title: 'OAuth Authorize',
+		metadata: { title: 'OAuth Authorize' },
 		body: (
 			<OauthAuthorizePage
 				mode="form"

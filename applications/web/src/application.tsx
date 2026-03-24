@@ -56,7 +56,7 @@ function withSecurityHeaders(inputResponse: Response, requestPathname: string): 
 async function renderHomePage(context: RequestContext): Promise<Response> {
 	const baseUrl = getBaseUrl(context.request);
 	return createStreamingHtmlResponse({
-		title: 'MCP OAuth Server',
+		metadata: { title: 'MCP OAuth Server' },
 		body: <HomePage user={context.user} baseUrl={baseUrl} />,
 		serverData: {
 			page: 'home',

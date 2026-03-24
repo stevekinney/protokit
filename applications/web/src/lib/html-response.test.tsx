@@ -19,7 +19,7 @@ async function streamToString(stream: ReadableStream): Promise<string> {
 describe('createStaticHtmlResponse', () => {
 	it('returns Response with text/html content-type', () => {
 		const response = createStaticHtmlResponse({
-			title: 'Test',
+			metadata: { title: 'Test' },
 			body: <p>Hello</p>,
 		});
 		expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
@@ -27,17 +27,27 @@ describe('createStaticHtmlResponse', () => {
 
 	it('returns 200 status by default', () => {
 		const response = createStaticHtmlResponse({
-			title: 'Test',
+			metadata: { title: 'Test' },
 			body: <p>Hello</p>,
 		});
 		expect(response.status).toBe(200);
+	});
+
+	it('threads metadata through to rendered output', async () => {
+		const response = createStaticHtmlResponse({
+			metadata: { title: 'Metadata Test', description: 'Threaded description' },
+			body: <p>Hello</p>,
+		});
+		const html = await response.text();
+		expect(html).toContain('<title>Metadata Test</title>');
+		expect(html).toContain('name="description" content="Threaded description"');
 	});
 });
 
 describe('createStreamingHtmlResponse', () => {
 	it('returns Response with text/html content-type', async () => {
 		const response = await createStreamingHtmlResponse({
-			title: 'Test',
+			metadata: { title: 'Test' },
 			body: <p>Hello</p>,
 		});
 		expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
@@ -45,7 +55,7 @@ describe('createStreamingHtmlResponse', () => {
 
 	it('has a ReadableStream body', async () => {
 		const response = await createStreamingHtmlResponse({
-			title: 'Test',
+			metadata: { title: 'Test' },
 			body: <p>Hello</p>,
 		});
 		expect(response.body instanceof ReadableStream).toBe(true);
@@ -53,11 +63,21 @@ describe('createStreamingHtmlResponse', () => {
 
 	it('produces full HTML document starting with doctype', async () => {
 		const response = await createStreamingHtmlResponse({
-			title: 'Test',
+			metadata: { title: 'Test' },
 			body: <p>Hello</p>,
 		});
 		const html = await streamToString(response.body!);
 		expect(html.startsWith('<!doctype html>')).toBe(true);
 		expect(html).toContain('</html>');
+	});
+
+	it('threads metadata through to rendered output', async () => {
+		const response = await createStreamingHtmlResponse({
+			metadata: { title: 'Stream Test', description: 'Streamed description' },
+			body: <p>Hello</p>,
+		});
+		const html = await streamToString(response.body!);
+		expect(html).toContain('<title>Stream Test</title>');
+		expect(html).toContain('name="description" content="Streamed description"');
 	});
 });

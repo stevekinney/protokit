@@ -1,26 +1,57 @@
 import type { JSX, ReactNode } from 'react';
 import { renderToReadableStream } from 'react-dom/server';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { getAssetManifest } from '@web/lib/asset-manifest';
+
+export type DocumentMetadata = {
+	title: string;
+	description?: string;
+	canonicalUrl?: string;
+	openGraph?: {
+		title?: string;
+		description?: string;
+		image?: string;
+		url?: string;
+		type?: string;
+	};
+};
 
 export function escapeHtmlInJson(json: string): string {
 	return json.replace(/<\//g, '<\\/');
 }
 
 function DocumentShell(input: {
-	title: string;
+	metadata: DocumentMetadata;
+	stylesheetPath: string;
+	clientBundlePath: string;
 	bodyClassName?: string;
 	includeClientBundle?: boolean;
 	serverData?: Record<string, unknown>;
 	children: ReactNode;
 }): JSX.Element {
+	const { metadata } = input;
+
 	return (
 		<html lang="en">
 			<head>
 				<meta charSet="utf-8" />
 				<meta name="viewport" content="width=device-width, initial-scale=1" />
 				<link rel="icon" href="/favicon.png" />
-				<link rel="stylesheet" href="/assets/application.css" />
-				<title>{input.title}</title>
+				<link rel="stylesheet" href={input.stylesheetPath} />
+				<title>{metadata.title}</title>
+				{metadata.description && <meta name="description" content={metadata.description} />}
+				{metadata.canonicalUrl && <link rel="canonical" href={metadata.canonicalUrl} />}
+				{metadata.openGraph?.title && (
+					<meta property="og:title" content={metadata.openGraph.title} />
+				)}
+				{metadata.openGraph?.description && (
+					<meta property="og:description" content={metadata.openGraph.description} />
+				)}
+				{metadata.openGraph?.image && (
+					<meta property="og:image" content={metadata.openGraph.image} />
+				)}
+				{metadata.openGraph?.url && <meta property="og:url" content={metadata.openGraph.url} />}
+				{metadata.openGraph?.type && <meta property="og:type" content={metadata.openGraph.type} />}
 			</head>
 			<body className={input.bodyClassName}>
 				{input.includeClientBundle ? (
@@ -37,19 +68,25 @@ function DocumentShell(input: {
 						}}
 					/>
 				)}
-				{input.includeClientBundle && <script src="/assets/client.js" defer />}
+				{input.includeClientBundle && <script src={input.clientBundlePath} defer />}
 			</body>
 		</html>
 	);
 }
 
 export function renderStaticDocument(input: {
-	title: string;
+	metadata: DocumentMetadata;
 	bodyClassName?: string;
 	children: ReactNode;
 }): string {
+	const manifest = getAssetManifest();
 	const markup = renderToStaticMarkup(
-		<DocumentShell title={input.title} bodyClassName={input.bodyClassName}>
+		<DocumentShell
+			metadata={input.metadata}
+			stylesheetPath={manifest.stylesheetPath}
+			clientBundlePath={manifest.clientBundlePath}
+			bodyClassName={input.bodyClassName}
+		>
 			{input.children}
 		</DocumentShell>,
 	);
@@ -58,14 +95,17 @@ export function renderStaticDocument(input: {
 }
 
 export async function renderStreamingDocument(input: {
-	title: string;
+	metadata: DocumentMetadata;
 	bodyClassName?: string;
 	serverData?: Record<string, unknown>;
 	children: ReactNode;
 }): Promise<ReadableStream> {
-	const stream = await renderToReadableStream(
+	const manifest = getAssetManifest();
+	const reactStream = await renderToReadableStream(
 		<DocumentShell
-			title={input.title}
+			metadata={input.metadata}
+			stylesheetPath={manifest.stylesheetPath}
+			clientBundlePath={manifest.clientBundlePath}
 			bodyClassName={input.bodyClassName}
 			includeClientBundle={true}
 			serverData={input.serverData}
@@ -77,48 +117,17 @@ export async function renderStreamingDocument(input: {
 		},
 	);
 
-	const doctype = new TextEncoder().encode('<!doctype html>');
-	const doctypeStream = new ReadableStream({
-		start(controller) {
-			controller.enqueue(doctype);
-			controller.close();
-		},
-	});
-
-	return concatStreams(doctypeStream, stream);
-}
-
-function concatStreams(
-	first: ReadableStream<Uint8Array>,
-	second: ReadableStream<Uint8Array>,
-): ReadableStream<Uint8Array> {
-	const firstReader = first.getReader();
-	const secondReader = second.getReader();
-	let readingFirst = true;
+	const doctypeBytes = new TextEncoder().encode('<!doctype html>');
+	const reader = reactStream.getReader();
 
 	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(doctypeBytes);
+		},
 		async pull(controller) {
-			if (readingFirst) {
-				const { done, value } = await firstReader.read();
-				if (done) {
-					readingFirst = false;
-					const result = await secondReader.read();
-					if (result.done) {
-						controller.close();
-					} else {
-						controller.enqueue(result.value);
-					}
-				} else {
-					controller.enqueue(value);
-				}
-			} else {
-				const { done, value } = await secondReader.read();
-				if (done) {
-					controller.close();
-				} else {
-					controller.enqueue(value);
-				}
-			}
+			const { done, value } = await reader.read();
+			if (done) controller.close();
+			else controller.enqueue(value);
 		},
 	});
 }

@@ -1,8 +1,19 @@
 import { watch } from 'node:fs';
 import { logger } from '@template/mcp/logger';
+import type { AssetManifest } from '@web/lib/asset-manifest';
 import { createTailwindPlugin } from './plugins/tailwind.js';
 
 const tailwindPlugin = createTailwindPlugin();
+
+const stableManifest: AssetManifest = {
+	stylesheetPath: '/assets/application.css',
+	clientBundlePath: '/assets/client.js',
+	clientSourceMapPath: '/assets/client.js.map',
+};
+
+async function writeStableManifest() {
+	await Bun.write('public/assets/manifest.json', JSON.stringify(stableManifest, null, '\t'));
+}
 
 async function buildStyles() {
 	const result = await Bun.build({
@@ -37,6 +48,7 @@ async function buildClientBundle() {
 
 await buildStyles();
 await buildClientBundle();
+await writeStableManifest();
 
 let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
 let building = false;
@@ -51,6 +63,7 @@ async function scheduledBuild() {
 	try {
 		await buildStyles();
 		await buildClientBundle();
+		await writeStableManifest();
 	} finally {
 		building = false;
 		if (rebuildQueued) {

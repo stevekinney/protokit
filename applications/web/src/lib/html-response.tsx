@@ -1,13 +1,14 @@
 import type { JSX } from 'react';
+import type { DocumentMetadata } from '@web/views/document';
 import { renderStaticDocument, renderStreamingDocument } from '@web/views/document';
 
 export function createStaticHtmlResponse(input: {
-	title: string;
+	metadata: DocumentMetadata;
 	body: JSX.Element;
 	status?: number;
 }): Response {
 	const markup = renderStaticDocument({
-		title: input.title,
+		metadata: input.metadata,
 		children: input.body,
 	});
 
@@ -20,13 +21,13 @@ export function createStaticHtmlResponse(input: {
 }
 
 export async function createStreamingHtmlResponse(input: {
-	title: string;
+	metadata: DocumentMetadata;
 	body: JSX.Element;
 	serverData?: Record<string, unknown>;
 	status?: number;
 }): Promise<Response> {
 	const stream = await renderStreamingDocument({
-		title: input.title,
+		metadata: input.metadata,
 		serverData: input.serverData,
 		children: input.body,
 	});
