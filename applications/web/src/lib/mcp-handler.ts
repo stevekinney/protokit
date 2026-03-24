@@ -3,6 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { isInitializeRequest, JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createMcpServer } from '@template/mcp';
+import type { McpUserProfile } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { metricsCollector } from '@template/mcp/metrics';
 import { database, schema } from '@template/database';
@@ -241,6 +242,22 @@ export async function shutdownMcpTransports(): Promise<void> {
 	await disconnectRedisSubscriberClient().catch(() => {});
 }
 
+async function fetchUserProfile(userId: string): Promise<McpUserProfile | null> {
+	const [user] = await database
+		.select({
+			id: schema.users.id,
+			email: schema.users.email,
+			name: schema.users.name,
+			image: schema.users.image,
+			role: schema.users.role,
+		})
+		.from(schema.users)
+		.where(eq(schema.users.id, userId))
+		.limit(1);
+
+	return user ?? null;
+}
+
 export async function handleMcpRequest(request: Request, userId: string): Promise<Response> {
 	const requestLogger = logger.child({ component: 'mcp-handler', userId, instanceIdentifier });
 	const responseHeaders = buildMcpResponseHeaders(request);
@@ -351,12 +368,23 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 				});
 			}
 
+			const statelessUser = await fetchUserProfile(userId);
+			if (!statelessUser) {
+				return createMcpProtocolErrorResponse({
+					status: 401,
+					error: 'unauthorized',
+					errorDescription: 'User not found.',
+					headers: responseHeaders,
+				});
+			}
+
 			const statelessTransport = new WebStandardStreamableHTTPServerTransport({
 				sessionIdGenerator: undefined,
 				enableJsonResponse: true,
 			});
 			const statelessServer = createMcpServer({
 				userId,
+				user: statelessUser,
 				enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
 				enableClientCredentialsExtension: environment.MCP_ENABLE_CLIENT_CREDENTIALS,
 				enableEnterpriseAuthorizationExtension: environment.MCP_ENABLE_ENTERPRISE_AUTH,
@@ -390,6 +418,16 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 			});
 		}
 
+		const sessionUser = await fetchUserProfile(userId);
+		if (!sessionUser) {
+			return createMcpProtocolErrorResponse({
+				status: 401,
+				error: 'unauthorized',
+				errorDescription: 'User not found.',
+				headers: responseHeaders,
+			});
+		}
+
 		const newSessionId = randomUUID();
 		requestLogger.info({ sessionId: newSessionId }, 'Creating new MCP session');
 
@@ -399,6 +437,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 
 		const server = createMcpServer({
 			userId,
+			user: sessionUser,
 			enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
 			enableClientCredentialsExtension: environment.MCP_ENABLE_CLIENT_CREDENTIALS,
 			enableEnterpriseAuthorizationExtension: environment.MCP_ENABLE_ENTERPRISE_AUTH,

@@ -8,6 +8,7 @@ import { jsonResponse } from '@web/lib/http-response';
 import type { RequestContext } from '@web/lib/request-context';
 import { hydrateSession } from '@web/lib/session-authentication';
 import { resolvePublicFile } from '@web/resolve-public-file';
+import { handleDevelopmentLogin } from '@web/routes/development-authentication-routes';
 import {
 	handleGoogleSignInCallback,
 	handleGoogleSignInStart,
@@ -90,6 +91,10 @@ async function dispatch(context: RequestContext): Promise<Response> {
 
 	if (requestUrl.pathname === '/' && request.method === 'GET') {
 		return renderHomePage(context);
+	}
+
+	if (requestUrl.pathname === '/auth/dev/login' && request.method === 'GET') {
+		return handleDevelopmentLogin(context);
 	}
 
 	if (requestUrl.pathname === '/auth/google/start' && request.method === 'GET') {

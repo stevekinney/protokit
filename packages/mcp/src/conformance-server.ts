@@ -7,7 +7,19 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServer } from './server.js';
 import { hasValidLocalhostRebindingHeaders } from './localhost-request-validation.js';
 
+import type { McpUserProfile } from './types/primitives.js';
+
 const port = Number.parseInt(process.env.MCP_CONFORMANCE_PORT ?? '3137', 10);
+
+function createConformanceUser(userId: string): McpUserProfile {
+	return {
+		id: userId,
+		email: 'conformance@localhost',
+		name: 'Conformance User',
+		image: null,
+		role: 'user',
+	};
+}
 const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
 
 function convertIncomingHeaders(incomingMessage: import('node:http').IncomingMessage): Headers {
@@ -101,8 +113,10 @@ async function handleMcpRequest(request: Request): Promise<Response> {
 		const transport = createStatefulTransport(newSessionIdentifier);
 		transports.set(newSessionIdentifier, transport);
 
+		const userId = randomUUID();
 		const server = createMcpServer({
-			userId: randomUUID(),
+			userId,
+			user: createConformanceUser(userId),
 			enableUiExtension: true,
 			enableClientCredentialsExtension: true,
 			enableEnterpriseAuthorizationExtension: true,
@@ -116,8 +130,10 @@ async function handleMcpRequest(request: Request): Promise<Response> {
 		sessionIdGenerator: undefined,
 		enableJsonResponse: true,
 	});
+	const statelessUserId = randomUUID();
 	const statelessServer = createMcpServer({
-		userId: randomUUID(),
+		userId: statelessUserId,
+		user: createConformanceUser(statelessUserId),
 		enableUiExtension: true,
 		enableClientCredentialsExtension: true,
 		enableEnterpriseAuthorizationExtension: true,

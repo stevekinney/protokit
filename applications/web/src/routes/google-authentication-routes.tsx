@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
+import { environment } from '@web/env';
 import {
 	clearGoogleStateCookie,
 	createGoogleSignInRedirectResponse,
@@ -18,6 +19,23 @@ import {
 	revokeSession,
 } from '@web/lib/session-authentication';
 import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
+
+function isGoogleAuthConfigured(): boolean {
+	return Boolean(environment.GOOGLE_CLIENT_ID && environment.GOOGLE_CLIENT_SECRET);
+}
+
+function googleAuthNotConfiguredResponse(): Response {
+	return createStaticHtmlResponse({
+		title: 'Google Sign-In Not Configured',
+		status: 503,
+		body: (
+			<OauthAuthorizePage
+				mode="error"
+				error="Google sign-in is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, or use /auth/dev/login in development."
+			/>
+		),
+	});
+}
 
 const GOOGLE_IDENTITY_CONFLICT_ERROR = 'google_identity_conflict';
 
@@ -96,11 +114,12 @@ async function upsertGoogleUser(input: {
 }
 
 export async function handleGoogleSignInStart(context: RequestContext): Promise<Response> {
-	void context;
+	if (!isGoogleAuthConfigured()) return googleAuthNotConfiguredResponse();
 	return createGoogleSignInRedirectResponse(context.request);
 }
 
 export async function handleGoogleSignInCallback(context: RequestContext): Promise<Response> {
+	if (!isGoogleAuthConfigured()) return googleAuthNotConfiguredResponse();
 	const requestUrl = context.requestUrl;
 	const code = requestUrl.searchParams.get('code');
 	if (!code) {

@@ -49,13 +49,22 @@ function checkEnvironmentFile(): Record<string, string> {
 }
 
 function checkRequiredVariables(variables: Record<string, string>) {
-	const required = ['DATABASE_URL', 'DATABASE_URL_UNPOOLED', 'SESSION_SIGNING_SECRET'];
+	const required = ['DATABASE_URL', 'DATABASE_URL_UNPOOLED'];
+	const recommended = ['SESSION_SIGNING_SECRET', 'REDIS_URL', 'GOOGLE_CLIENT_ID'];
 
 	for (const key of required) {
 		if (variables[key]) {
 			report('pass', key, 'Set');
 		} else {
 			report('fail', key, 'Not set');
+		}
+	}
+
+	for (const key of recommended) {
+		if (variables[key]) {
+			report('pass', key, 'Set');
+		} else {
+			report('warn', key, 'Not set (optional for development)');
 		}
 	}
 }

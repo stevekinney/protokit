@@ -23,6 +23,7 @@
 		"MCP_ENABLE_UI_EXTENSION",
 		"MCP_ENABLE_CLIENT_CREDENTIALS",
 		"MCP_ENABLE_ENTERPRISE_AUTH",
+		"MCP_SERVER_NAME",
 		"MCP_CONFORMANCE_MODE",
 		"ENTERPRISE_AUTH_PROVIDER_URL",
 		"ENTERPRISE_AUTH_TENANT",
@@ -71,6 +72,9 @@
 			"cache": false
 		},
 		"db:validate": {
+			"cache": false
+		},
+		"db:seed": {
 			"cache": false
 		}
 	}

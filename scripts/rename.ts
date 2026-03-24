@@ -42,16 +42,20 @@ async function main() {
 	}
 
 	const newScopePrefix = `@${scopeMatch[1]}`;
+	const appName = newScope.replace(/^@[^/]+\//, '');
+	const newServerName = `${scopeMatch[1]}-${appName}-mcp-server`;
 	const rootDirectory = join(import.meta.dirname, '..');
 	const files = await collectFiles(rootDirectory);
 	const changedFiles: string[] = [];
 
 	for (const filePath of files) {
-		const content = await readFile(filePath, 'utf-8');
-		const updated = content.replaceAll('@template/', `${newScopePrefix}/`);
+		let content = await readFile(filePath, 'utf-8');
+		content = content.replaceAll('@template/', `${newScopePrefix}/`);
+		content = content.replaceAll('template-mcp-server', newServerName);
+		const original = await readFile(filePath, 'utf-8');
 
-		if (updated !== content) {
-			await writeFile(filePath, updated, 'utf-8');
+		if (content !== original) {
+			await writeFile(filePath, content, 'utf-8');
 			changedFiles.push(relative(rootDirectory, filePath));
 		}
 	}

@@ -4,7 +4,7 @@ import { environment } from '@web/env';
 import { jsonResponse } from '@web/lib/http-response';
 import { instanceIdentifier } from '@web/lib/instance-identifier';
 import { mcpProtocolVersion } from '@web/lib/mcp-protocol-constants';
-import { isRedisHealthy } from '@web/lib/redis-client';
+import { isRedisConfigured, isRedisHealthy } from '@web/lib/redis-client';
 
 async function isDatabaseHealthy(): Promise<boolean> {
 	try {
@@ -30,10 +30,21 @@ function isEnterprisePolicyConfigured(): boolean {
 }
 
 export async function handleHealthGet(): Promise<Response> {
-	const redisHealthy = await isRedisHealthy();
+	const redisConfigured = isRedisConfigured();
+	const redisHealthy = redisConfigured ? await isRedisHealthy() : false;
 	const databaseHealthy = await isDatabaseHealthy();
 	const enterprisePolicyConfigured = isEnterprisePolicyConfigured();
-	const status = redisHealthy && databaseHealthy && enterprisePolicyConfigured ? 'ok' : 'degraded';
+
+	const degradedDependencies =
+		(redisConfigured && !redisHealthy) || !databaseHealthy || !enterprisePolicyConfigured;
+	const status = degradedDependencies ? 'degraded' : 'ok';
+
+	let redisStatus: 'ok' | 'unavailable' | 'not_configured';
+	if (!redisConfigured) {
+		redisStatus = 'not_configured';
+	} else {
+		redisStatus = redisHealthy ? 'ok' : 'unavailable';
+	}
 
 	return jsonResponse(
 		{
@@ -46,7 +57,7 @@ export async function handleHealthGet(): Promise<Response> {
 				enterpriseManagedAuthorization: environment.MCP_ENABLE_ENTERPRISE_AUTH,
 			},
 			dependencies: {
-				redis: redisHealthy ? 'ok' : 'unavailable',
+				redis: redisStatus,
 				database: databaseHealthy ? 'ok' : 'unavailable',
 				enterprisePolicyBackend: enterprisePolicyConfigured ? 'ok' : 'unconfigured',
 			},

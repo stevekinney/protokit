@@ -24,6 +24,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@web/lib/redis-client', () => ({
+	isRedisConfigured: () => true,
 	isRedisHealthy: async () => mockRedisHealthy,
 }));
 

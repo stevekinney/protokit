@@ -3,16 +3,16 @@ import {
 	SubscribeRequestSchema,
 	UnsubscribeRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getUserProfileTool } from './tools/get-user-profile.js';
-import { listAuditEventsTool } from './tools/list-audit-events.js';
-import { userProfileResource } from './resources/user-profile.js';
-import { summarizePrompt } from './prompts/summarize.js';
+import { allTools } from './tools/index.js';
+import { allResources } from './resources/index.js';
+import { allPrompts } from './prompts/index.js';
 import instructions from './instructions.md';
 import { EXTENSION_ID } from '@modelcontextprotocol/ext-apps/server';
 import { registerConformanceFixtures } from './conformance-fixture-registration.js';
 import { environment } from './env.js';
 import { metricsCollector } from './metrics.js';
 import type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
+import type { McpUserProfile } from './types/primitives.js';
 
 const oauthClientCredentialsExtensionIdentifier =
 	'io.modelcontextprotocol/oauth-client-credentials';
@@ -21,6 +21,7 @@ const enterpriseAuthorizationExtensionIdentifier =
 
 export function createMcpServer(context: {
 	userId: string;
+	user: McpUserProfile;
 	enableUiExtension: boolean;
 	enableClientCredentialsExtension: boolean;
 	enableEnterpriseAuthorizationExtension: boolean;
@@ -39,9 +40,11 @@ export function createMcpServer(context: {
 		experimentalCapabilities[enterpriseAuthorizationExtensionIdentifier] = { version: '1.0.0' };
 	}
 
+	const serverName = environment.MCP_SERVER_NAME ?? 'template-mcp-server';
+
 	const server = new McpServer(
 		{
-			name: 'template-mcp-server',
+			name: serverName,
 			version: '0.1.0',
 		},
 		{
@@ -57,54 +60,47 @@ export function createMcpServer(context: {
 		},
 	);
 
-	server.registerTool(
-		getUserProfileTool.name,
-		{
-			description: getUserProfileTool.description,
-			inputSchema: getUserProfileTool.inputSchema,
-		},
-		async () => {
-			const start = Date.now();
-			const result = await getUserProfileTool.handler({}, context);
-			metricsCollector.recordToolInvocation(
-				getUserProfileTool.name,
-				Date.now() - start,
-				'isError' in result && result.isError === true,
-			);
-			return result;
-		},
-	);
+	for (const tool of allTools) {
+		server.registerTool(
+			tool.name,
+			{
+				description: tool.description,
+				inputSchema: tool.inputSchema,
+				...(tool.annotations ? { annotations: tool.annotations } : {}),
+				...(tool._meta ? { _meta: tool._meta } : {}),
+			},
+			async (input) => {
+				const start = Date.now();
+				const result = await tool.handler(input as never, context);
+				metricsCollector.recordToolInvocation(
+					tool.name,
+					Date.now() - start,
+					'isError' in result && result.isError === true,
+				);
+				return result;
+			},
+		);
+	}
 
-	server.registerTool(
-		listAuditEventsTool.name,
-		{
-			description: listAuditEventsTool.description,
-			inputSchema: listAuditEventsTool.inputSchema,
-		},
-		async (input) => {
-			const start = Date.now();
-			const result = await listAuditEventsTool.handler(input);
-			metricsCollector.recordToolInvocation(
-				listAuditEventsTool.name,
-				Date.now() - start,
-				'isError' in result && result.isError === true,
-			);
-			return result;
-		},
-	);
+	for (const resource of allResources) {
+		server.registerResource(
+			resource.name,
+			resource.uri,
+			{ description: resource.description, mimeType: resource.mimeType },
+			async (uri) => resource.handler(uri, context),
+		);
+	}
 
-	server.registerResource(
-		userProfileResource.name,
-		userProfileResource.uri,
-		{ description: userProfileResource.description, mimeType: userProfileResource.mimeType },
-		async (uri) => userProfileResource.handler(uri, context),
-	);
-
-	server.registerPrompt(
-		summarizePrompt.name,
-		{ description: summarizePrompt.description, argsSchema: summarizePrompt.arguments },
-		async (arguments_) => summarizePrompt.handler(arguments_, context),
-	);
+	for (const prompt of allPrompts) {
+		server.registerPrompt(
+			prompt.name,
+			{
+				description: prompt.description,
+				...(prompt.arguments ? { argsSchema: prompt.arguments } : {}),
+			},
+			async (arguments_) => prompt.handler(arguments_ as never, context),
+		);
+	}
 
 	if (context.subscriptionBackend) {
 		const backend = context.subscriptionBackend;

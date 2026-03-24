@@ -16,6 +16,7 @@
 		"db:generate": "bun turbo db:generate",
 		"db:migrate": "bun turbo db:migrate",
 		"db:validate": "bun turbo db:validate",
+		"db:seed": "bun scripts/seed.ts",
 		"dev:full": "bun scripts/develop.ts",
 		"prepare": "husky"
 	},

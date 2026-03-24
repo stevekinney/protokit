@@ -3,6 +3,7 @@ import { environment } from '@web/env';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import { parseCookies, serializeCookie } from '@web/lib/cookies';
 import { getBaseUrl } from '@web/lib/base-url';
+import { sessionSigningSecret } from '@web/lib/session-signing-secret';
 
 const GOOGLE_OAUTH_STATE_COOKIE_NAME = 'google_oauth_state';
 const GOOGLE_OAUTH_STATE_TIME_TO_LIVE_SECONDS = 10 * 60;
@@ -41,9 +42,7 @@ function sanitizeCallbackPath(value: string | null): string {
 }
 
 function createSignature(payload: string): string {
-	return createHmac('sha256', environment.SESSION_SIGNING_SECRET)
-		.update(payload)
-		.digest('base64url');
+	return createHmac('sha256', sessionSigningSecret).update(payload).digest('base64url');
 }
 
 function encodeGoogleStatePayload(payload: GoogleOauthCookiePayload): string {
@@ -91,7 +90,7 @@ export function createGoogleSignInRedirectResponse(request: Request): Response {
 	const callbackUrl = `${getBaseUrl(request)}/auth/google/callback`;
 
 	const googleAuthorizationUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-	googleAuthorizationUrl.searchParams.set('client_id', environment.GOOGLE_CLIENT_ID);
+	googleAuthorizationUrl.searchParams.set('client_id', environment.GOOGLE_CLIENT_ID!);
 	googleAuthorizationUrl.searchParams.set('redirect_uri', callbackUrl);
 	googleAuthorizationUrl.searchParams.set('response_type', 'code');
 	googleAuthorizationUrl.searchParams.set('scope', 'openid email profile');
@@ -177,8 +176,8 @@ export async function exchangeGoogleCodeForAccessToken(
 ): Promise<string> {
 	const callbackUrl = `${getBaseUrl(request)}/auth/google/callback`;
 	const body = new URLSearchParams({
-		client_id: environment.GOOGLE_CLIENT_ID,
-		client_secret: environment.GOOGLE_CLIENT_SECRET,
+		client_id: environment.GOOGLE_CLIENT_ID!,
+		client_secret: environment.GOOGLE_CLIENT_SECRET!,
 		code,
 		grant_type: 'authorization_code',
 		redirect_uri: callbackUrl,

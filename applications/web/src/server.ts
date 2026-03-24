@@ -2,7 +2,7 @@ import { logger } from '@template/mcp/logger';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
-import { getRedisClient } from '@web/lib/redis-client';
+import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 import { resolvePublicFile } from '@web/resolve-public-file';
 
 const port = environment.PORT;
@@ -103,12 +103,14 @@ async function gracefulShutdown(signal: string): Promise<void> {
 		await shutdownMcpTransports();
 		logger.info('All MCP transports closed');
 
-		try {
-			const redisClient = await getRedisClient();
-			await redisClient.quit();
-			logger.info('Redis connection closed');
-		} catch {
-			// Redis may already be disconnected
+		if (isRedisConfigured()) {
+			try {
+				const redisClient = await getRedisClient();
+				await redisClient.quit();
+				logger.info('Redis connection closed');
+			} catch {
+				// Redis may already be disconnected
+			}
 		}
 	} finally {
 		clearTimeout(shutdownTimeout);

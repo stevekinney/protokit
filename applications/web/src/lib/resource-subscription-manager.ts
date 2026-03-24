@@ -1,12 +1,13 @@
 import type { ResourceSubscriptionBackend } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
-import { getRedisClient, getRedisSubscriberClient } from '@web/lib/redis-client';
+import { isRedisConfigured, getRedisClient, getRedisSubscriberClient } from '@web/lib/redis-client';
+import { InMemoryResourceSubscriptionManager } from '@web/lib/in-memory-resource-subscription-manager';
 
 function channelForUri(uri: string): string {
 	return `mcp:resource:updated:${uri}`;
 }
 
-class ResourceSubscriptionManager implements ResourceSubscriptionBackend {
+class RedisResourceSubscriptionManager implements ResourceSubscriptionBackend {
 	private channelSubscribers = new Map<string, Set<string>>();
 	private updateCallbacks: Array<(uri: string) => void> = [];
 	private subscriberReady = false;
@@ -96,4 +97,17 @@ class ResourceSubscriptionManager implements ResourceSubscriptionBackend {
 	}
 }
 
-export const resourceSubscriptionManager = new ResourceSubscriptionManager();
+function createSubscriptionManager(): ResourceSubscriptionBackend & {
+	getSubscribedSessionsForUri(uri: string): Set<string>;
+} {
+	if (isRedisConfigured()) {
+		return new RedisResourceSubscriptionManager();
+	}
+
+	logger.warn(
+		'REDIS_URL not set — using in-memory resource subscription manager. Not suitable for production.',
+	);
+	return new InMemoryResourceSubscriptionManager();
+}
+
+export const resourceSubscriptionManager = createSubscriptionManager();

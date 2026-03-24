@@ -4,6 +4,10 @@ import { environment } from '@web/env';
 
 type RedisClient = ReturnType<typeof createClient>;
 
+export function isRedisConfigured(): boolean {
+	return environment.REDIS_URL !== undefined;
+}
+
 function createLazyRedisClient(initialize: () => Promise<RedisClient>): () => Promise<RedisClient> {
 	let client: RedisClient | null = null;
 	let pending: Promise<RedisClient> | null = null;
@@ -31,6 +35,10 @@ function createLazyRedisClient(initialize: () => Promise<RedisClient>): () => Pr
 }
 
 export const getRedisClient = createLazyRedisClient(async () => {
+	if (!isRedisConfigured()) {
+		throw new Error('Redis is not configured. Set REDIS_URL to enable Redis-backed features.');
+	}
+
 	const client = createClient({ url: environment.REDIS_URL });
 
 	client.on('error', (error) => {
@@ -56,6 +64,8 @@ export const getRedisSubscriberClient = createLazyRedisClient(async () => {
 });
 
 export async function disconnectRedisSubscriberClient(): Promise<void> {
+	if (!isRedisConfigured()) return;
+
 	if (subscriberClient?.isOpen) {
 		await subscriberClient.quit();
 		subscriberClient = null;
@@ -63,6 +73,8 @@ export async function disconnectRedisSubscriberClient(): Promise<void> {
 }
 
 export async function isRedisHealthy(): Promise<boolean> {
+	if (!isRedisConfigured()) return false;
+
 	const probe = createClient({
 		url: environment.REDIS_URL,
 		socket: {

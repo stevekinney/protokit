@@ -1,5 +1,7 @@
+import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
-import { getRedisClient } from '@web/lib/redis-client';
+import { inMemorySortedSetStore } from '@web/lib/in-memory-sorted-set-store';
+import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 import { getRequestClientIdentifier } from '@web/lib/request-client-identifier';
 import {
 	SlidingWindowRateLimiter,
@@ -7,6 +9,8 @@ import {
 } from '@web/lib/sliding-window-rate-limiter';
 
 const slidingWindowRateLimiter = new SlidingWindowRateLimiter();
+
+let warnedAboutInMemoryRateLimiter = false;
 
 function buildRateLimitKey(route: string, identifier: string): string {
 	return `rate_limit:${route}:${identifier}`;
@@ -18,8 +22,23 @@ async function consumeRateLimit(input: {
 	maximumRequests: number;
 	windowSeconds: number;
 }): Promise<SlidingWindowRateLimiterResult> {
-	const redisClient = await getRedisClient();
 	const key = buildRateLimitKey(input.route, input.identifier);
+
+	if (!isRedisConfigured()) {
+		if (!warnedAboutInMemoryRateLimiter) {
+			logger.warn('REDIS_URL not set — using in-memory rate limiter. Not suitable for production.');
+			warnedAboutInMemoryRateLimiter = true;
+		}
+
+		return slidingWindowRateLimiter.consume({
+			key,
+			maximumRequests: input.maximumRequests,
+			windowSeconds: input.windowSeconds,
+			sortedSetStore: inMemorySortedSetStore,
+		});
+	}
+
+	const redisClient = await getRedisClient();
 
 	return slidingWindowRateLimiter.consume({
 		key,

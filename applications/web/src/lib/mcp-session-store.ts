@@ -1,4 +1,6 @@
-import { getRedisClient } from '@web/lib/redis-client';
+import { logger } from '@template/mcp/logger';
+import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
+import { InMemoryMcpSessionStore } from '@web/lib/in-memory-mcp-session-store';
 
 const SESSION_KEY_PREFIX = 'mcp_session';
 
@@ -28,7 +30,7 @@ function parseSessionRecord(value: string | null): McpSessionRecord | null {
 	}
 }
 
-export class McpSessionStore {
+class RedisMcpSessionStore {
 	async createSession(input: {
 		sessionId: string;
 		userId: string;
@@ -87,4 +89,15 @@ export class McpSessionStore {
 	}
 }
 
-export const mcpSessionStore = new McpSessionStore();
+function createSessionStore(): RedisMcpSessionStore | InMemoryMcpSessionStore {
+	if (isRedisConfigured()) {
+		return new RedisMcpSessionStore();
+	}
+
+	logger.warn(
+		'REDIS_URL not set — using in-memory MCP session store. Not suitable for production.',
+	);
+	return new InMemoryMcpSessionStore();
+}
+
+export const mcpSessionStore = createSessionStore();

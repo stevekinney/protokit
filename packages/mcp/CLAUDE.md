@@ -4,12 +4,16 @@ MCP server factory, tool/resource/prompt definitions, and shared logger.
 
 ## Key Files
 
-- `src/server.ts` — `createMcpServer(context)` factory. Creates an McpServer instance and registers all tools, resources, and prompts.
+- `src/server.ts` — `createMcpServer(context)` factory. Creates an McpServer instance and auto-registers all tools, resources, and prompts from barrel files.
+- `src/tools/index.ts` — Barrel file exporting individual tools and `allTools` array.
+- `src/resources/index.ts` — Barrel file exporting individual resources and `allResources` array.
+- `src/prompts/index.ts` — Barrel file exporting individual prompts and `allPrompts` array.
+- `src/types/primitives.ts` — `McpToolDefinition`, `McpResourceDefinition`, `McpPromptDefinition`, `McpUserProfile`, `McpContext` types.
 - `src/tools/` — One file per tool. Each exports a tool object with `name`, `description`, `inputSchema`, and `handler`.
 - `src/resources/` — One file per resource. Each exports a resource object with `name`, `uri`, `description`, `mimeType`, and `handler`.
 - `src/prompts/` — One file per prompt. Each exports a prompt object with `name`, `description`, `arguments`, and `handler`.
 - `src/logger.ts` — Shared pino logger. JSON in production, pretty-print in development.
-- `src/env.ts` — Owns `MCP_CONFORMANCE_MODE` and `LOG_LEVEL`.
+- `src/env.ts` — Owns `MCP_SERVER_NAME`, `MCP_CONFORMANCE_MODE`, and `LOG_LEVEL`.
 - `src/markdown.d.ts` — Type declarations for importing `.md` files as strings (used by prompt templates and server instructions).
 - `src/instructions.md` — Server instructions passed to the MCP client on initialize.
 
@@ -17,33 +21,41 @@ MCP server factory, tool/resource/prompt definitions, and shared logger.
 
 1. Create `src/tools/my-tool-name.ts` (kebab-case filename)
 2. Export a tool object with snake_case `name` (e.g., `my_tool_name`)
-3. Define `inputSchema` with Zod, `handler` with `(input, context)` signature
+3. Define `inputSchema` with Zod, `handler` with `(input, context: McpContext)` signature
 4. Tools must never throw — catch errors and return `{ content: [...], isError: true }`
 5. Log errors via `logger.error({ err }, 'description')`
-6. Register the tool in `src/server.ts` via `server.registerTool()`
-7. Re-export from `src/index.ts`
+6. Add the tool to `src/tools/index.ts`: import it and append to the `allTools` array
+
+That's it — `server.ts` auto-registers everything in the `allTools` array with metrics wrapping.
 
 ## Adding a New Resource
 
 1. Create `src/resources/my-resource-name.ts` (kebab-case filename)
 2. Export a resource object with snake_case `name` (e.g., `my_resource_name`)
-3. Define `uri`, `description`, `mimeType`, and `handler` with `(uri: URL, context)` signature
+3. Define `uri`, `description`, `mimeType`, and `handler` with `(uri: URL, context: McpContext)` signature
 4. Resources must never throw — catch errors and return a structured `contents` array
 5. Log errors via `logger.error({ err }, 'description')`
-6. Register the resource in `src/server.ts` via `server.registerResource()`
-7. Re-export from `src/index.ts`
+6. Add the resource to `src/resources/index.ts`: import it and append to the `allResources` array
 
 ## Adding a New Prompt
 
 1. Create `src/prompts/my-prompt-name.ts` (kebab-case filename)
 2. Export a prompt object with snake_case `name` (e.g., `my_prompt_name`)
-3. Define `arguments` as a raw Zod shape (not wrapped in `z.object()`), and `handler` with `(arguments_, context)` signature
+3. Define `arguments` as a raw Zod shape (not wrapped in `z.object()`), and `handler` with `(arguments_, context: McpContext)` signature
 4. Prompts must never throw — catch errors and return a fallback `messages` array
 5. Log errors via `logger.error({ err }, 'description')`
-6. Register the prompt in `src/server.ts` via `server.registerPrompt()`
-7. Re-export from `src/index.ts`
+6. Add the prompt to `src/prompts/index.ts`: import it and append to the `allPrompts` array
 
 Prompts can import Markdown files as template strings: `import template from './templates/my-template.md';`. The `markdown.d.ts` declaration provides TypeScript support for this pattern.
+
+## Tool Context
+
+All tool, resource, and prompt handlers receive `context: McpContext` which includes:
+
+- `userId: string` — the authenticated user's ID
+- `user: McpUserProfile` — pre-fetched user profile (`id`, `email`, `name`, `image`, `role`)
+
+No per-tool database queries needed for user data — it comes from context.
 
 ## Adding an MCP App
 
@@ -56,7 +68,7 @@ MCP Apps are interactive HTML interfaces rendered in sandboxed iframes inside ho
    - Type declarations are auto-generated during build (`dist/{app-name}.d.ts`). Ensure `@template/mcp-apps` is built before importing
 4. Create a tool in `src/tools/` with `_meta: { ui: { resourceUri: 'ui://{app-name}' } }`
 5. Optionally add app-only tools with `visibility: ['app']` in `_meta.ui` — these are callable by the app via `callServerTool()` but hidden from the LLM
-6. Register everything in `src/server.ts`, re-export from `src/index.ts`
+6. Add to the respective barrel files (`tools/index.ts`, `resources/index.ts`)
 
 ## Testing
 
@@ -66,7 +78,7 @@ Run tests with `bun test` from this package directory.
 
 Import from `@template/mcp/testing` (or `../testing/...` within this package):
 
-- `createTestContext(overrides?)` — returns `{ userId: 'test-user-00000000-...' }` by default
+- `createTestContext(overrides?)` — returns a full `McpContext` with `userId` and `user` (test defaults: `test@example.com`, `Test User`)
 - `expectToolSuccess(result)` — asserts `content` array exists, `isError` is not true
 - `expectToolError(result)` — asserts `content` array exists, `isError` is true
 - `expectToolJsonContent(result)` — calls `expectToolSuccess`, parses `content[0].text` as JSON, returns parsed value
@@ -74,24 +86,7 @@ Import from `@template/mcp/testing` (or `../testing/...` within this package):
 ### Test Layers
 
 1. **Shape tests** — verify name, description, schema, handler exist (all tools/resources/prompts have these)
-2. **Handler tests (pure)** — invoke handler directly, no mocks needed (e.g., `list-audit-events`)
-3. **Handler tests (with `mock.module`)** — mock `@template/database` with chainable `.select().from().where().limit()`, test success/not-found/error paths (e.g., `get-user-profile`, `user-profile` resource)
-
-### Mock Pattern for Database
-
-```typescript
-mock.module('@template/database', () => ({
-	database: {
-		select: () => ({
-			from: () => ({ where: () => ({ limit: () => Promise.resolve([mockUser]) }) }),
-		}),
-	},
-	schema: { users: { id: 'id' } },
-}));
-mock.module('drizzle-orm', () => ({
-	eq: (column: unknown, value: unknown) => ({ column, value }),
-}));
-```
+2. **Handler tests (pure)** — invoke handler directly with `createTestContext()`, no mocks needed (e.g., `get-user-profile`, `list-audit-events`, `user-profile`)
 
 ## Logging Conventions
 

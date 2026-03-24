@@ -1,8 +1,7 @@
 export { createMcpServer } from './server.js';
-export { getUserProfileTool } from './tools/get-user-profile.js';
-export { listAuditEventsTool } from './tools/list-audit-events.js';
-export { userProfileResource } from './resources/user-profile.js';
-export { summarizePrompt } from './prompts/summarize.js';
+export { getUserProfileTool, listAuditEventsTool, allTools } from './tools/index.js';
+export { userProfileResource, allResources } from './resources/index.js';
+export { summarizePrompt, allPrompts } from './prompts/index.js';
 export { logger } from './logger.js';
 export {
 	createToolTextResponse,
@@ -27,3 +26,10 @@ export {
 export { metricsCollector } from './metrics.js';
 export type { ToolMetricEntry, MetricsSnapshot } from './metrics.js';
 export type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
+export type {
+	McpToolDefinition,
+	McpResourceDefinition,
+	McpPromptDefinition,
+	McpUserProfile,
+	McpContext,
+} from './types/primitives.js';
