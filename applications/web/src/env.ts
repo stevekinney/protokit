@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 export const environment = createEnv({
 	server: {
+		BASE_URL: z.string().url().optional(),
 		SESSION_SIGNING_SECRET: z.string().min(32),
 		GOOGLE_CLIENT_ID: z.string().min(1),
 		GOOGLE_CLIENT_SECRET: z.string().min(1),
@@ -36,6 +37,7 @@ export const environment = createEnv({
 		NODE_ENV: z.enum(['development', 'production', 'test']).optional().default('development'),
 	},
 	runtimeEnv: {
+		BASE_URL: process.env.BASE_URL,
 		SESSION_SIGNING_SECRET: process.env.SESSION_SIGNING_SECRET,
 		GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
 		GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,

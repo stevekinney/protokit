@@ -80,6 +80,10 @@ const server = Bun.serve({
 
 logger.info({ port }, 'Web server started');
 
+if (environment.NODE_ENV === 'production' && !environment.BASE_URL) {
+	logger.warn('BASE_URL is not set in production; base URL will be derived from request.url');
+}
+
 let isShuttingDown = false;
 
 async function gracefulShutdown(signal: string): Promise<void> {

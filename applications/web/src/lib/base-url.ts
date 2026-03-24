@@ -1,7 +1,10 @@
+import { environment } from '@web/env';
+
 export function getBaseUrl(request: Request): string {
-	const requestUrl = new URL(request.url);
-	const protocol = request.headers.get('x-forwarded-proto') ?? requestUrl.protocol.replace(':', '');
-	const host =
-		request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? requestUrl.host;
-	return `${protocol}://${host}`;
+	if (environment.BASE_URL) {
+		return environment.BASE_URL.replace(/\/+$/, '');
+	}
+
+	const url = new URL(request.url);
+	return `${url.protocol}//${url.host}`;
 }
