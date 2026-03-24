@@ -14,6 +14,6 @@ export default tseslint.config(
 		files: ['applications/web/src/views/**/*.tsx'],
 	},
 	{
-		ignores: ['**/node_modules/', '**/build/', '**/dist/', '**/.turbo/'],
+		ignores: ['**/node_modules/', '**/build/', '**/dist/', '**/.turbo/', '**/public/assets/**'],
 	},
 );

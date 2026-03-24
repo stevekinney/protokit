@@ -63,11 +63,21 @@ export async function disconnectRedisSubscriberClient(): Promise<void> {
 }
 
 export async function isRedisHealthy(): Promise<boolean> {
+	const probe = createClient({
+		url: environment.REDIS_URL,
+		socket: {
+			reconnectStrategy: false,
+			connectTimeout: 2000,
+		},
+	});
+
 	try {
-		const client = await getRedisClient();
-		await client.ping();
+		await probe.connect();
+		await probe.ping();
 		return true;
 	} catch {
 		return false;
+	} finally {
+		await probe.disconnect().catch(() => {});
 	}
 }
