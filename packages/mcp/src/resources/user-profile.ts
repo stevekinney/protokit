@@ -1,4 +1,5 @@
 import { logger } from '../logger.js';
+import { findUserById } from '../queries/find-user-by-id.js';
 
 export const userProfileResource = {
 	name: 'user_profile' as const,
@@ -9,14 +10,7 @@ export const userProfileResource = {
 		const requestLogger = logger.child({ resource: 'user_profile', userId: context.userId });
 
 		try {
-			const { database, schema } = await import('@template/database');
-			const { eq } = await import('drizzle-orm');
-
-			const [user] = await database
-				.select()
-				.from(schema.users)
-				.where(eq(schema.users.id, context.userId))
-				.limit(1);
+			const user = await findUserById(context.userId);
 
 			if (!user) {
 				return {
@@ -35,12 +29,7 @@ export const userProfileResource = {
 					{
 						uri: uri.href,
 						mimeType: 'application/json',
-						text: JSON.stringify({
-							id: user.id,
-							name: user.name,
-							email: user.email,
-							image: user.image,
-						}),
+						text: JSON.stringify(user),
 					},
 				],
 			};

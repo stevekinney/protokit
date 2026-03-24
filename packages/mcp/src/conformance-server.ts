@@ -10,6 +10,22 @@ import { hasValidLocalhostRebindingHeaders } from './localhost-request-validatio
 const port = Number.parseInt(process.env.MCP_CONFORMANCE_PORT ?? '3137', 10);
 const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
 
+function convertIncomingHeaders(incomingMessage: import('node:http').IncomingMessage): Headers {
+	const headers = new Headers();
+	for (const [headerName, headerValue] of Object.entries(incomingMessage.headers)) {
+		if (Array.isArray(headerValue)) {
+			for (const value of headerValue) {
+				headers.append(headerName, value);
+			}
+			continue;
+		}
+		if (headerValue !== undefined) {
+			headers.set(headerName, headerValue);
+		}
+	}
+	return headers;
+}
+
 function createStatefulTransport(sessionIdentifier: string) {
 	const transport = new WebStandardStreamableHTTPServerTransport({
 		sessionIdGenerator: () => sessionIdentifier,
@@ -27,19 +43,7 @@ async function toWebRequest(
 	const protocol = incomingMessage.headers['x-forwarded-proto'] ?? 'http';
 	const host = incomingMessage.headers.host ?? `127.0.0.1:${port}`;
 	const url = `${protocol}://${host}${incomingMessage.url ?? '/mcp'}`;
-	const headers = new Headers();
-
-	for (const [headerName, headerValue] of Object.entries(incomingMessage.headers)) {
-		if (Array.isArray(headerValue)) {
-			for (const value of headerValue) {
-				headers.append(headerName, value);
-			}
-			continue;
-		}
-		if (headerValue !== undefined) {
-			headers.set(headerName, headerValue);
-		}
-	}
+	const headers = convertIncomingHeaders(incomingMessage);
 
 	return new Request(url, {
 		method: incomingMessage.method ?? 'GET',
@@ -130,18 +134,7 @@ const server = createServer(async (incomingMessage, serverResponse) => {
 		return;
 	}
 
-	const headers = new Headers();
-	for (const [headerName, headerValue] of Object.entries(incomingMessage.headers)) {
-		if (Array.isArray(headerValue)) {
-			for (const value of headerValue) {
-				headers.append(headerName, value);
-			}
-			continue;
-		}
-		if (headerValue !== undefined) {
-			headers.set(headerName, headerValue);
-		}
-	}
+	const headers = convertIncomingHeaders(incomingMessage);
 
 	if (!hasValidLocalhostRebindingHeaders(headers)) {
 		serverResponse.statusCode = 403;

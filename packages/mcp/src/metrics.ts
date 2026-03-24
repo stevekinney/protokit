@@ -60,6 +60,7 @@ class MetricsCollector {
 				p95: percentile(sorted, 95),
 				p99: percentile(sorted, 99),
 			};
+			entry.durations = [];
 		}
 		return {
 			tools,

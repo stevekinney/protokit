@@ -175,7 +175,7 @@ async function dispatch(context: RequestContext): Promise<Response> {
 	}
 
 	if (requestUrl.pathname === '/metrics' && request.method === 'GET') {
-		return handleMetricsGet();
+		return handleMetricsGet(request);
 	}
 
 	if (requestUrl.pathname === '/mcp') {

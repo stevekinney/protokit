@@ -48,7 +48,10 @@ function buildMcpResponseHeaders(request: Request): Record<string, string> {
 	};
 }
 
-function buildSessionAffinityRequiredResponse(sessionId: string, request: Request): Response {
+function buildSessionAffinityRequiredResponse(
+	sessionId: string,
+	headers: Record<string, string>,
+): Response {
 	return new Response(
 		JSON.stringify({
 			error: 'session_affinity_required',
@@ -62,22 +65,25 @@ function buildSessionAffinityRequiredResponse(sessionId: string, request: Reques
 			status: 409,
 			headers: {
 				'Content-Type': 'application/json',
-				...buildMcpResponseHeaders(request),
+				...headers,
 			},
 		},
 	);
 }
 
-function buildSessionNotFoundResponse(request: Request): Response {
+function buildSessionNotFoundResponse(headers: Record<string, string>): Response {
 	return createMcpProtocolErrorResponse({
 		status: 404,
 		error: 'not_found',
 		errorDescription: 'Session not found',
-		headers: buildMcpResponseHeaders(request),
+		headers,
 	});
 }
 
-async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPostBody | Response> {
+async function parseAndValidatePostBody(
+	request: Request,
+	headers: Record<string, string>,
+): Promise<ParsedMcpPostBody | Response> {
 	const acceptHeader = request.headers.get('accept') ?? '';
 	if (!acceptHeader.includes('application/json') || !acceptHeader.includes('text/event-stream')) {
 		return createMcpProtocolErrorResponse({
@@ -85,7 +91,7 @@ async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPost
 			error: 'not_acceptable',
 			errorDescription:
 				'POST /mcp requires Accept to include both application/json and text/event-stream.',
-			headers: buildMcpResponseHeaders(request),
+			headers,
 		});
 	}
 
@@ -95,7 +101,7 @@ async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPost
 			status: 415,
 			error: 'unsupported_media_type',
 			errorDescription: 'POST /mcp requires Content-Type: application/json.',
-			headers: buildMcpResponseHeaders(request),
+			headers,
 		});
 	}
 
@@ -107,7 +113,7 @@ async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPost
 			status: 400,
 			error: 'bad_request',
 			errorDescription: 'Invalid JSON body.',
-			headers: buildMcpResponseHeaders(request),
+			headers,
 		});
 	}
 
@@ -121,7 +127,7 @@ async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPost
 			status: 400,
 			error: 'bad_request',
 			errorDescription: 'Invalid JSON-RPC message payload.',
-			headers: buildMcpResponseHeaders(request),
+			headers,
 		});
 	}
 
@@ -134,7 +140,7 @@ async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPost
 				status: 400,
 				error: 'bad_request',
 				errorDescription: `Only MCP protocol version ${mcpProtocolVersion} is supported.`,
-				headers: buildMcpResponseHeaders(request),
+				headers,
 			});
 		}
 	}
@@ -142,14 +148,17 @@ async function parseAndValidatePostBody(request: Request): Promise<ParsedMcpPost
 	return { parsedBody: rawBody, isInitializationRequest };
 }
 
-function validateVersionAndAcceptHeadersForSessionBoundRequests(request: Request): Response | null {
+function validateVersionAndAcceptHeadersForSessionBoundRequests(
+	request: Request,
+	headers: Record<string, string>,
+): Response | null {
 	const protocolHeader = request.headers.get('mcp-protocol-version');
 	if (protocolHeader !== mcpProtocolVersion) {
 		return createMcpProtocolErrorResponse({
 			status: 400,
 			error: 'bad_request',
 			errorDescription: `MCP-Protocol-Version must be ${mcpProtocolVersion} for established sessions.`,
-			headers: buildMcpResponseHeaders(request),
+			headers,
 		});
 	}
 
@@ -160,7 +169,7 @@ function validateVersionAndAcceptHeadersForSessionBoundRequests(request: Request
 				status: 406,
 				error: 'not_acceptable',
 				errorDescription: 'GET /mcp requires Accept: text/event-stream.',
-				headers: buildMcpResponseHeaders(request),
+				headers,
 			});
 		}
 	}
@@ -168,8 +177,11 @@ function validateVersionAndAcceptHeadersForSessionBoundRequests(request: Request
 	return null;
 }
 
-function attachCommonMcpResponseHeaders(response: Response, request: Request): Response {
-	for (const [key, value] of Object.entries(buildMcpResponseHeaders(request))) {
+function attachCommonMcpResponseHeaders(
+	response: Response,
+	headers: Record<string, string>,
+): Response {
+	for (const [key, value] of Object.entries(headers)) {
 		response.headers.set(key, value);
 	}
 	return response;
@@ -231,13 +243,14 @@ export async function shutdownMcpTransports(): Promise<void> {
 
 export async function handleMcpRequest(request: Request, userId: string): Promise<Response> {
 	const requestLogger = logger.child({ component: 'mcp-handler', userId, instanceIdentifier });
+	const responseHeaders = buildMcpResponseHeaders(request);
 	const originValidation = validateMcpRequestOrigin(request);
 	if (!originValidation.allowed) {
 		return createMcpProtocolErrorResponse({
 			status: 403,
 			error: 'forbidden',
 			errorDescription: 'Origin is not allowed for MCP requests.',
-			headers: buildMcpResponseHeaders(request),
+			headers: responseHeaders,
 		});
 	}
 
@@ -248,10 +261,13 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 				status: 400,
 				error: 'bad_request',
 				errorDescription: 'Missing mcp-session-id header.',
-				headers: buildMcpResponseHeaders(request),
+				headers: responseHeaders,
 			});
 		}
-		const protocolValidationError = validateVersionAndAcceptHeadersForSessionBoundRequests(request);
+		const protocolValidationError = validateVersionAndAcceptHeadersForSessionBoundRequests(
+			request,
+			responseHeaders,
+		);
 		if (protocolValidationError) {
 			return protocolValidationError;
 		}
@@ -259,9 +275,9 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 		const verification = await verifySessionOwnership({ sessionId, userId });
 		if (verification.status !== 'ok') {
 			if (verification.status === 'not_found') {
-				return buildSessionNotFoundResponse(request);
+				return buildSessionNotFoundResponse(responseHeaders);
 			}
-			return buildSessionAffinityRequiredResponse(sessionId, request);
+			return buildSessionAffinityRequiredResponse(sessionId, responseHeaders);
 		}
 		const { transport } = verification;
 
@@ -278,14 +294,14 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 				.where(
 					and(eq(schema.mcpSessions.sessionId, sessionId), eq(schema.mcpSessions.userId, userId)),
 				);
-			return attachCommonMcpResponseHeaders(new Response(null, { status: 204 }), request);
+			return attachCommonMcpResponseHeaders(new Response(null, { status: 204 }), responseHeaders);
 		}
 
-		return attachCommonMcpResponseHeaders(await transport.handleRequest(request), request);
+		return attachCommonMcpResponseHeaders(await transport.handleRequest(request), responseHeaders);
 	}
 
 	if (request.method === 'POST') {
-		const postPayload = await parseAndValidatePostBody(request);
+		const postPayload = await parseAndValidatePostBody(request, responseHeaders);
 		if (postPayload instanceof Response) {
 			return postPayload;
 		}
@@ -293,8 +309,10 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 		const sessionId = request.headers.get('mcp-session-id');
 
 		if (sessionId) {
-			const protocolValidationError =
-				validateVersionAndAcceptHeadersForSessionBoundRequests(request);
+			const protocolValidationError = validateVersionAndAcceptHeadersForSessionBoundRequests(
+				request,
+				responseHeaders,
+			);
 			if (protocolValidationError) {
 				return protocolValidationError;
 			}
@@ -302,9 +320,9 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 			const verification = await verifySessionOwnership({ sessionId, userId });
 			if (verification.status !== 'ok') {
 				if (verification.status === 'not_found') {
-					return buildSessionNotFoundResponse(request);
+					return buildSessionNotFoundResponse(responseHeaders);
 				}
-				return buildSessionAffinityRequiredResponse(sessionId, request);
+				return buildSessionAffinityRequiredResponse(sessionId, responseHeaders);
 			}
 			const { transport } = verification;
 
@@ -317,7 +335,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 
 			return attachCommonMcpResponseHeaders(
 				await transport.handleRequest(request, { parsedBody: postPayload.parsedBody }),
-				request,
+				responseHeaders,
 			);
 		}
 
@@ -329,7 +347,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 					status: 400,
 					error: 'bad_request',
 					errorDescription: `MCP-Protocol-Version must be ${mcpProtocolVersion} when no session is used.`,
-					headers: buildMcpResponseHeaders(request),
+					headers: responseHeaders,
 				});
 			}
 
@@ -351,7 +369,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 					await statelessTransport.handleRequest(request, {
 						parsedBody: postPayload.parsedBody,
 					}),
-					request,
+					responseHeaders,
 				);
 			} finally {
 				await statelessTransport.close().catch(() => {});
@@ -366,7 +384,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 				error: 'internal_error',
 				errorDescription: 'Too many active sessions.',
 				headers: {
-					...buildMcpResponseHeaders(request),
+					...responseHeaders,
 					'Retry-After': '30',
 				},
 			});
@@ -416,7 +434,7 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 		await server.connect(transport);
 		return attachCommonMcpResponseHeaders(
 			await transport.handleRequest(request, { parsedBody: postPayload.parsedBody }),
-			request,
+			responseHeaders,
 		);
 	}
 
@@ -424,6 +442,6 @@ export async function handleMcpRequest(request: Request, userId: string): Promis
 		status: 405,
 		error: 'bad_request',
 		errorDescription: 'Method not allowed.',
-		headers: buildMcpResponseHeaders(request),
+		headers: responseHeaders,
 	});
 }

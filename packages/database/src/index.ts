@@ -5,7 +5,7 @@ import * as schema from './schema.js';
 
 let instance: NeonHttpDatabase<typeof schema> | undefined;
 
-export function getDatabase(): NeonHttpDatabase<typeof schema> {
+function getDatabase(): NeonHttpDatabase<typeof schema> {
 	if (!instance) {
 		const sql = neon(environment.DATABASE_URL);
 		instance = drizzle(sql, { schema });
