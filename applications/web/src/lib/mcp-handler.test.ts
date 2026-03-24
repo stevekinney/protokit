@@ -93,3 +93,88 @@ describe('handleMcpRequest session affinity', () => {
 		});
 	});
 });
+
+describe('handleMcpRequest protocol validation', () => {
+	it('returns 406 when POST is missing required Accept header', async () => {
+		const request = new Request('http://localhost/mcp', {
+			method: 'POST',
+			headers: {
+				accept: 'text/html',
+				'content-type': 'application/json',
+				origin: 'http://localhost:3000',
+			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: '1',
+				method: 'initialize',
+				params: {
+					protocolVersion: '2025-11-25',
+					capabilities: {},
+					clientInfo: { name: 'test', version: '1.0.0' },
+				},
+			}),
+		});
+
+		const response = await handleMcpRequest(request, 'user-1');
+		expect(response.status).toBe(406);
+		expect(await response.json()).toMatchObject({ error: 'not_acceptable' });
+	});
+
+	it('returns 415 when POST has wrong Content-Type', async () => {
+		const request = new Request('http://localhost/mcp', {
+			method: 'POST',
+			headers: {
+				accept: 'application/json, text/event-stream',
+				'content-type': 'text/plain',
+				origin: 'http://localhost:3000',
+			},
+			body: 'not json',
+		});
+
+		const response = await handleMcpRequest(request, 'user-1');
+		expect(response.status).toBe(415);
+		expect(await response.json()).toMatchObject({ error: 'unsupported_media_type' });
+	});
+
+	it('returns 400 when POST has invalid JSON', async () => {
+		const request = new Request('http://localhost/mcp', {
+			method: 'POST',
+			headers: {
+				accept: 'application/json, text/event-stream',
+				'content-type': 'application/json',
+				origin: 'http://localhost:3000',
+			},
+			body: '{{invalid json',
+		});
+
+		const response = await handleMcpRequest(request, 'user-1');
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ error: 'bad_request' });
+	});
+
+	it('returns 400 when GET is missing session ID', async () => {
+		const request = new Request('http://localhost/mcp', {
+			method: 'GET',
+			headers: {
+				accept: 'text/event-stream',
+				origin: 'http://localhost:3000',
+			},
+		});
+
+		const response = await handleMcpRequest(request, 'user-1');
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ error: 'bad_request' });
+	});
+
+	it('returns 405 for unsupported HTTP method', async () => {
+		const request = new Request('http://localhost/mcp', {
+			method: 'PUT',
+			headers: {
+				origin: 'http://localhost:3000',
+			},
+		});
+
+		const response = await handleMcpRequest(request, 'user-1');
+		expect(response.status).toBe(405);
+	});
+});
