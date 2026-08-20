@@ -10,7 +10,7 @@ process.env.MCP_ALLOWED_ORIGINS = process.env.MCP_ALLOWED_ORIGINS ?? 'http://loc
 
 const { handleApplicationRequest } = await import('@web/application');
 
-let redisAvailable = false;
+let redisAvailable: boolean;
 try {
 	const { isRedisHealthy } = await import('@web/lib/redis-client');
 	redisAvailable = await Promise.race([

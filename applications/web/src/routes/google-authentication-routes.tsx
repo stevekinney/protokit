@@ -69,7 +69,7 @@ async function upsertGoogleUser(input: {
 				.where(eq(schema.users.id, existingGoogleAccount.userId));
 		} catch (error) {
 			if (isUniqueConstraintViolation(error)) {
-				throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR);
+				throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR, { cause: error });
 			}
 			throw error;
 		}
