@@ -4,9 +4,6 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  SKIP_ENV_VALIDATION: 'true'
-
 permissions: {}
 
 concurrency:
@@ -35,8 +32,25 @@ jobs:
       - name: Lint
         run: bun turbo lint
 
+      # Real Postgres (behind a Neon-compatible HTTP proxy) and Redis, the
+      # same stack `bun run test:infrastructure:*` brings up locally, so the
+      # Redis- and database-backed tests run for real instead of skipping
+      # (see BUG-001/BUG-002 in PROGRESS.local.md) or being masked by
+      # SKIP_ENV_VALIDATION discarding every Zod default.
+      - name: Bring up test infrastructure (Postgres, Neon proxy, Redis)
+        run: bun run test:infrastructure:up
+
+      - name: Apply database migrations
+        run: bun run test:infrastructure:migrate
+
       - name: Test
         run: bun turbo test
+        env:
+          REDIS_URL: 'redis://localhost:6379'
+
+      - name: Tear down test infrastructure
+        if: always()
+        run: bun run test:infrastructure:down
 
       - name: Build
         run: bun turbo build
