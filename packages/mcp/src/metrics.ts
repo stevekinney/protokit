@@ -9,7 +9,6 @@ export type MetricsSnapshot = {
 		string,
 		{ invocations: number; errors: number; p50: number; p95: number; p99: number }
 	>;
-	activeSessions: number;
 	uptimeSeconds: number;
 	collectedAt: string;
 };
@@ -24,7 +23,6 @@ function percentile(sorted: number[], p: number): number {
 
 class MetricsCollector {
 	private tools = new Map<string, ToolMetricEntry>();
-	private sessionCount = 0;
 	private startedAt = Date.now();
 
 	recordToolInvocation(name: string, durationMs: number, isError: boolean): void {
@@ -39,14 +37,6 @@ class MetricsCollector {
 		if (entry.durations.length > MAX_DURATIONS) {
 			entry.durations = entry.durations.slice(-MAX_DURATIONS);
 		}
-	}
-
-	incrementActiveSessions(): void {
-		this.sessionCount++;
-	}
-
-	decrementActiveSessions(): void {
-		this.sessionCount = Math.max(0, this.sessionCount - 1);
 	}
 
 	snapshot(): MetricsSnapshot {
@@ -64,7 +54,6 @@ class MetricsCollector {
 		}
 		return {
 			tools,
-			activeSessions: this.sessionCount,
 			uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
 			collectedAt: new Date().toISOString(),
 		};
@@ -72,7 +61,6 @@ class MetricsCollector {
 
 	reset(): void {
 		this.tools.clear();
-		this.sessionCount = 0;
 		this.startedAt = Date.now();
 	}
 }

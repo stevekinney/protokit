@@ -1,180 +1,210 @@
 import { describe, expect, it, mock } from 'bun:test';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import type { AuthInfo } from '@modelcontextprotocol/server';
 
-mock.module('@web/lib/mcp-session-store', () => ({
-	mcpSessionStore: {
-		getSession: async () => ({
-			sessionId: 'session-1',
-			userId: 'user-1',
-			ownerInstanceId: 'other-instance',
-			lastActivityAt: new Date().toISOString(),
-			expiresAt: new Date(Date.now() + 1000 * 60).toISOString(),
-		}),
-		touchSession: async () => null,
-		deleteSession: async () => undefined,
-		createSession: async () => undefined,
+mock.module('@web/env', () => ({
+	environment: {
+		MCP_ENABLE_UI_EXTENSION: false,
+		MCP_ENABLE_ENTERPRISE_AUTH: false,
+		MCP_CONFORMANCE_MODE: false,
 	},
+}));
+
+mock.module('@template/database', () => ({
+	database: {
+		select: () => ({
+			from: () => ({
+				where: () => ({
+					limit: async () => [
+						{
+							id: 'user-1',
+							email: 'user@example.com',
+							name: 'Test User',
+							image: null,
+							role: 'user',
+						},
+					],
+				}),
+			}),
+		}),
+	},
+	schema: {
+		users: { id: 'id', email: 'email', name: 'name', image: 'image', role: 'role' },
+	},
+}));
+
+mock.module('drizzle-orm', () => ({
+	eq: (column: unknown, value: unknown) => ({ column, value }),
 }));
 
 const { handleMcpRequest } = await import('@web/lib/mcp-handler');
 
-describe('handleMcpRequest session affinity', () => {
-	it('rejects non-allowlisted origin', async () => {
-		const request = new Request('http://localhost/mcp', {
+function buildAuthInfo(): AuthInfo {
+	return {
+		token: 'test-token',
+		clientId: 'client-1',
+		scopes: ['mcp:read'],
+		resource: new URL('http://localhost:3000/mcp'),
+		extra: {
+			userId: 'user-1',
+			oauthClientId: 'client-1',
+			scopes: ['mcp:read'],
+			resource: 'http://localhost:3000/mcp',
+		},
+	};
+}
+
+async function fetchThroughHandler(input: string | URL, init?: RequestInit): Promise<Response> {
+	return handleMcpRequest(new Request(input, init), buildAuthInfo());
+}
+
+describe('handleMcpRequest', () => {
+	it('serves a 2025-11-25 (legacy) client through the SDK stateless fallback', async () => {
+		const client = new Client({ name: 'legacy-test-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL('http://localhost:3000/mcp'), {
+			fetch: fetchThroughHandler,
+		});
+
+		await client.connect(transport);
+		expect(client.getProtocolEra()).toBe('legacy');
+
+		const tools = await client.listTools();
+		expect(tools.tools.some((tool) => tool.name === 'get_user_profile')).toBe(true);
+
+		await client.close();
+	});
+
+	it('serves a 2026-07-28 (modern) client via server/discover with no session state', async () => {
+		const client = new Client(
+			{ name: 'modern-test-client', version: '1.0.0' },
+			{ versionNegotiation: { mode: 'auto' } },
+		);
+		const transport = new StreamableHTTPClientTransport(new URL('http://localhost:3000/mcp'), {
+			fetch: fetchThroughHandler,
+		});
+
+		await client.connect(transport);
+		expect(client.getProtocolEra()).toBe('modern');
+
+		const tools = await client.listTools();
+		expect(tools.tools.some((tool) => tool.name === 'get_user_profile')).toBe(true);
+
+		const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
+		expect(Boolean(result.isError)).toBe(false);
+
+		await client.close();
+	});
+
+	it('rejects a modern request whose MCP-Protocol-Version header does not match its envelope', async () => {
+		const response = await fetchThroughHandler('http://localhost:3000/mcp', {
 			method: 'POST',
 			headers: {
 				accept: 'application/json, text/event-stream',
 				'content-type': 'application/json',
-				origin: 'https://untrusted.example',
+				'mcp-method': 'tools/list',
 			},
 			body: JSON.stringify({
 				jsonrpc: '2.0',
-				id: '1',
-				method: 'initialize',
+				id: 1,
+				method: 'tools/list',
 				params: {
-					protocolVersion: '2025-11-25',
-					capabilities: {},
-					clientInfo: { name: 'test', version: '1.0.0' },
+					_meta: {
+						'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+					},
 				},
 			}),
 		});
 
-		const response = await handleMcpRequest(request, 'user-1');
-		expect(response.status).toBe(403);
-		expect(await response.json()).toMatchObject({
-			error: 'forbidden',
-		});
+		expect(response.status).toBe(400);
 	});
 
-	it('enforces latest protocol version on initialize', async () => {
-		const request = new Request('http://localhost/mcp', {
+	it('rejects a modern tools/call request missing the required Mcp-Method header', async () => {
+		const response = await fetchThroughHandler('http://localhost:3000/mcp', {
 			method: 'POST',
 			headers: {
 				accept: 'application/json, text/event-stream',
 				'content-type': 'application/json',
-				origin: 'http://localhost:3000',
+				'mcp-protocol-version': '2026-07-28',
 			},
 			body: JSON.stringify({
 				jsonrpc: '2.0',
-				id: '1',
-				method: 'initialize',
+				id: 1,
+				method: 'tools/list',
 				params: {
-					protocolVersion: '2025-03-26',
-					capabilities: {},
-					clientInfo: { name: 'test', version: '1.0.0' },
+					_meta: {
+						'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+						'io.modelcontextprotocol/clientCapabilities': {},
+					},
 				},
 			}),
 		});
 
-		const response = await handleMcpRequest(request, 'user-1');
 		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({
-			error: 'bad_request',
-		});
 	});
 
-	it('returns 409 with reconnect action when request lands on non-owner instance', async () => {
-		const request = new Request('http://localhost/mcp', {
-			method: 'GET',
-			headers: {
-				'mcp-session-id': 'session-1',
-				'mcp-protocol-version': '2025-11-25',
-				accept: 'text/event-stream',
-				origin: 'http://localhost:3000',
-			},
-		});
-
-		const response = await handleMcpRequest(request, 'user-1');
-		expect(response.status).toBe(409);
-		const payload = await response.json();
-		expect(payload).toMatchObject({
-			error: 'session_affinity_required',
-			action: 'reconnect',
-			session_id: 'session-1',
-		});
-	});
-});
-
-describe('handleMcpRequest protocol validation', () => {
-	it('returns 406 when POST is missing required Accept header', async () => {
-		const request = new Request('http://localhost/mcp', {
+	it('rejects a modern tools/call request whose Mcp-Name disagrees with the body', async () => {
+		const response = await fetchThroughHandler('http://localhost:3000/mcp', {
 			method: 'POST',
 			headers: {
-				accept: 'text/html',
+				accept: 'application/json, text/event-stream',
 				'content-type': 'application/json',
-				origin: 'http://localhost:3000',
+				'mcp-protocol-version': '2026-07-28',
+				'mcp-method': 'tools/call',
+				'mcp-name': 'wrong_tool_name',
 			},
 			body: JSON.stringify({
 				jsonrpc: '2.0',
-				id: '1',
-				method: 'initialize',
+				id: 1,
+				method: 'tools/call',
 				params: {
-					protocolVersion: '2025-11-25',
-					capabilities: {},
-					clientInfo: { name: 'test', version: '1.0.0' },
+					name: 'get_user_profile',
+					arguments: {},
+					_meta: {
+						'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+						'io.modelcontextprotocol/clientCapabilities': {},
+					},
 				},
 			}),
 		});
 
-		const response = await handleMcpRequest(request, 'user-1');
-		expect(response.status).toBe(406);
-		expect(await response.json()).toMatchObject({ error: 'not_acceptable' });
+		expect(response.status).toBe(400);
 	});
 
-	it('returns 415 when POST has wrong Content-Type', async () => {
-		const request = new Request('http://localhost/mcp', {
-			method: 'POST',
-			headers: {
-				accept: 'application/json, text/event-stream',
-				'content-type': 'text/plain',
-				origin: 'http://localhost:3000',
-			},
-			body: 'not json',
-		});
-
-		const response = await handleMcpRequest(request, 'user-1');
-		expect(response.status).toBe(415);
-		expect(await response.json()).toMatchObject({ error: 'unsupported_media_type' });
-	});
-
-	it('returns 400 when POST has invalid JSON', async () => {
-		const request = new Request('http://localhost/mcp', {
+	it('rejects a JSON-RPC batch on the modern path', async () => {
+		const response = await fetchThroughHandler('http://localhost:3000/mcp', {
 			method: 'POST',
 			headers: {
 				accept: 'application/json, text/event-stream',
 				'content-type': 'application/json',
-				origin: 'http://localhost:3000',
+				'mcp-protocol-version': '2026-07-28',
 			},
-			body: '{{invalid json',
+			body: JSON.stringify([
+				{
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'tools/list',
+					params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } },
+				},
+			]),
 		});
 
-		const response = await handleMcpRequest(request, 'user-1');
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({ error: 'bad_request' });
+		expect(response.status).toBeGreaterThanOrEqual(400);
 	});
 
-	it('returns 400 when GET is missing session ID', async () => {
-		const request = new Request('http://localhost/mcp', {
-			method: 'GET',
+	it('answers a bare notification POST with 202 and an empty body', async () => {
+		const response = await fetchThroughHandler('http://localhost:3000/mcp', {
+			method: 'POST',
 			headers: {
-				accept: 'text/event-stream',
-				origin: 'http://localhost:3000',
+				accept: 'application/json, text/event-stream',
+				'content-type': 'application/json',
 			},
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				method: 'notifications/initialized',
+			}),
 		});
 
-		const response = await handleMcpRequest(request, 'user-1');
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({ error: 'bad_request' });
-	});
-
-	it('returns 405 for unsupported HTTP method', async () => {
-		const request = new Request('http://localhost/mcp', {
-			method: 'PUT',
-			headers: {
-				origin: 'http://localhost:3000',
-			},
-		});
-
-		const response = await handleMcpRequest(request, 'user-1');
-		expect(response.status).toBe(405);
+		expect(response.status).toBe(202);
+		expect(await response.text()).toBe('');
 	});
 });

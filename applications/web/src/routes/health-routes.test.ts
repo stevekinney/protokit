@@ -33,7 +33,7 @@ mock.module('@web/lib/instance-identifier', () => ({
 }));
 
 mock.module('@web/lib/mcp-protocol-constants', () => ({
-	mcpProtocolVersion: '2025-11-25',
+	mcpSupportedProtocolVersions: ['2025-11-25', '2026-07-28'],
 }));
 
 const { handleHealthGet } = await import('@web/routes/health-routes');

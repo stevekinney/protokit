@@ -10,7 +10,6 @@ mock.module('@template/mcp/metrics', () => ({
 	metricsCollector: {
 		snapshot: () => ({
 			tools: {},
-			activeSessions: 0,
 			uptimeSeconds: 100,
 			collectedAt: '2026-01-01T00:00:00.000Z',
 		}),
@@ -63,7 +62,6 @@ describe('handleMetricsGet', () => {
 		expect(response.status).toBe(200);
 		const body = await response.json();
 		expect(body.tools).toEqual({});
-		expect(body.activeSessions).toBe(0);
 		expect(typeof body.uptimeSeconds).toBe('number');
 	});
 });

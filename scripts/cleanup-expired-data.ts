@@ -6,7 +6,6 @@ const cleanupLogger = logger.child({ script: 'cleanup-expired-data' });
 
 async function cleanupExpiredData() {
 	const now = new Date();
-	const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
 	// Delete expired or used OAuth authorization codes
 	const deletedCodes = await database
@@ -50,14 +49,6 @@ async function cleanupExpiredData() {
 		.returning();
 
 	cleanupLogger.info({ count: deletedSessions.length }, 'Deleted revoked/expired user sessions');
-
-	// Delete stale MCP session records (inactive for more than 24 hours)
-	const deletedMcpSessions = await database
-		.delete(schema.mcpSessions)
-		.where(lt(schema.mcpSessions.lastActiveAt, oneDayAgo))
-		.returning();
-
-	cleanupLogger.info({ count: deletedMcpSessions.length }, 'Deleted stale MCP sessions');
 }
 
 cleanupExpiredData()

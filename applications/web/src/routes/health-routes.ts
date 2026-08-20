@@ -3,7 +3,7 @@ import { database } from '@template/database';
 import { environment } from '@web/env';
 import { jsonResponse } from '@web/lib/http-response';
 import { instanceIdentifier } from '@web/lib/instance-identifier';
-import { mcpProtocolVersion } from '@web/lib/mcp-protocol-constants';
+import { mcpSupportedProtocolVersions } from '@web/lib/mcp-protocol-constants';
 import { isRedisConfigured, isRedisHealthy } from '@web/lib/redis-client';
 
 async function isDatabaseHealthy(): Promise<boolean> {
@@ -50,7 +50,7 @@ export async function handleHealthGet(): Promise<Response> {
 		{
 			status,
 			instanceIdentifier,
-			protocolVersion: mcpProtocolVersion,
+			protocolVersions: mcpSupportedProtocolVersions,
 			extensions: {
 				ui: environment.MCP_ENABLE_UI_EXTENSION,
 				enterpriseManagedAuthorization: environment.MCP_ENABLE_ENTERPRISE_AUTH,

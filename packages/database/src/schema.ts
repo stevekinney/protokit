@@ -106,13 +106,3 @@ export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
 	revokedAt: timestamp('revoked_at', { withTimezone: true }),
 	createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
-
-export const mcpSessions = pgTable('mcp_sessions', {
-	sessionId: text('session_id').primaryKey(),
-	userId: uuid('user_id')
-		.notNull()
-		.references(() => users.id),
-	clientId: text('client_id').references(() => oauthClients.clientId),
-	createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-	lastActiveAt: timestamp('last_active_at', { withTimezone: true }).defaultNow().notNull(),
-});

@@ -175,10 +175,7 @@ async function setupRedis() {
 
 async function setupMcpProtocolAndExtensions() {
 	console.log('\n--- MCP Protocol + Extensions ---\n');
-
-	if (!getEnvironmentValue('MCP_PROTOCOL_VERSION')) {
-		appendToEnvironmentFile('MCP_PROTOCOL_VERSION', '2025-11-25');
-	}
+	console.log('Protocol version negotiation (2025-11-25 and 2026-07-28) is handled by the SDK.');
 
 	const existingAllowedOrigins = getEnvironmentValue('MCP_ALLOWED_ORIGINS');
 	if (!existingAllowedOrigins) {

@@ -6,7 +6,6 @@ mock.module('@web/env', () => ({
 		MCP_CONFORMANCE_MODE: false,
 		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_PROTOCOL_VERSION: '2025-11-25',
 		BASE_URL: undefined,
 	},
 }));
@@ -62,7 +61,7 @@ mock.module('@web/lib/mcp-origin-validation', () => ({
 }));
 
 mock.module('@web/lib/mcp-protocol-constants', () => ({
-	mcpProtocolVersion: '2025-11-25',
+	mcpLatestProtocolVersion: '2026-07-28',
 }));
 
 mock.module('@web/lib/base-url', () => ({
@@ -129,6 +128,7 @@ describe('handleMcpRequestWithAuthentication', () => {
 				accessToken: 'hashed:valid-token',
 				clientId: 'client-1',
 				userId: 'user-1',
+				scope: 'mcp:read',
 				revokedAt: null,
 				expiresAt: new Date(Date.now() + 60000),
 			},

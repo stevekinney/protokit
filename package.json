@@ -19,6 +19,8 @@
 		"db:seed": "bun scripts/seed.ts",
 		"dev:full": "bun scripts/develop.ts",
 		"audit:workflows": "bun .github/scripts/audit-workflows.ts",
+		"test:conformance:modern": "bun test packages/mcp/src/conformance-modern.test.ts",
+		"test:conformance:legacy": "bun test packages/mcp/src/conformance-legacy.test.ts",
 		"test:workflow-authorization": "bun test ./.github/tests/workflow-authorization.test.ts",
 		"test:workflow-prompt-injection": "bun test ./.github/tests/workflow-prompt-injection.test.ts",
 		"test:production-migration-gate": "bun test ./.github/tests/production-migration-gate.test.ts",

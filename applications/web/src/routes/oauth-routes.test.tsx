@@ -219,7 +219,7 @@ describe('protected resource MCP metadata endpoint', () => {
 		});
 		const response = await handleOauthProtectedResourceMcpMetadataGet(context);
 		const body = await response.json();
-		expect(body.mcp_protocol_version).toBe('2025-11-25');
+		expect(body.mcp_protocol_version).toBe('2026-07-28');
 		expect(body.bearer_methods_supported).toEqual(['header']);
 	});
 });

@@ -1,8 +1,4 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import {
-	SubscribeRequestSchema,
-	UnsubscribeRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { McpServer } from '@modelcontextprotocol/server';
 import { allTools } from './tools/index.js';
 import { allResources } from './resources/index.js';
 import { allPrompts } from './prompts/index.js';
@@ -26,7 +22,7 @@ export function createMcpServer(context: {
 	subscriptionBackend?: ResourceSubscriptionBackend;
 }): McpServer {
 	const enableConformanceMode = context.enableConformanceMode ?? environment.MCP_CONFORMANCE_MODE;
-	const experimentalCapabilities: Record<string, object> = {};
+	const experimentalCapabilities: Record<string, { version: string }> = {};
 	if (context.enableUiExtension) {
 		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
 	}
@@ -98,13 +94,13 @@ export function createMcpServer(context: {
 
 	if (context.subscriptionBackend) {
 		const backend = context.subscriptionBackend;
-		server.server.setRequestHandler(SubscribeRequestSchema, async (request, extra) => {
-			const sessionIdentifier = extra.sessionId ?? 'stateless';
+		server.server.setRequestHandler('resources/subscribe', async (request, ctx) => {
+			const sessionIdentifier = ctx.sessionId ?? 'stateless';
 			await backend.subscribe(sessionIdentifier, request.params.uri);
 			return {};
 		});
-		server.server.setRequestHandler(UnsubscribeRequestSchema, async (request, extra) => {
-			const sessionIdentifier = extra.sessionId ?? 'stateless';
+		server.server.setRequestHandler('resources/unsubscribe', async (request, ctx) => {
+			const sessionIdentifier = ctx.sessionId ?? 'stateless';
 			await backend.unsubscribe(sessionIdentifier, request.params.uri);
 			return {};
 		});

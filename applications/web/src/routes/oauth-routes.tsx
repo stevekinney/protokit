@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { database, schema } from '@template/database';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
+import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
 import { oauthCorsHeaders } from '@web/lib/cors';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import { hashCredential } from '@web/lib/hash-credential';
@@ -11,7 +12,7 @@ import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import {
 	mcpEnterpriseAuthorizationExtensionIdentifier,
-	mcpProtocolVersion,
+	mcpLatestProtocolVersion,
 	mcpUiExtensionIdentifier,
 } from '@web/lib/mcp-protocol-constants';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
@@ -820,7 +821,7 @@ export async function handleOauthProtectedResourceMetadataGet(
 	const baseUrl = getBaseUrl(context.request);
 	return jsonResponse(
 		{
-			resource: `${baseUrl}/mcp`,
+			resource: getMcpResourceUrl(context.request),
 			authorization_servers: [baseUrl],
 		},
 		{ headers: oauthCorsHeaders },
@@ -833,10 +834,10 @@ export async function handleOauthProtectedResourceMcpMetadataGet(
 	const baseUrl = getBaseUrl(context.request);
 	return jsonResponse(
 		{
-			resource: `${baseUrl}/mcp`,
+			resource: getMcpResourceUrl(context.request),
 			authorization_servers: [baseUrl],
 			bearer_methods_supported: ['header'],
-			mcp_protocol_version: mcpProtocolVersion,
+			mcp_protocol_version: mcpLatestProtocolVersion,
 		},
 		{ headers: oauthCorsHeaders },
 	);

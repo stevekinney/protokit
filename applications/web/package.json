@@ -14,7 +14,6 @@
 		"test:end-to-end": "bunx playwright test"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@t3-oss/env-core": "^0.13.11",
 		"@tailwindcss/postcss": "^4.3.3",
 		"postcss": "^8.5.26",
@@ -25,9 +24,12 @@
 		"react-dom": "^19.2.8",
 		"redis": "^6.2.1",
 		"tailwindcss": "^4.3.3",
-		"zod": "^4.4.3"
+		"zod": "^4.4.3",
+		"@modelcontextprotocol/core": "^2.0.0",
+		"@modelcontextprotocol/server": "^2.0.0"
 	},
 	"devDependencies": {
+		"@modelcontextprotocol/client": "^2.0.0",
 		"@playwright/test": "^1.62.1",
 		"@types/node": "^26.2.0",
 		"@types/react": "^19.2.18",

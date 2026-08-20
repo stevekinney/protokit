@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { Readable } from 'node:stream';
-import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { createMcpHandler } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpServer } from './server.js';
 import { hasValidLocalhostRebindingHeaders } from './localhost-request-validation.js';
 
@@ -20,11 +18,12 @@ function createConformanceUser(userId: string): McpUserProfile {
 		role: 'user',
 	};
 }
-const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
 
-function convertIncomingHeaders(incomingMessage: import('node:http').IncomingMessage): Headers {
+function convertIncomingHeaders(
+	incomingHeaders: Record<string, string | string[] | undefined>,
+): Headers {
 	const headers = new Headers();
-	for (const [headerName, headerValue] of Object.entries(incomingMessage.headers)) {
+	for (const [headerName, headerValue] of Object.entries(incomingHeaders)) {
 		if (Array.isArray(headerValue)) {
 			for (const value of headerValue) {
 				headers.append(headerName, value);
@@ -38,134 +37,45 @@ function convertIncomingHeaders(incomingMessage: import('node:http').IncomingMes
 	return headers;
 }
 
-function createStatefulTransport(sessionIdentifier: string) {
-	const transport = new WebStandardStreamableHTTPServerTransport({
-		sessionIdGenerator: () => sessionIdentifier,
-	});
-	transport.onclose = () => {
-		transports.delete(sessionIdentifier);
-	};
-	return transport;
-}
-
-async function toWebRequest(
-	incomingMessage: import('node:http').IncomingMessage,
-	body: string | undefined,
-): Promise<Request> {
-	const protocol = incomingMessage.headers['x-forwarded-proto'] ?? 'http';
-	const host = incomingMessage.headers.host ?? `127.0.0.1:${port}`;
-	const url = `${protocol}://${host}${incomingMessage.url ?? '/mcp'}`;
-	const headers = convertIncomingHeaders(incomingMessage);
-
-	return new Request(url, {
-		method: incomingMessage.method ?? 'GET',
-		headers,
-		body: body ?? undefined,
-	});
-}
-
-function writeWebResponse(
-	serverResponse: import('node:http').ServerResponse<import('node:http').IncomingMessage>,
-	webResponse: Response,
-): void {
-	serverResponse.statusCode = webResponse.status;
-
-	webResponse.headers.forEach((value, key) => {
-		serverResponse.setHeader(key, value);
-	});
-
-	if (!webResponse.body) {
-		serverResponse.end();
-		return;
-	}
-
-	const bodyStream = Readable.fromWeb(webResponse.body as unknown as NodeReadableStream);
-	bodyStream.on('error', () => {
-		serverResponse.end();
-	});
-	bodyStream.pipe(serverResponse);
-}
-
-async function handleMcpRequest(request: Request): Promise<Response> {
-	const sessionIdentifier = request.headers.get('mcp-session-id');
-
-	if (sessionIdentifier && transports.has(sessionIdentifier)) {
-		const transport = transports.get(sessionIdentifier)!;
-		return await transport.handleRequest(request);
-	}
-
-	if (request.method !== 'POST') {
-		return new Response('Session not found', { status: 404 });
-	}
-
-	let parsedBody: unknown;
-	try {
-		parsedBody = await request.json();
-	} catch {
-		return new Response('Invalid JSON body', { status: 400 });
-	}
-
-	const messages = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
-	const isInitialization = messages.some((message) => isInitializeRequest(message));
-
-	if (isInitialization) {
-		const newSessionIdentifier = randomUUID();
-		const transport = createStatefulTransport(newSessionIdentifier);
-		transports.set(newSessionIdentifier, transport);
-
+/**
+ * One factory serving both the modern (`2026-07-28`) and legacy
+ * (`2025-11-25`) protocol eras through the SDK's stateless fallback — the
+ * same shape production serves through `applications/web/src/lib/mcp-handler.ts`.
+ * Each conformance connection gets a fresh, unauthenticated user identity;
+ * this server is for local/CI protocol conformance only, never exposed
+ * publicly.
+ */
+const mcpHttpHandler = createMcpHandler(
+	() => {
 		const userId = randomUUID();
-		const server = createMcpServer({
+		return createMcpServer({
 			userId,
 			user: createConformanceUser(userId),
 			enableUiExtension: true,
 			enableEnterpriseAuthorizationExtension: true,
 			enableConformanceMode: true,
 		});
-		await server.connect(transport);
-		return await transport.handleRequest(request, { parsedBody });
-	}
+	},
+	{ legacy: 'stateless' },
+);
 
-	const statelessTransport = new WebStandardStreamableHTTPServerTransport({
-		sessionIdGenerator: undefined,
-		enableJsonResponse: true,
-	});
-	const statelessUserId = randomUUID();
-	const statelessServer = createMcpServer({
-		userId: statelessUserId,
-		user: createConformanceUser(statelessUserId),
-		enableUiExtension: true,
-		enableEnterpriseAuthorizationExtension: true,
-		enableConformanceMode: true,
-	});
-	await statelessServer.connect(statelessTransport);
-	return await statelessTransport.handleRequest(request, { parsedBody });
-}
+const nodeHandler = toNodeHandler(mcpHttpHandler);
 
-const server = createServer(async (incomingMessage, serverResponse) => {
+const server = createServer((incomingMessage, serverResponse) => {
 	if ((incomingMessage.url ?? '').split('?')[0] !== '/mcp') {
 		serverResponse.statusCode = 404;
 		serverResponse.end('Not found');
 		return;
 	}
 
-	const headers = convertIncomingHeaders(incomingMessage);
-
+	const headers = convertIncomingHeaders(incomingMessage.headers);
 	if (!hasValidLocalhostRebindingHeaders(headers)) {
 		serverResponse.statusCode = 403;
 		serverResponse.end('Forbidden');
 		return;
 	}
 
-	let body = '';
-	incomingMessage.on('data', (chunk: Buffer) => {
-		body += chunk.toString('utf-8');
-	});
-
-	incomingMessage.on('end', async () => {
-		const request = await toWebRequest(incomingMessage, body.length > 0 ? body : undefined);
-		const response = await handleMcpRequest(request);
-		writeWebResponse(serverResponse, response);
-	});
+	void nodeHandler(incomingMessage, serverResponse);
 });
 
 server.listen(port, '127.0.0.1', () => {
