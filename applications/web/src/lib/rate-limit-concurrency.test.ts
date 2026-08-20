@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach } from 'bun:test';
+import { createClient } from 'redis';
 import {
 	inMemorySlidingWindowStore,
 	resetInMemorySlidingWindowStore,
@@ -62,14 +63,35 @@ describe('rate limit concurrency (in-memory store)', () => {
 	});
 });
 
+// Deliberately does not go through `@web/lib/redis-client` or `@web/env`:
+// several other files in this suite call `mock.module('@web/env', ...)` with
+// a fake environment that omits `REDIS_URL`, and Bun's `mock.module` patches
+// the shared module registry for the rest of the test process, not just the
+// mocking file. Depending on either module here made this file's Redis
+// availability check (and therefore this whole `describe` block) silently
+// resolve to "unavailable" whenever an earlier file's env mock happened to
+// still be in effect — an unexplained skip masking as "no Redis configured".
+// Building the client straight from `process.env.REDIS_URL` sidesteps that
+// entirely and makes this file's outcome independent of any other file's
+// mocking.
+const redisUrl = process.env.REDIS_URL;
+
 let redisAvailable: boolean;
 try {
-	const { isRedisHealthy } = await import('@web/lib/redis-client');
-	process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
-	redisAvailable = await Promise.race([
-		isRedisHealthy(),
-		new Promise<false>((resolve) => setTimeout(() => resolve(false), 2000)),
-	]);
+	if (!redisUrl) {
+		throw new Error('REDIS_URL is not set');
+	}
+	const probe = createClient({
+		url: redisUrl,
+		socket: { reconnectStrategy: false, connectTimeout: 2000 },
+	});
+	try {
+		await probe.connect();
+		await probe.ping();
+		redisAvailable = true;
+	} finally {
+		await probe.disconnect().catch(() => {});
+	}
 } catch {
 	redisAvailable = false;
 }
@@ -80,9 +102,9 @@ const describeWithRedis = redisAvailable
 
 describeWithRedis('rate limit concurrency (Redis-backed store, requires Redis)', () => {
 	it('admits exactly the configured maximum when 2x that many requests race at the window boundary', async () => {
-		const { getRedisClient } = await import('@web/lib/redis-client');
 		const { createRedisSlidingWindowStore } = await import('@web/lib/redis-sliding-window-store');
-		const redisClient = await getRedisClient();
+		const redisClient = createClient({ url: redisUrl });
+		await redisClient.connect();
 		const store = createRedisSlidingWindowStore(redisClient);
 		const key = `rate_limit:concurrency-test:redis:${crypto.randomUUID()}`;
 		await redisClient.del(key);
@@ -91,6 +113,7 @@ describeWithRedis('rate limit concurrency (Redis-backed store, requires Redis)',
 			await raceAtWindowBoundary({ atomicStore: store, maximumRequests: 10, key });
 		} finally {
 			await redisClient.del(key);
+			await redisClient.disconnect().catch(() => {});
 		}
 	});
 });

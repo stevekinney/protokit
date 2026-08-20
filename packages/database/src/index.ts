@@ -1,12 +1,14 @@
 import { neon } from '@neondatabase/serverless';
 import { drizzle, type NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import { environment } from './env.js';
+import { applyLocalProxyFetchEndpoint } from './local-proxy.js';
 import * as schema from './schema.js';
 
 let instance: NeonHttpDatabase<typeof schema> | undefined;
 
 function getDatabase(): NeonHttpDatabase<typeof schema> {
 	if (!instance) {
+		applyLocalProxyFetchEndpoint(environment.DATABASE_LOCAL_PROXY_URL);
 		const sql = neon(environment.DATABASE_URL);
 		instance = drizzle(sql, { schema });
 	}
@@ -20,3 +22,4 @@ export const database = new Proxy({} as NeonHttpDatabase<typeof schema>, {
 });
 
 export { schema };
+export { applyLocalProxyFetchEndpoint } from './local-proxy.js';

@@ -29,7 +29,13 @@
 		"test:workflow-prompt-injection": "bun test ./.github/tests/workflow-prompt-injection.test.ts",
 		"test:production-migration-gate": "bun test ./.github/tests/production-migration-gate.test.ts",
 		"test:container-smoke": "bun scripts/test-container-smoke.ts",
+		"test:infrastructure:up": "docker compose -f docker-compose.test.yml up -d --build --wait",
+		"test:infrastructure:down": "docker compose -f docker-compose.test.yml down -v",
+		"test:infrastructure:migrate": "DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun scripts/migrate.ts",
 		"prepare": "husky"
+	},
+	"dependencies": {
+		"@template/database": "workspace:*"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

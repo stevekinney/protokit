@@ -1,4 +1,8 @@
 declare module 'bun:test' {
+	type AsyncExpectation = {
+		toThrow: (expected?: unknown) => Promise<void>;
+	};
+
 	type Expectation = {
 		toBe: (expected: unknown) => void;
 		toEqual: (expected: unknown) => void;
@@ -9,7 +13,9 @@ declare module 'bun:test' {
 		toBeNull: () => void;
 		toBeUndefined: () => void;
 		toHaveProperty: (property: string, value?: unknown) => void;
+		toHaveLength: (expected: number) => void;
 		toThrow: (expected?: unknown) => void;
+		rejects: AsyncExpectation;
 		not: {
 			toBeNull: () => void;
 			toHaveProperty: (property: string, value?: unknown) => void;

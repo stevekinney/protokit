@@ -24,16 +24,14 @@ mock.module('@web/env', () => ({
 	},
 }));
 
-// No REDIS_URL configured -> the module falls back to the real, genuinely
-// atomic in-memory store rather than a hand-rolled fake that could drift
-// from production Redis semantics.
-mock.module('@web/lib/redis-client', () => ({
-	isRedisConfigured: () => false,
-	getRedisClient: async () => {
-		throw new Error('should not be called when Redis is not configured');
-	},
-}));
-
+// No REDIS_URL configured (the `@web/env` mock above omits it) -> the real
+// `isRedisConfigured()` genuinely returns false and the module falls back to
+// the real, genuinely atomic in-memory store rather than a hand-rolled fake
+// that could drift from production Redis semantics. This deliberately does
+// NOT also mock `@web/lib/redis-client` itself: `mock.module` replaces that
+// module in Bun's shared module registry for the rest of the test process,
+// not just this file, which would silently break every later file's own use
+// of the module's other exports (like `isRedisHealthy`).
 const {
 	enforceOauthRegistrationRateLimit,
 	enforceOauthTokenNetworkRateLimit,
