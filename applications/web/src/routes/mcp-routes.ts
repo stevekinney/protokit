@@ -14,8 +14,14 @@ import {
 	getMcpResourceUrl,
 	readMcpRequestAuthExtra,
 } from '@web/lib/mcp-request-context';
+import { acquireMcpConcurrencySlot } from '@web/lib/mcp-concurrency-limiter';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
-import { enforceMcpRateLimit } from '@web/lib/request-rate-limiter';
+import {
+	enforceMcpNetworkRateLimit,
+	enforceMcpRateLimit,
+	isAuthenticationLockedOut,
+	recordFailedAuthentication,
+} from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
 import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-authorization-policy';
 
@@ -52,6 +58,15 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		});
 	}
 
+	if (await isAuthenticationLockedOut({ networkIdentity: context.networkIdentity })) {
+		return createMcpProtocolErrorResponse({
+			status: 429,
+			error: 'rate_limited',
+			errorDescription: 'Too many failed authentication attempts. Try again later.',
+			headers: { ...mcpCorsHeaders, 'MCP-Protocol-Version': mcpLatestProtocolVersion },
+		});
+	}
+
 	const authorizationHeader = context.request.headers.get('authorization');
 	if (!authorizationHeader?.startsWith('Bearer ')) {
 		const baseUrl = getBaseUrl(context.request);
@@ -82,6 +97,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		)
 		.limit(1);
 	if (!oauthToken) {
+		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
 		const baseUrl = getBaseUrl(context.request);
 		const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/mcp`;
 		return createMcpProtocolErrorResponse({
@@ -118,7 +134,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 			oauthClientId: oauthToken.clientId,
 			scopes: (oauthToken.scope ?? '').split(' ').filter((scope) => scope.length > 0),
 			resource: getMcpResourceUrl(context.request),
-			networkIdentity: context.clientAddress,
+			networkIdentity: context.networkIdentity,
 		},
 	});
 }
@@ -126,12 +142,25 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 export async function handleMcpRequestWithAuthentication(
 	context: RequestContext,
 ): Promise<Response> {
+	const mcpCorsHeaders = createMcpCorsHeaders(context.request);
+
+	if (context.request.method !== 'OPTIONS') {
+		const networkRateLimitResult = await enforceMcpNetworkRateLimit({
+			networkIdentity: context.networkIdentity,
+		});
+		if (!networkRateLimitResult.allowed) {
+			return createRateLimitedResponse(networkRateLimitResult.retryAfterSeconds, {
+				...mcpCorsHeaders,
+				'MCP-Protocol-Version': mcpLatestProtocolVersion,
+			});
+		}
+	}
+
 	const authenticationResult = await authenticateMcpUser(context);
 	if (authenticationResult instanceof Response) {
 		return authenticationResult;
 	}
 
-	const mcpCorsHeaders = createMcpCorsHeaders(context.request);
 	const requestAuthExtra = readMcpRequestAuthExtra(authenticationResult);
 	if (!requestAuthExtra) {
 		return createMcpProtocolErrorResponse({
@@ -149,9 +178,23 @@ export async function handleMcpRequestWithAuthentication(
 		});
 	}
 
-	const response = await handleMcpRequest(context.request, authenticationResult);
-	for (const [headerName, headerValue] of Object.entries(mcpCorsHeaders)) {
-		response.headers.set(headerName, headerValue);
+	const concurrencySlot = await acquireMcpConcurrencySlot({ userId: requestAuthExtra.userId });
+	if (!concurrencySlot.allowed) {
+		return createMcpProtocolErrorResponse({
+			status: 429,
+			error: 'rate_limited',
+			errorDescription: 'Too many concurrent MCP requests for this user.',
+			headers: { ...mcpCorsHeaders, 'MCP-Protocol-Version': mcpLatestProtocolVersion },
+		});
 	}
-	return response;
+
+	try {
+		const response = await handleMcpRequest(context.request, authenticationResult);
+		for (const [headerName, headerValue] of Object.entries(mcpCorsHeaders)) {
+			response.headers.set(headerName, headerValue);
+		}
+		return response;
+	} finally {
+		await concurrencySlot.release();
+	}
 }

@@ -99,13 +99,17 @@ describeWithRedis('client_credentials rejection end-to-end (requires Redis)', ()
 // by this removal. This boot-level check only proves the route is still wired end to end
 // without requiring a live Postgres instance.
 describe('interactive authorization_code connector flow stays intact', () => {
-	it('still requires user authentication before issuing an authorization code', async () => {
-		const port = startServer();
-		const response = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc`,
-			{ redirect: 'manual' },
-		);
-		expect(response.status).toBe(302);
-		expect(response.headers.get('location')).toContain('/auth/google/start');
+	// /oauth/authorize is now rate-limited (SEC-003), which requires the
+	// shared Redis-backed limiter.
+	describeWithRedis('with Redis', () => {
+		it('still requires user authentication before issuing an authorization code', async () => {
+			const port = startServer();
+			const response = await fetch(
+				`http://127.0.0.1:${port}/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc`,
+				{ redirect: 'manual' },
+			);
+			expect(response.status).toBe(302);
+			expect(response.headers.get('location')).toContain('/auth/google/start');
+		});
 	});
 });

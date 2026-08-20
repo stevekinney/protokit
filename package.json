@@ -21,6 +21,8 @@
 		"audit:workflows": "bun .github/scripts/audit-workflows.ts",
 		"test:conformance:modern": "bun test packages/mcp/src/conformance-modern.test.ts",
 		"test:conformance:legacy": "bun test packages/mcp/src/conformance-legacy.test.ts",
+		"test:rate-limit-concurrency": "SKIP_ENV_VALIDATION=true bun test applications/web/src/lib/rate-limit-concurrency.test.ts",
+		"test:trusted-proxy": "SKIP_ENV_VALIDATION=true bun test applications/web/src/lib/trusted-proxy.test.ts applications/web/src/lib/canonicalize-ip-address.test.ts applications/web/src/lib/request-client-identifier.test.ts",
 		"test:workflow-authorization": "bun test ./.github/tests/workflow-authorization.test.ts",
 		"test:workflow-prompt-injection": "bun test ./.github/tests/workflow-prompt-injection.test.ts",
 		"test:production-migration-gate": "bun test ./.github/tests/production-migration-gate.test.ts",

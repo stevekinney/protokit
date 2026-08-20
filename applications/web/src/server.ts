@@ -5,7 +5,10 @@ import { environment } from '@web/env';
 import { loadAssetManifest } from '@web/lib/asset-manifest';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
+import { assertProductionStartupInvariants } from '@web/lib/startup-invariants';
 import { resolvePublicFile } from '@web/resolve-public-file';
+
+assertProductionStartupInvariants();
 
 const port = environment.PORT;
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10_000;

@@ -1,51 +1,24 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
+import {
+	inMemorySlidingWindowStore,
+	resetInMemorySlidingWindowStore,
+} from '@web/lib/in-memory-sliding-window-store';
 import { SlidingWindowRateLimiter } from '@web/lib/sliding-window-rate-limiter';
 
-class InMemorySortedSetStore {
-	private readonly values = new Map<string, Array<{ score: number; member: string }>>();
-
-	async removeRangeByScore(key: string, minimumScore: number, maximumScore: number): Promise<void> {
-		const existing = this.values.get(key) ?? [];
-		this.values.set(
-			key,
-			existing.filter((entry) => entry.score < minimumScore || entry.score > maximumScore),
-		);
-	}
-
-	async count(key: string): Promise<number> {
-		return (this.values.get(key) ?? []).length;
-	}
-
-	async add(key: string, score: number, member: string): Promise<void> {
-		const existing = this.values.get(key) ?? [];
-		existing.push({ score, member });
-		existing.sort((left, right) => left.score - right.score);
-		this.values.set(key, existing);
-	}
-
-	async getOldestScore(key: string): Promise<number | null> {
-		const oldest = (this.values.get(key) ?? [])[0];
-		return oldest?.score ?? null;
-	}
-
-	async expire(key: string, seconds: number): Promise<void> {
-		void key;
-		void seconds;
-		// No expiration behavior is required for deterministic unit tests.
-	}
-}
-
 describe('SlidingWindowRateLimiter', () => {
+	beforeEach(() => {
+		resetInMemorySlidingWindowStore();
+	});
+
 	it('allows requests until the maximum and then blocks', async () => {
 		let currentTimeMilliseconds = 1_000;
 		const limiter = new SlidingWindowRateLimiter(() => currentTimeMilliseconds);
-		const sortedSetStore = new InMemorySortedSetStore();
 
 		const first = await limiter.consume({
 			key: 'rate_limit:test:one',
 			maximumRequests: 2,
 			windowSeconds: 60,
-			sortedSetStore,
+			atomicStore: inMemorySlidingWindowStore,
 		});
 		expect(first.allowed).toBe(true);
 
@@ -54,7 +27,7 @@ describe('SlidingWindowRateLimiter', () => {
 			key: 'rate_limit:test:one',
 			maximumRequests: 2,
 			windowSeconds: 60,
-			sortedSetStore,
+			atomicStore: inMemorySlidingWindowStore,
 		});
 		expect(second.allowed).toBe(true);
 
@@ -63,7 +36,7 @@ describe('SlidingWindowRateLimiter', () => {
 			key: 'rate_limit:test:one',
 			maximumRequests: 2,
 			windowSeconds: 60,
-			sortedSetStore,
+			atomicStore: inMemorySlidingWindowStore,
 		});
 		expect(blocked.allowed).toBe(false);
 		expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
@@ -72,13 +45,12 @@ describe('SlidingWindowRateLimiter', () => {
 	it('allows requests again after the window elapses', async () => {
 		let currentTimeMilliseconds = 10_000;
 		const limiter = new SlidingWindowRateLimiter(() => currentTimeMilliseconds);
-		const sortedSetStore = new InMemorySortedSetStore();
 
 		await limiter.consume({
 			key: 'rate_limit:test:two',
 			maximumRequests: 1,
 			windowSeconds: 30,
-			sortedSetStore,
+			atomicStore: inMemorySlidingWindowStore,
 		});
 
 		currentTimeMilliseconds += 31_000;
@@ -86,9 +58,54 @@ describe('SlidingWindowRateLimiter', () => {
 			key: 'rate_limit:test:two',
 			maximumRequests: 1,
 			windowSeconds: 30,
-			sortedSetStore,
+			atomicStore: inMemorySlidingWindowStore,
 		});
 
 		expect(allowed.allowed).toBe(true);
+	});
+
+	it('reports the current member count via peek without mutating state', async () => {
+		const limiter = new SlidingWindowRateLimiter(() => 5_000);
+
+		await limiter.consume({
+			key: 'rate_limit:test:three',
+			maximumRequests: 5,
+			windowSeconds: 60,
+			atomicStore: inMemorySlidingWindowStore,
+		});
+
+		const countAfterOneConsume = await limiter.peek({
+			key: 'rate_limit:test:three',
+			windowSeconds: 60,
+			atomicStore: inMemorySlidingWindowStore,
+		});
+		expect(countAfterOneConsume).toBe(1);
+
+		const countAgain = await limiter.peek({
+			key: 'rate_limit:test:three',
+			windowSeconds: 60,
+			atomicStore: inMemorySlidingWindowStore,
+		});
+		expect(countAgain).toBe(1);
+	});
+
+	it('admits exactly the configured maximum when many requests race concurrently', async () => {
+		const maximumRequests = 5;
+		const totalConcurrentRequests = maximumRequests * 4;
+		const limiter = new SlidingWindowRateLimiter(() => 1_000);
+
+		const results = await Promise.all(
+			Array.from({ length: totalConcurrentRequests }, () =>
+				limiter.consume({
+					key: 'rate_limit:test:race',
+					maximumRequests,
+					windowSeconds: 60,
+					atomicStore: inMemorySlidingWindowStore,
+				}),
+			),
+		);
+
+		const allowedCount = results.filter((result) => result.allowed).length;
+		expect(allowedCount).toBe(maximumRequests);
 	});
 });

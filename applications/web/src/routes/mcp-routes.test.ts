@@ -48,7 +48,18 @@ mock.module('@web/lib/mcp-handler', () => ({
 }));
 
 mock.module('@web/lib/request-rate-limiter', () => ({
+	enforceMcpNetworkRateLimit: async () => ({
+		allowed: true,
+		retryAfterSeconds: 0,
+		remainingRequests: 10,
+	}),
 	enforceMcpRateLimit: async () => ({ allowed: true, retryAfterSeconds: 0, remainingRequests: 10 }),
+	isAuthenticationLockedOut: async () => false,
+	recordFailedAuthentication: async () => {},
+}));
+
+mock.module('@web/lib/mcp-concurrency-limiter', () => ({
+	acquireMcpConcurrencySlot: async () => ({ allowed: true, release: async () => {} }),
 }));
 
 mock.module('@web/lib/enterprise-authorization-policy', () => ({
@@ -93,6 +104,7 @@ function createContext(
 		request,
 		requestUrl: new URL(url),
 		requestId: 'req-1',
+		networkIdentity: '203.0.113.1',
 		user: null,
 		sessionToken: null,
 	};

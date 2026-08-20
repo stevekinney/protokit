@@ -17,8 +17,13 @@ import {
 } from '@web/lib/mcp-protocol-constants';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import {
+	enforceOauthAuthorizeRateLimit,
 	enforceOauthRegistrationRateLimit,
-	enforceOauthTokenRateLimit,
+	enforceOauthRevokeRateLimit,
+	enforceOauthTokenClientRateLimit,
+	enforceOauthTokenNetworkRateLimit,
+	isAuthenticationLockedOut,
+	recordFailedAuthentication,
 } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
 import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-authorization-policy';
@@ -116,6 +121,13 @@ async function validateClientRedirectUri(clientId: string, redirectUri: string):
 }
 
 export async function handleOauthAuthorizeGet(context: RequestContext): Promise<Response> {
+	const rateLimitResult = await enforceOauthAuthorizeRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds);
+	}
+
 	if (!context.user) {
 		return redirectResponse(buildOauthSignInRedirectPath(context.requestUrl));
 	}
@@ -284,8 +296,7 @@ export async function handleOauthAuthorizeDeny(context: RequestContext): Promise
 
 export async function handleOauthRegisterPost(context: RequestContext): Promise<Response> {
 	const rateLimitResult = await enforceOauthRegistrationRateLimit({
-		request: context.request,
-		fallbackClientAddress: context.clientAddress,
+		networkIdentity: context.networkIdentity,
 	});
 	if (!rateLimitResult.allowed) {
 		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, oauthCorsHeaders);
@@ -655,9 +666,8 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 }
 
 export async function handleOauthRevokePost(context: RequestContext): Promise<Response> {
-	const rateLimitResult = await enforceOauthTokenRateLimit({
-		request: context.request,
-		fallbackClientAddress: context.clientAddress,
+	const rateLimitResult = await enforceOauthRevokeRateLimit({
+		networkIdentity: context.networkIdentity,
 	});
 	if (!rateLimitResult.allowed) {
 		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
@@ -738,7 +748,13 @@ export async function handleOauthRevokePost(context: RequestContext): Promise<Re
 	return new Response(null, { status: 200, headers: revocationResponseHeaders });
 }
 
-export async function handleOauthTokenPost(context: RequestContext): Promise<Response> {
+const tokenEndpointNoStoreHeaders = {
+	'Cache-Control': 'no-store',
+	Pragma: 'no-cache',
+	...oauthCorsHeaders,
+};
+
+async function handleOauthTokenPostInner(context: RequestContext): Promise<Response> {
 	let body: Record<string, string>;
 	try {
 		body = await parseRequestBodyForTokenEndpoint(context.request);
@@ -747,26 +763,22 @@ export async function handleOauthTokenPost(context: RequestContext): Promise<Res
 			{ error: 'unsupported_content_type' },
 			{
 				status: 400,
-				headers: {
-					'Cache-Control': 'no-store',
-					Pragma: 'no-cache',
-					...oauthCorsHeaders,
-				},
+				headers: tokenEndpointNoStoreHeaders,
 			},
 		);
 	}
 
-	const rateLimitResult = await enforceOauthTokenRateLimit({
-		request: context.request,
-		clientId: body.client_id,
-		fallbackClientAddress: context.clientAddress,
-	});
-	if (!rateLimitResult.allowed) {
-		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
-			'Cache-Control': 'no-store',
-			Pragma: 'no-cache',
-			...oauthCorsHeaders,
+	if (body.client_id) {
+		const clientRateLimitResult = await enforceOauthTokenClientRateLimit({
+			networkIdentity: context.networkIdentity,
+			clientId: body.client_id,
 		});
+		if (!clientRateLimitResult.allowed) {
+			return createRateLimitedResponse(
+				clientRateLimitResult.retryAfterSeconds,
+				tokenEndpointNoStoreHeaders,
+			);
+		}
 	}
 
 	if (body.grant_type === 'authorization_code') {
@@ -778,15 +790,36 @@ export async function handleOauthTokenPost(context: RequestContext): Promise<Res
 
 	return jsonResponse(
 		{ error: 'unsupported_grant_type' },
-		{
-			status: 400,
-			headers: {
-				'Cache-Control': 'no-store',
-				Pragma: 'no-cache',
-				...oauthCorsHeaders,
-			},
-		},
+		{ status: 400, headers: tokenEndpointNoStoreHeaders },
 	);
+}
+
+export async function handleOauthTokenPost(context: RequestContext): Promise<Response> {
+	if (await isAuthenticationLockedOut({ networkIdentity: context.networkIdentity })) {
+		return jsonResponse(
+			{ error: 'invalid_client', error_description: 'Too many failed authentication attempts.' },
+			{ status: 429, headers: tokenEndpointNoStoreHeaders },
+		);
+	}
+
+	// Cheap, network-scoped check applied before the (more expensive) body
+	// parse and database work below. `handleOauthTokenPostInner` layers a
+	// second, client-scoped check on top once the client is known.
+	const networkRateLimitResult = await enforceOauthTokenNetworkRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!networkRateLimitResult.allowed) {
+		return createRateLimitedResponse(
+			networkRateLimitResult.retryAfterSeconds,
+			tokenEndpointNoStoreHeaders,
+		);
+	}
+
+	const response = await handleOauthTokenPostInner(context);
+	if (response.status === 400 || response.status === 401) {
+		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
+	}
+	return response;
 }
 
 export async function handleOauthAuthorizationMetadataGet(

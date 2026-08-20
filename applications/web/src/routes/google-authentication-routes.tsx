@@ -12,7 +12,13 @@ import {
 } from '@web/lib/google-authentication';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { redirectResponse } from '@web/lib/http-response';
+import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import type { RequestContext } from '@web/lib/request-context';
+import {
+	enforceGoogleAuthRateLimit,
+	enforceSessionCreationRateLimit,
+	recordFailedAuthentication,
+} from '@web/lib/request-rate-limiter';
 import {
 	createExpiredSessionCookie,
 	createSession,
@@ -114,11 +120,25 @@ async function upsertGoogleUser(input: {
 }
 
 export async function handleGoogleSignInStart(context: RequestContext): Promise<Response> {
+	const rateLimitResult = await enforceGoogleAuthRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds);
+	}
+
 	if (!isGoogleAuthConfigured()) return googleAuthNotConfiguredResponse();
 	return createGoogleSignInRedirectResponse(context.request);
 }
 
 export async function handleGoogleSignInCallback(context: RequestContext): Promise<Response> {
+	const rateLimitResult = await enforceGoogleAuthRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds);
+	}
+
 	if (!isGoogleAuthConfigured()) return googleAuthNotConfiguredResponse();
 	const requestUrl = context.requestUrl;
 	const code = requestUrl.searchParams.get('code');
@@ -132,6 +152,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 
 	const stateValidation = validateGoogleCallbackState(context.request);
 	if (!stateValidation.valid) {
+		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
 		return createStaticHtmlResponse({
 			metadata: { title: 'Google Sign-In Error' },
 			status: 400,
@@ -148,6 +169,13 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 			name: googleProfile.name,
 			image: googleProfile.picture ?? null,
 		});
+
+		const sessionRateLimitResult = await enforceSessionCreationRateLimit({
+			networkIdentity: context.networkIdentity,
+		});
+		if (!sessionRateLimitResult.allowed) {
+			return createRateLimitedResponse(sessionRateLimitResult.retryAfterSeconds);
+		}
 
 		const session = await createSession({ userId, request: context.request });
 		const response = redirectResponse(stateValidation.callbackPath, 302);

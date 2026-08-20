@@ -9,9 +9,11 @@ declare module 'bun:test' {
 		toBeNull: () => void;
 		toBeUndefined: () => void;
 		toHaveProperty: (property: string, value?: unknown) => void;
+		toThrow: (expected?: unknown) => void;
 		not: {
 			toBeNull: () => void;
 			toHaveProperty: (property: string, value?: unknown) => void;
+			toThrow: (expected?: unknown) => void;
 		};
 	};
 

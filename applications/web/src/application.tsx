@@ -28,6 +28,7 @@ import {
 	handleOauthRevokePost,
 	handleOauthTokenPost,
 } from '@web/routes/oauth-routes';
+import { getRequestClientIdentifier } from '@web/lib/request-client-identifier';
 import { HomePage } from '@web/components/home-page';
 
 function isHtmlResponse(response: Response): boolean {
@@ -176,7 +177,7 @@ async function dispatch(context: RequestContext): Promise<Response> {
 	}
 
 	if (requestUrl.pathname === '/health' && request.method === 'GET') {
-		return handleHealthGet();
+		return handleHealthGet(context);
 	}
 
 	if (requestUrl.pathname === '/metrics' && request.method === 'GET') {
@@ -204,11 +205,16 @@ export async function handleApplicationRequest(
 	}
 
 	const session = await hydrateSession(request);
+	const networkIdentity = getRequestClientIdentifier({
+		request,
+		socketAddress: input?.clientAddress,
+	});
 	const context: RequestContext = {
 		request,
 		requestUrl,
 		requestId,
 		clientAddress: input?.clientAddress,
+		networkIdentity,
 		user: session.user,
 		sessionToken: session.sessionToken,
 	};

@@ -62,17 +62,42 @@ mock.module('drizzle-orm', () => ({
 	isNull: (column: unknown) => ({ column }),
 }));
 
+const mockRateLimitState = {
+	registrationAllowed: true,
+	tokenNetworkAllowed: true,
+	tokenClientAllowed: true,
+	revokeAllowed: true,
+	authorizeAllowed: true,
+};
+
 mock.module('@web/lib/request-rate-limiter', () => ({
 	enforceOauthRegistrationRateLimit: async () => ({
-		allowed: true,
-		retryAfterSeconds: 0,
+		allowed: mockRateLimitState.registrationAllowed,
+		retryAfterSeconds: mockRateLimitState.registrationAllowed ? 0 : 30,
 		remainingRequests: 10,
 	}),
-	enforceOauthTokenRateLimit: async () => ({
-		allowed: true,
-		retryAfterSeconds: 0,
+	enforceOauthTokenNetworkRateLimit: async () => ({
+		allowed: mockRateLimitState.tokenNetworkAllowed,
+		retryAfterSeconds: mockRateLimitState.tokenNetworkAllowed ? 0 : 30,
 		remainingRequests: 10,
 	}),
+	enforceOauthTokenClientRateLimit: async () => ({
+		allowed: mockRateLimitState.tokenClientAllowed,
+		retryAfterSeconds: mockRateLimitState.tokenClientAllowed ? 0 : 30,
+		remainingRequests: 10,
+	}),
+	enforceOauthRevokeRateLimit: async () => ({
+		allowed: mockRateLimitState.revokeAllowed,
+		retryAfterSeconds: mockRateLimitState.revokeAllowed ? 0 : 30,
+		remainingRequests: 10,
+	}),
+	enforceOauthAuthorizeRateLimit: async () => ({
+		allowed: mockRateLimitState.authorizeAllowed,
+		retryAfterSeconds: mockRateLimitState.authorizeAllowed ? 0 : 30,
+		remainingRequests: 10,
+	}),
+	isAuthenticationLockedOut: async () => false,
+	recordFailedAuthentication: async () => {},
 }));
 
 mock.module('@web/lib/base-url', () => ({
@@ -149,6 +174,7 @@ function createContext(
 		request,
 		requestUrl: new URL(url),
 		requestId: 'req-1',
+		networkIdentity: '203.0.113.1',
 		user: overrides.user ?? null,
 		sessionToken: null,
 	};
@@ -305,11 +331,30 @@ describe('client registration', () => {
 		const response = await handleOauthRegisterPost(context);
 		expect(response.status).toBe(400);
 	});
+
+	it('returns 429 and performs no database write when rate-limited', async () => {
+		mockRateLimitState.registrationAllowed = false;
+		try {
+			const context = createContext({
+				body: JSON.stringify({
+					client_name: 'My App',
+					redirect_uris: ['https://example.com/callback'],
+				}),
+				headers: { 'content-type': 'application/json' },
+			});
+			const response = await handleOauthRegisterPost(context);
+			expect(response.status).toBe(429);
+			expect(mockInsertedValues).toEqual([]);
+		} finally {
+			mockRateLimitState.registrationAllowed = true;
+		}
+	});
 });
 
 describe('token exchange', () => {
 	beforeEach(() => {
 		setEnvironment({});
+		mockInsertedValues = [];
 	});
 
 	it('returns 400 for unsupported grant type', async () => {
@@ -334,6 +379,38 @@ describe('token exchange', () => {
 		expect(response.status).toBe(400);
 		const body = await response.json();
 		expect(body.error).toBe('unsupported_content_type');
+	});
+
+	it('returns 429 before parsing the body when the network-scoped limit is exceeded', async () => {
+		mockRateLimitState.tokenNetworkAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/token',
+				body: 'grant_type=authorization_code&client_id=c1',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthTokenPost(context);
+			expect(response.status).toBe(429);
+			expect(mockInsertedValues).toEqual([]);
+		} finally {
+			mockRateLimitState.tokenNetworkAllowed = true;
+		}
+	});
+
+	it('returns 429 and performs no database write when the client-scoped limit is exceeded', async () => {
+		mockRateLimitState.tokenClientAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/token',
+				body: 'grant_type=authorization_code&client_id=c1&code=abc',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthTokenPost(context);
+			expect(response.status).toBe(429);
+			expect(mockInsertedValues).toEqual([]);
+		} finally {
+			mockRateLimitState.tokenClientAllowed = true;
+		}
 	});
 });
 
@@ -362,6 +439,21 @@ describe('token revocation', () => {
 		});
 		const response = await handleOauthRevokePost(context);
 		expect(response.status).toBe(200);
+	});
+
+	it('returns 429 before parsing the body when revocation is rate-limited', async () => {
+		mockRateLimitState.revokeAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/revoke',
+				body: 'token=some-token',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthRevokePost(context);
+			expect(response.status).toBe(429);
+		} finally {
+			mockRateLimitState.revokeAllowed = true;
+		}
 	});
 });
 
@@ -447,6 +539,21 @@ describe('authorization GET', () => {
 		});
 		const response = await handleOauthAuthorizeGet(context);
 		expect(response.status).toBe(400);
+	});
+
+	it('returns 429 when rate-limited', async () => {
+		mockRateLimitState.authorizeAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+				method: 'GET',
+				user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+			});
+			const response = await handleOauthAuthorizeGet(context);
+			expect(response.status).toBe(429);
+		} finally {
+			mockRateLimitState.authorizeAllowed = true;
+		}
 	});
 });
 

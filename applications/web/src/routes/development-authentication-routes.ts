@@ -3,7 +3,9 @@ import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
+import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import type { RequestContext } from '@web/lib/request-context';
+import { enforceSessionCreationRateLimit } from '@web/lib/request-rate-limiter';
 import { createSession } from '@web/lib/session-authentication';
 
 const DEVELOPMENT_USER_EMAIL = 'dev@localhost';
@@ -12,6 +14,13 @@ const DEVELOPMENT_USER_NAME = 'Development User';
 export async function handleDevelopmentLogin(context: RequestContext): Promise<Response> {
 	if (environment.NODE_ENV !== 'development') {
 		return jsonResponse({ error: 'not_found' }, { status: 404 });
+	}
+
+	const rateLimitResult = await enforceSessionCreationRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds);
 	}
 
 	try {

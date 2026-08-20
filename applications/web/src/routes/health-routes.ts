@@ -4,6 +4,9 @@ import { environment } from '@web/env';
 import { jsonResponse } from '@web/lib/http-response';
 import { instanceIdentifier } from '@web/lib/instance-identifier';
 import { mcpSupportedProtocolVersions } from '@web/lib/mcp-protocol-constants';
+import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import type { RequestContext } from '@web/lib/request-context';
+import { enforceHealthProbeRateLimit } from '@web/lib/request-rate-limiter';
 import { isRedisConfigured, isRedisHealthy } from '@web/lib/redis-client';
 
 async function isDatabaseHealthy(): Promise<boolean> {
@@ -29,7 +32,14 @@ function isEnterprisePolicyConfigured(): boolean {
 	);
 }
 
-export async function handleHealthGet(): Promise<Response> {
+export async function handleHealthGet(context: RequestContext): Promise<Response> {
+	const rateLimitResult = await enforceHealthProbeRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds);
+	}
+
 	const redisConfigured = isRedisConfigured();
 	const redisHealthy = redisConfigured ? await isRedisHealthy() : false;
 	const databaseHealthy = await isDatabaseHealthy();

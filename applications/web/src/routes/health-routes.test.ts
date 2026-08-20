@@ -36,7 +36,24 @@ mock.module('@web/lib/mcp-protocol-constants', () => ({
 	mcpSupportedProtocolVersions: ['2025-11-25', '2026-07-28'],
 }));
 
+mock.module('@web/lib/request-rate-limiter', () => ({
+	enforceHealthProbeRateLimit: async () => ({
+		allowed: true,
+		retryAfterSeconds: 0,
+		remainingRequests: 10,
+	}),
+}));
+
 const { handleHealthGet } = await import('@web/routes/health-routes');
+
+const testContext = {
+	request: new Request('http://localhost/health'),
+	requestUrl: new URL('http://localhost/health'),
+	requestId: 'req-1',
+	networkIdentity: '203.0.113.1',
+	user: null,
+	sessionToken: null,
+};
 
 function setEnvironment(overrides: Record<string, unknown>) {
 	for (const key of Object.keys(mockEnvironment)) {
@@ -57,7 +74,7 @@ describe('handleHealthGet', () => {
 	});
 
 	it('returns 200 with ok status when all dependencies are healthy', async () => {
-		const response = await handleHealthGet();
+		const response = await handleHealthGet(testContext);
 		expect(response.status).toBe(200);
 		const body = await response.json();
 		expect(body.status).toBe('ok');
@@ -67,7 +84,7 @@ describe('handleHealthGet', () => {
 
 	it('returns 503 with degraded status when database is down', async () => {
 		mockDatabaseHealthy = false;
-		const response = await handleHealthGet();
+		const response = await handleHealthGet(testContext);
 		expect(response.status).toBe(503);
 		const body = await response.json();
 		expect(body.status).toBe('degraded');
@@ -76,7 +93,7 @@ describe('handleHealthGet', () => {
 
 	it('returns 503 with degraded status when Redis is down', async () => {
 		mockRedisHealthy = false;
-		const response = await handleHealthGet();
+		const response = await handleHealthGet(testContext);
 		expect(response.status).toBe(503);
 		const body = await response.json();
 		expect(body.status).toBe('degraded');
@@ -85,7 +102,7 @@ describe('handleHealthGet', () => {
 
 	it('reports enterprise policy as unconfigured when enabled but not configured', async () => {
 		setEnvironment({ MCP_ENABLE_ENTERPRISE_AUTH: true });
-		const response = await handleHealthGet();
+		const response = await handleHealthGet(testContext);
 		expect(response.status).toBe(503);
 		const body = await response.json();
 		expect(body.dependencies.enterprisePolicyBackend).toBe('unconfigured');

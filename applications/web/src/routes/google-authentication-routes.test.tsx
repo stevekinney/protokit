@@ -36,6 +36,20 @@ mock.module('@web/lib/google-authentication', () => ({
 	clearGoogleStateCookie: () => 'google_oauth_state=; Max-Age=0',
 }));
 
+mock.module('@web/lib/request-rate-limiter', () => ({
+	enforceGoogleAuthRateLimit: async () => ({
+		allowed: true,
+		retryAfterSeconds: 0,
+		remainingRequests: 10,
+	}),
+	enforceSessionCreationRateLimit: async () => ({
+		allowed: true,
+		retryAfterSeconds: 0,
+		remainingRequests: 10,
+	}),
+	recordFailedAuthentication: async () => {},
+}));
+
 mock.module('@web/lib/session-authentication', () => ({
 	createSession: async () => ({
 		cookieHeaderValue: 'test_session=token; HttpOnly',
@@ -97,6 +111,7 @@ function createContext(
 		request,
 		requestUrl: new URL(url),
 		requestId: 'req-1',
+		networkIdentity: '203.0.113.1',
 		user: null,
 		sessionToken: overrides.sessionToken ?? null,
 	};

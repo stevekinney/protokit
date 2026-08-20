@@ -55,16 +55,20 @@ describe('application request routing', () => {
 		expect(body).toContain('/auth/google/start');
 	});
 
-	it('redirects to Google OAuth and sets state cookie', async () => {
-		const port = startServer();
-		const response = await fetch(
-			`http://127.0.0.1:${port}/auth/google/start?callback_path=%2Foauth%2Fauthorize`,
-			{ redirect: 'manual' },
-		);
+	// Google sign-in is now rate-limited (SEC-003), which requires the
+	// shared Redis-backed limiter.
+	describeWithRedis('with Redis', () => {
+		it('redirects to Google OAuth and sets state cookie', async () => {
+			const port = startServer();
+			const response = await fetch(
+				`http://127.0.0.1:${port}/auth/google/start?callback_path=%2Foauth%2Fauthorize`,
+				{ redirect: 'manual' },
+			);
 
-		expect(response.status).toBe(302);
-		expect(response.headers.get('location')).toContain('accounts.google.com/o/oauth2/v2/auth');
-		expect(response.headers.get('set-cookie')).toContain('google_oauth_state=');
+			expect(response.status).toBe(302);
+			expect(response.headers.get('location')).toContain('accounts.google.com/o/oauth2/v2/auth');
+			expect(response.headers.get('set-cookie')).toContain('google_oauth_state=');
+		});
 	});
 
 	it('returns OAuth authorization metadata with redesigned endpoint paths', async () => {
@@ -120,13 +124,17 @@ describe('security headers', () => {
 		expect(csp).toContain("script-src 'self'");
 	});
 
-	it('sets script-src self on non-oauth HTML pages', async () => {
-		const port = startServer();
-		const response = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?error=access_denied`,
-		);
-		const csp = response.headers.get('content-security-policy');
-		expect(csp).toContain("script-src 'self'");
+	// The Google callback is now rate-limited (SEC-003), which requires the
+	// shared Redis-backed limiter.
+	describeWithRedis('with Redis', () => {
+		it('sets script-src self on non-oauth HTML pages', async () => {
+			const port = startServer();
+			const response = await fetch(
+				`http://127.0.0.1:${port}/auth/google/callback?error=access_denied`,
+			);
+			const csp = response.headers.get('content-security-policy');
+			expect(csp).toContain("script-src 'self'");
+		});
 	});
 
 	it('does not set Content-Security-Policy on JSON responses', async () => {
@@ -186,31 +194,34 @@ describe('error handling', () => {
 });
 
 describe('MCP endpoint authentication', () => {
-	it('returns 401 when no authorization header is provided', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				Accept: 'application/json, text/event-stream',
-			},
-			body: JSON.stringify({
-				jsonrpc: '2.0',
-				method: 'initialize',
-				id: 1,
-				params: {
-					protocolVersion: '2025-11-25',
-					capabilities: {},
-					clientInfo: { name: 'test', version: '0.1.0' },
-				},
-			}),
-		});
-		expect(response.status).toBe(401);
-		const body = (await response.json()) as Record<string, string>;
-		expect(body.error).toBe('unauthorized');
-	});
-
+	// Every MCP request is now rate-limited by network identity before
+	// authentication (SEC-003), which requires the shared Redis-backed
+	// limiter.
 	describeWithRedis('with Redis', () => {
+		it('returns 401 when no authorization header is provided', async () => {
+			const port = startServer();
+			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					method: 'initialize',
+					id: 1,
+					params: {
+						protocolVersion: '2025-11-25',
+						capabilities: {},
+						clientInfo: { name: 'test', version: '0.1.0' },
+					},
+				}),
+			});
+			expect(response.status).toBe(401);
+			const body = (await response.json()) as Record<string, string>;
+			expect(body.error).toBe('unauthorized');
+		});
+
 		it('returns 401 for invalid bearer token', async () => {
 			const port = startServer();
 			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
