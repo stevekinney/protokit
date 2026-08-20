@@ -18,6 +18,10 @@
 		"db:validate": "bun turbo db:validate",
 		"db:seed": "bun scripts/seed.ts",
 		"dev:full": "bun scripts/develop.ts",
+		"audit:workflows": "bun .github/scripts/audit-workflows.ts",
+		"test:workflow-authorization": "bun test ./.github/tests/workflow-authorization.test.ts",
+		"test:workflow-prompt-injection": "bun test ./.github/tests/workflow-prompt-injection.test.ts",
+		"test:production-migration-gate": "bun test ./.github/tests/production-migration-gate.test.ts",
 		"prepare": "husky"
 	},
 	"devDependencies": {

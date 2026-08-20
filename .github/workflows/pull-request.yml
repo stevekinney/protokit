@@ -7,14 +7,23 @@ on:
 env:
   SKIP_ENV_VALIDATION: 'true'
 
+permissions: {}
+
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Typecheck, Lint, Test, Build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.3.2'
 
@@ -47,12 +56,11 @@ jobs:
           MCP_PROTOCOL_VERSION: '2025-11-25'
           MCP_ALLOWED_ORIGINS: 'http://localhost:3000'
           MCP_ENABLE_UI_EXTENSION: 'true'
-          MCP_ENABLE_CLIENT_CREDENTIALS: 'true'
           MCP_ENABLE_ENTERPRISE_AUTH: 'false'
           MCP_CONFORMANCE_MODE: 'false'
           LOG_LEVEL: 'info'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
@@ -71,10 +79,13 @@ jobs:
     name: Validate Database
     if: ${{ !github.event.repository.is_template }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.3.2'
 
@@ -82,7 +93,7 @@ jobs:
 
       - name: Create Neon branch
         id: neon-branch
-        uses: neondatabase/create-branch-action@v5
+        uses: neondatabase/create-branch-action@ad7325f8b2fe61e29689926c29d153e8c98b7336 # v5.2.0
         with:
           project_id: ${{ secrets.NEON_PROJECT_ID }}
           api_key: ${{ secrets.NEON_API_KEY }}
@@ -96,7 +107,7 @@ jobs:
 
       - name: Delete Neon branch
         if: always()
-        uses: neondatabase/delete-branch-action@v3
+        uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1
         with:
           project_id: ${{ secrets.NEON_PROJECT_ID }}
           api_key: ${{ secrets.NEON_API_KEY }}
