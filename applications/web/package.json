@@ -10,7 +10,7 @@
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"test": "SKIP_ENV_VALIDATION=true bun test",
+		"test": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test",
 		"test:end-to-end": "bunx playwright test"
 	},
 	"dependencies": {

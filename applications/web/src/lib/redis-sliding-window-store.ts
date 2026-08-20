@@ -45,6 +45,28 @@ redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
 return redis.call('ZCARD', key)
 `;
 
+/**
+ * Serializes a numeric script argument, refusing anything non-finite.
+ *
+ * Redis implements Lua's `tonumber` with `strtod`, which parses `"NaN"` and
+ * `"Infinity"` as genuine float values rather than returning nil. A `NaN`
+ * window therefore reaches `ZREMRANGEBYSCORE` as a score and Redis rejects the
+ * whole script with `ERR min or max is not a float`, turning every rate-limited
+ * route into a 500. Refuse the value here, at the boundary that would otherwise
+ * launder it into the script, so a misconfigured limit fails loudly and
+ * locally instead of as an opaque Redis error.
+ */
+function serializeFiniteScriptArgument(value: number, parameterName: string): string {
+	if (!Number.isFinite(value)) {
+		throw new TypeError(
+			`Rate limiter received a non-finite ${parameterName} (${String(value)}). ` +
+				'This indicates missing or unparsed rate-limit configuration, not a Redis fault.',
+		);
+	}
+
+	return String(value);
+}
+
 export function createRedisSlidingWindowStore(
 	redisClient: RedisClientType,
 ): AtomicSlidingWindowStore {
@@ -53,9 +75,9 @@ export function createRedisSlidingWindowStore(
 			const reply = (await redisClient.eval(consumeScript, {
 				keys: [input.key],
 				arguments: [
-					String(input.nowMilliseconds),
-					String(input.windowMilliseconds),
-					String(input.maximumRequests),
+					serializeFiniteScriptArgument(input.nowMilliseconds, 'nowMilliseconds'),
+					serializeFiniteScriptArgument(input.windowMilliseconds, 'windowMilliseconds'),
+					serializeFiniteScriptArgument(input.maximumRequests, 'maximumRequests'),
 					input.member,
 				],
 			})) as [number, number, number];
@@ -71,7 +93,10 @@ export function createRedisSlidingWindowStore(
 		peek: async (input) => {
 			const reply = (await redisClient.eval(peekScript, {
 				keys: [input.key],
-				arguments: [String(input.nowMilliseconds), String(input.windowMilliseconds)],
+				arguments: [
+					serializeFiniteScriptArgument(input.nowMilliseconds, 'nowMilliseconds'),
+					serializeFiniteScriptArgument(input.windowMilliseconds, 'windowMilliseconds'),
+				],
 			})) as number;
 
 			return Number(reply);
