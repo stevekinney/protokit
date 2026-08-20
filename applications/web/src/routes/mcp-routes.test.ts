@@ -134,6 +134,15 @@ describe('handleMcpRequestWithAuthentication', () => {
 		expect(response.status).toBe(401);
 	});
 
+	it('returns 401 for a bearer token over the maximum length', async () => {
+		mockTokenResult = [];
+		const context = createContext({
+			headers: { authorization: `Bearer ${'a'.repeat(1000)}` },
+		});
+		const response = await handleMcpRequestWithAuthentication(context);
+		expect(response.status).toBe(401);
+	});
+
 	it('delegates to MCP handler when token is valid', async () => {
 		mockTokenResult = [
 			{

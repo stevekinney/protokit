@@ -29,36 +29,59 @@ import type { RequestContext } from '@web/lib/request-context';
 import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-authorization-policy';
 import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';
 import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
+import {
+	PayloadTooLargeError,
+	readBoundedFormUrlEncoded,
+	readBoundedJson,
+} from '@web/lib/bounded-request-body';
+import { isExactContentType } from '@web/lib/exact-content-type';
+import { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from '@web/lib/pkce-validation';
+import { findDuplicateParameterName } from '@web/lib/reject-duplicate-parameters';
+import {
+	oauthAuthorizeApproveMaxBodyBytes,
+	oauthAuthorizeDenyMaxBodyBytes,
+	oauthMaxClientIdLength,
+	oauthMaxClientNameLength,
+	oauthMaxGrantTypeCount,
+	oauthMaxRedirectUriCount,
+	oauthMaxRedirectUriLength,
+	oauthMaxResponseTypeCount,
+	oauthMaxStateLength,
+	oauthMaxTokenLength,
+	oauthRegisterMaxBodyBytes,
+	oauthRevokeMaxBodyBytes,
+	oauthTokenMaxBodyBytes,
+} from '@web/lib/request-limits';
 
 const supportedGrantTypes = ['authorization_code', 'refresh_token'] as const;
 const supportedResponseTypes = ['code'] as const;
 const supportedTokenEndpointAuthenticationMethods = ['client_secret_post', 'none'] as const;
 
 const oauthRegistrationSchema = z.object({
-	client_name: z.string().min(1).default('Unknown Client'),
+	client_name: z.string().min(1).max(oauthMaxClientNameLength).default('Unknown Client'),
 	redirect_uris: z
-		.array(z.string().url())
+		.array(z.string().url().max(oauthMaxRedirectUriLength))
 		.min(1, 'At least one redirect URI is required')
+		.max(oauthMaxRedirectUriCount)
 		.refine(
 			(uris) => uris.every(isValidRedirectUri),
 			'Redirect URIs must use HTTPS (or http://localhost for development)',
 		),
 	grant_types: z
 		.array(z.enum(supportedGrantTypes))
+		.max(oauthMaxGrantTypeCount)
 		.default(['authorization_code', 'refresh_token']),
-	response_types: z.array(z.enum(supportedResponseTypes)).default(['code']),
+	response_types: z
+		.array(z.enum(supportedResponseTypes))
+		.max(oauthMaxResponseTypeCount)
+		.default(['code']),
 	token_endpoint_auth_method: z
 		.enum(supportedTokenEndpointAuthenticationMethods)
 		.default('client_secret_post'),
 });
 
-function getFormString(formData: FormData, key: string): string | null {
-	const value = formData.get(key);
-	if (typeof value !== 'string') {
-		return null;
-	}
-
-	return value;
+function getSearchParamString(searchParams: URLSearchParams, key: string): string | null {
+	return searchParams.get(key);
 }
 
 function buildOauthSignInRedirectPath(requestUrl: URL): string {
@@ -66,19 +89,112 @@ function buildOauthSignInRedirectPath(requestUrl: URL): string {
 	return `/auth/google/start?callback_path=${encodeURIComponent(callbackPath)}`;
 }
 
-function parseRequestBodyForTokenEndpoint(request: Request): Promise<Record<string, string>> {
-	const contentType = request.headers.get('content-type') || '';
-	if (contentType.includes('application/x-www-form-urlencoded')) {
-		return request
-			.formData()
-			.then((formData) => Object.fromEntries(formData.entries()) as Record<string, string>);
+/**
+ * The known token/revoke endpoint parameters, checked for duplicates
+ * (RFC 6749 §3.1: a parameter appearing more than once is ambiguous, not
+ * merely redundant) before the body is handed to grant-specific handling.
+ */
+const tokenEndpointParameterNames = [
+	'grant_type',
+	'code',
+	'redirect_uri',
+	'client_id',
+	'client_secret',
+	'code_verifier',
+	'refresh_token',
+	'token',
+	'token_type_hint',
+] as const;
+
+class UnsupportedContentTypeError extends Error {
+	constructor() {
+		super('unsupported_content_type');
+	}
+}
+
+class DuplicateParameterOauthError extends Error {
+	constructor(public readonly parameterName: string) {
+		super(`Duplicate parameter: ${parameterName}`);
+	}
+}
+
+class ScalarParameterOauthError extends Error {
+	constructor(public readonly parameterName: string) {
+		super(`Parameter must be a single string value: ${parameterName}`);
+	}
+}
+
+/**
+ * Reads and validates a token/revoke endpoint body under a byte limit,
+ * rejecting anything but the two OAuth-recognized content types (exact
+ * match, no sniffing), duplicate parameters, and JSON values that are not
+ * plain strings (an array where a scalar is required).
+ */
+async function parseRequestBodyForTokenEndpoint(
+	request: Request,
+	maxBodyBytes: number,
+): Promise<Record<string, string>> {
+	const contentTypeHeader = request.headers.get('content-type');
+
+	if (isExactContentType(contentTypeHeader, 'application/x-www-form-urlencoded')) {
+		const searchParams = await readBoundedFormUrlEncoded(request, maxBodyBytes);
+		const duplicateParameterName = findDuplicateParameterName(
+			searchParams,
+			tokenEndpointParameterNames,
+		);
+		if (duplicateParameterName) {
+			throw new DuplicateParameterOauthError(duplicateParameterName);
+		}
+		return Object.fromEntries(searchParams.entries());
 	}
 
-	if (contentType.includes('application/json')) {
-		return request.json();
+	if (isExactContentType(contentTypeHeader, 'application/json')) {
+		const parsedBody = await readBoundedJson(request, maxBodyBytes);
+		if (typeof parsedBody !== 'object' || parsedBody === null || Array.isArray(parsedBody)) {
+			throw new ScalarParameterOauthError('(request body)');
+		}
+
+		const body: Record<string, string> = {};
+		for (const [key, value] of Object.entries(parsedBody as Record<string, unknown>)) {
+			if (typeof value !== 'string') {
+				throw new ScalarParameterOauthError(key);
+			}
+			body[key] = value;
+		}
+		return body;
 	}
 
-	throw new Error('unsupported_content_type');
+	throw new UnsupportedContentTypeError();
+}
+
+/**
+ * Maps every failure mode `parseRequestBodyForTokenEndpoint` can throw to a
+ * stable OAuth error response: a declared-or-actual size overflow is `413`,
+ * an unrecognized `Content-Type` is `unsupported_content_type`, and a
+ * duplicate parameter, non-string JSON value, or invalid-UTF-8 body is
+ * `invalid_request` — never a generic 500, and never a database write
+ * beforehand.
+ */
+function respondToOauthBodyError(error: unknown, headers: Record<string, string>): Response {
+	if (error instanceof PayloadTooLargeError) {
+		return jsonResponse(
+			{ error: 'invalid_request', error_description: 'Request body too large' },
+			{ status: 413, headers },
+		);
+	}
+	if (error instanceof UnsupportedContentTypeError) {
+		return jsonResponse({ error: 'unsupported_content_type' }, { status: 400, headers });
+	}
+	if (error instanceof DuplicateParameterOauthError || error instanceof ScalarParameterOauthError) {
+		return jsonResponse(
+			{ error: 'invalid_request', error_description: error.message },
+			{ status: 400, headers },
+		);
+	}
+	return jsonResponse(
+		{ error: 'invalid_request', error_description: 'Malformed request body' },
+		{ status: 400, headers },
+	);
 }
 
 function issueTokens() {
@@ -132,6 +248,31 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		return redirectResponse(buildOauthSignInRedirectPath(context.requestUrl));
 	}
 
+	const authorizeParameterNames = [
+		'client_id',
+		'redirect_uri',
+		'response_type',
+		'code_challenge',
+		'code_challenge_method',
+		'state',
+	] as const;
+	const duplicateParameterName = findDuplicateParameterName(
+		context.requestUrl.searchParams,
+		authorizeParameterNames,
+	);
+	if (duplicateParameterName) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: (
+				<OauthAuthorizePage
+					mode="error"
+					error={`Duplicate OAuth parameter: ${duplicateParameterName}.`}
+				/>
+			),
+		});
+	}
+
 	const clientId = context.requestUrl.searchParams.get('client_id');
 	const redirectUri = context.requestUrl.searchParams.get('redirect_uri');
 	const responseType = context.requestUrl.searchParams.get('response_type');
@@ -152,6 +293,18 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
+	if (
+		clientId.length > oauthMaxClientIdLength ||
+		redirectUri.length > oauthMaxRedirectUriLength ||
+		state.length > oauthMaxStateLength
+	) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
+		});
+	}
+
 	if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
@@ -159,6 +312,14 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 			body: (
 				<OauthAuthorizePage mode="error" error="Only S256 code challenge method is supported." />
 			),
+		});
+	}
+
+	if (!isValidPkceCodeChallenge(codeChallenge)) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: <OauthAuthorizePage mode="error" error="Malformed code_challenge." />,
 		});
 	}
 
@@ -201,21 +362,79 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	});
 }
 
+const authorizeFormParameterNames = [
+	'client_id',
+	'redirect_uri',
+	'code_challenge',
+	'code_challenge_method',
+	'state',
+] as const;
+
 export async function handleOauthAuthorizeApprove(context: RequestContext): Promise<Response> {
 	if (!context.user) {
 		return jsonResponse({ error: 'unauthorized' }, { status: 401 });
 	}
 
-	const formData = await context.request.formData();
-	const clientId = getFormString(formData, 'client_id');
-	const redirectUri = getFormString(formData, 'redirect_uri');
-	const codeChallenge = getFormString(formData, 'code_challenge');
-	const codeChallengeMethod = getFormString(formData, 'code_challenge_method') || 'S256';
-	const state = getFormString(formData, 'state');
+	if (
+		!isExactContentType(
+			context.request.headers.get('content-type'),
+			'application/x-www-form-urlencoded',
+		)
+	) {
+		return jsonResponse({ error: 'unsupported_content_type' }, { status: 400 });
+	}
+
+	let formParameters: URLSearchParams;
+	try {
+		formParameters = await readBoundedFormUrlEncoded(
+			context.request,
+			oauthAuthorizeApproveMaxBodyBytes,
+		);
+	} catch (error) {
+		if (error instanceof PayloadTooLargeError) {
+			return jsonResponse(
+				{ error: 'invalid_request', message: 'Request body too large.' },
+				{ status: 413 },
+			);
+		}
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Request body is not valid UTF-8.' },
+			{ status: 400 },
+		);
+	}
+
+	const duplicateParameterName = findDuplicateParameterName(
+		formParameters,
+		authorizeFormParameterNames,
+	);
+	if (duplicateParameterName) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: `Duplicate parameter: ${duplicateParameterName}.` },
+			{ status: 400 },
+		);
+	}
+
+	const clientId = getSearchParamString(formParameters, 'client_id');
+	const redirectUri = getSearchParamString(formParameters, 'redirect_uri');
+	const codeChallenge = getSearchParamString(formParameters, 'code_challenge');
+	const codeChallengeMethod =
+		getSearchParamString(formParameters, 'code_challenge_method') || 'S256';
+	const state = getSearchParamString(formParameters, 'state');
 
 	if (!clientId || !redirectUri || !codeChallenge) {
 		return jsonResponse(
 			{ error: 'invalid_request', message: 'Missing required fields.' },
+			{ status: 400 },
+		);
+	}
+
+	if (
+		clientId.length > oauthMaxClientIdLength ||
+		redirectUri.length > oauthMaxRedirectUriLength ||
+		(state && state.length > oauthMaxStateLength)
+	) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'A parameter exceeded its maximum length.' },
 			{ status: 400 },
 		);
 	}
@@ -226,6 +445,13 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 				error: 'invalid_request',
 				message: 'Only S256 code challenge method is supported.',
 			},
+			{ status: 400 },
+		);
+	}
+
+	if (!isValidPkceCodeChallenge(codeChallenge)) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Malformed code_challenge.' },
 			{ status: 400 },
 		);
 	}
@@ -264,14 +490,60 @@ export async function handleOauthAuthorizeDeny(context: RequestContext): Promise
 		return jsonResponse({ error: 'unauthorized' }, { status: 401 });
 	}
 
-	const formData = await context.request.formData();
-	const clientId = getFormString(formData, 'client_id');
-	const redirectUri = getFormString(formData, 'redirect_uri');
-	const state = getFormString(formData, 'state');
+	if (
+		!isExactContentType(
+			context.request.headers.get('content-type'),
+			'application/x-www-form-urlencoded',
+		)
+	) {
+		return jsonResponse({ error: 'unsupported_content_type' }, { status: 400 });
+	}
+
+	let formParameters: URLSearchParams;
+	try {
+		formParameters = await readBoundedFormUrlEncoded(
+			context.request,
+			oauthAuthorizeDenyMaxBodyBytes,
+		);
+	} catch (error) {
+		if (error instanceof PayloadTooLargeError) {
+			return jsonResponse(
+				{ error: 'invalid_request', message: 'Request body too large.' },
+				{ status: 413 },
+			);
+		}
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Request body is not valid UTF-8.' },
+			{ status: 400 },
+		);
+	}
+
+	const duplicateParameterName = findDuplicateParameterName(formParameters, [
+		'client_id',
+		'redirect_uri',
+		'state',
+	]);
+	if (duplicateParameterName) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: `Duplicate parameter: ${duplicateParameterName}.` },
+			{ status: 400 },
+		);
+	}
+
+	const clientId = getSearchParamString(formParameters, 'client_id');
+	const redirectUri = getSearchParamString(formParameters, 'redirect_uri');
+	const state = getSearchParamString(formParameters, 'state');
 
 	if (!clientId || !redirectUri) {
 		return jsonResponse(
 			{ error: 'invalid_request', message: 'Missing redirect URI.' },
+			{ status: 400 },
+		);
+	}
+
+	if (clientId.length > oauthMaxClientIdLength || redirectUri.length > oauthMaxRedirectUriLength) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'A parameter exceeded its maximum length.' },
 			{ status: 400 },
 		);
 	}
@@ -302,10 +574,26 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, oauthCorsHeaders);
 	}
 
+	if (!isExactContentType(context.request.headers.get('content-type'), 'application/json')) {
+		return jsonResponse(
+			{
+				error: 'invalid_client_metadata',
+				error_description: 'Content-Type must be application/json',
+			},
+			{ status: 400, headers: oauthCorsHeaders },
+		);
+	}
+
 	let requestBody: unknown;
 	try {
-		requestBody = await context.request.json();
-	} catch {
+		requestBody = await readBoundedJson(context.request, oauthRegisterMaxBodyBytes);
+	} catch (error) {
+		if (error instanceof PayloadTooLargeError) {
+			return jsonResponse(
+				{ error: 'invalid_client_metadata', error_description: 'Request body too large' },
+				{ status: 413, headers: oauthCorsHeaders },
+			);
+		}
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Invalid JSON body' },
 			{ status: 400, headers: oauthCorsHeaders },
@@ -379,6 +667,26 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	if (!code || !redirect_uri || !client_id || !code_verifier) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Missing required parameters' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	if (
+		code.length > oauthMaxTokenLength ||
+		redirect_uri.length > oauthMaxRedirectUriLength ||
+		client_id.length > oauthMaxClientIdLength
+	) {
+		return jsonResponse(
+			{ error: 'invalid_request', error_description: 'A parameter exceeded its maximum length' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	// RFC 7636 §4.1: validate `code_verifier` syntax and length before it is
+	// ever hashed or compared, and before any database work runs.
+	if (!isValidPkceCodeVerifier(code_verifier)) {
+		return jsonResponse(
+			{ error: 'invalid_grant', error_description: 'Malformed code_verifier' },
 			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
@@ -545,6 +853,13 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 		);
 	}
 
+	if (refresh_token.length > oauthMaxTokenLength || client_id.length > oauthMaxClientIdLength) {
+		return jsonResponse(
+			{ error: 'invalid_request', error_description: 'A parameter exceeded its maximum length' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
 	const [client] = await database
 		.select()
 		.from(schema.oauthClients)
@@ -685,18 +1000,25 @@ export async function handleOauthRevokePost(context: RequestContext): Promise<Re
 
 	let body: Record<string, string>;
 	try {
-		body = await parseRequestBodyForTokenEndpoint(context.request);
-	} catch {
-		return jsonResponse(
-			{ error: 'unsupported_content_type' },
-			{ status: 400, headers: revocationResponseHeaders },
-		);
+		body = await parseRequestBodyForTokenEndpoint(context.request, oauthRevokeMaxBodyBytes);
+	} catch (error) {
+		return respondToOauthBodyError(error, revocationResponseHeaders);
 	}
 
 	const { token, token_type_hint } = body;
 	if (!token) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Missing token parameter' },
+			{ status: 400, headers: revocationResponseHeaders },
+		);
+	}
+
+	if (token.length > oauthMaxTokenLength) {
+		return jsonResponse(
+			{
+				error: 'invalid_request',
+				error_description: 'token parameter exceeded its maximum length',
+			},
 			{ status: 400, headers: revocationResponseHeaders },
 		);
 	}
@@ -757,15 +1079,9 @@ const tokenEndpointNoStoreHeaders = {
 async function handleOauthTokenPostInner(context: RequestContext): Promise<Response> {
 	let body: Record<string, string>;
 	try {
-		body = await parseRequestBodyForTokenEndpoint(context.request);
-	} catch {
-		return jsonResponse(
-			{ error: 'unsupported_content_type' },
-			{
-				status: 400,
-				headers: tokenEndpointNoStoreHeaders,
-			},
-		);
+		body = await parseRequestBodyForTokenEndpoint(context.request, oauthTokenMaxBodyBytes);
+	} catch (error) {
+		return respondToOauthBodyError(error, tokenEndpointNoStoreHeaders);
 	}
 
 	if (body.client_id) {

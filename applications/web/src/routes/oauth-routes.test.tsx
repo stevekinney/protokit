@@ -118,7 +118,8 @@ mock.module('@web/lib/validate-redirect-uri', () => ({
 }));
 
 mock.module('@web/lib/mcp-protocol-constants', () => ({
-	mcpProtocolVersion: '2025-11-25',
+	mcpSupportedProtocolVersions: ['2025-11-25', '2026-07-28'],
+	mcpLatestProtocolVersion: '2026-07-28',
 	mcpUiExtensionIdentifier: 'io.modelcontextprotocol/ui',
 	mcpEnterpriseAuthorizationExtensionIdentifier:
 		'io.modelcontextprotocol/enterprise-managed-authorization',
@@ -349,6 +350,57 @@ describe('client registration', () => {
 			mockRateLimitState.registrationAllowed = true;
 		}
 	});
+
+	it('returns 413 and performs no database write for a body over the byte limit', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: ['https://example.com/callback'],
+				// The registration byte limit is 16KB; this padding alone is well over it.
+				padding: 'x'.repeat(32 * 1024),
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(413);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a Content-Type other than application/json and performs no database write', async () => {
+		const context = createContext({
+			body: JSON.stringify({ client_name: 'My App', redirect_uris: ['https://example.com/cb'] }),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a client_name over the maximum length and performs no database write', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'x'.repeat(500),
+				redirect_uris: ['https://example.com/callback'],
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects more redirect_uris than the maximum count and performs no database write', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: Array.from({ length: 20 }, (_, index) => `https://example.com/cb${index}`),
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
 });
 
 describe('token exchange', () => {
@@ -412,6 +464,68 @@ describe('token exchange', () => {
 			mockRateLimitState.tokenClientAllowed = true;
 		}
 	});
+
+	it('rejects a duplicate parameter before any grant handling runs, with no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: 'grant_type=authorization_code&code=a&code=b&client_id=c1',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('returns 413 and performs no database write for a body over the byte limit', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			// The token endpoint byte limit is 8KB.
+			body: `grant_type=authorization_code&code=${'x'.repeat(16 * 1024)}`,
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(413);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a malformed code_verifier before any client lookup, with no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code: 'some-code',
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'c1',
+				code_verifier: 'too-short',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_grant');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a JSON body where a parameter is an array instead of a scalar string', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: JSON.stringify({
+				grant_type: 'authorization_code',
+				code: ['a', 'b'],
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'c1',
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+		expect(mockInsertedValues).toEqual([]);
+	});
 });
 
 describe('token revocation', () => {
@@ -454,6 +568,39 @@ describe('token revocation', () => {
 		} finally {
 			mockRateLimitState.revokeAllowed = true;
 		}
+	});
+
+	it('returns 413 for a body over the byte limit', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			// The revoke endpoint byte limit is 4KB.
+			body: `token=${'x'.repeat(8 * 1024)}`,
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(413);
+	});
+
+	it('rejects a duplicate token parameter', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=a&token=b',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+	});
+
+	it('rejects a token over the maximum length', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: `token=${'a'.repeat(1000)}`,
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
 	});
 });
 
@@ -504,7 +651,7 @@ describe('authorization GET', () => {
 			},
 		];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -554,6 +701,29 @@ describe('authorization GET', () => {
 		} finally {
 			mockRateLimitState.authorizeAllowed = true;
 		}
+	});
+
+	it('rejects a duplicate client_id query parameter', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&client_id=c2&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+	});
+
+	it('rejects a malformed code_challenge', async () => {
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: ['https://example.com/cb'] },
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=too-short',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
 	});
 });
 
@@ -608,6 +778,51 @@ describe('authorization approve', () => {
 		});
 		const response = await handleOauthAuthorizeApprove(context);
 		expect(response.status).toBe(400);
+	});
+
+	it('returns 413 and performs no database write for a body over the byte limit', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			// The approve endpoint byte limit is 4KB.
+			body: new URLSearchParams({
+				client_id: 'c1',
+				redirect_uri: 'https://example.com/cb',
+				code_challenge: 'x'.repeat(8 * 1024),
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(413);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a duplicate parameter and performs no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'client_id=c1&client_id=c2&redirect_uri=https://example.com/cb&code_challenge=abc',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a malformed code_challenge and performs no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				client_id: 'c1',
+				redirect_uri: 'https://example.com/cb',
+				code_challenge: 'too-short',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
 	});
 });
 
@@ -673,7 +888,7 @@ describe('authorization code token exchange', () => {
 				code: 'some-code',
 				redirect_uri: 'https://example.com/cb',
 				client_id: 'unknown',
-				code_verifier: 'verifier',
+				code_verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});

@@ -207,4 +207,55 @@ describe('handleMcpRequest', () => {
 		expect(response.status).toBe(202);
 		expect(await response.text()).toBe('');
 	});
+
+	it('rejects a declared oversized Content-Length before ever reaching the SDK, with a stable protocol error', async () => {
+		const response = await fetchThroughHandler('http://localhost:3000/mcp', {
+			method: 'POST',
+			headers: {
+				accept: 'application/json, text/event-stream',
+				'content-type': 'application/json',
+				'content-length': String(10 * 1024 * 1024), // 10MB, well over the 1MB limit
+			},
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+		});
+
+		expect(response.status).toBe(413);
+		const body = (await response.json()) as { error: string };
+		expect(body.error).toBe('payload_too_large');
+	});
+
+	it('fails a chunked body (no Content-Length) that overflows the limit while streaming, with a stable SDK-produced protocol error', async () => {
+		// No `content-length` header at all — this is the chunked-transfer
+		// case. `boundRequestBody`'s streaming cap still fires once the byte
+		// count crosses the limit; the SDK converts the resulting stream
+		// error into its own JSON-RPC parse-error response rather than ever
+		// calling the (database-touching) server factory.
+		const encoder = new TextEncoder();
+		const oversizedChunk = encoder.encode(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"padding":"${'x'.repeat(2 * 1024 * 1024)}"}}`,
+		);
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(oversizedChunk);
+				controller.close();
+			},
+		});
+		const response = await handleMcpRequest(
+			new Request('http://localhost:3000/mcp', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json, text/event-stream',
+					'content-type': 'application/json',
+				},
+				body: stream,
+				duplex: 'half',
+			} as RequestInit),
+			buildAuthInfo(),
+		);
+
+		expect(response.status).toBeGreaterThanOrEqual(400);
+		const body = (await response.json()) as { jsonrpc: string; error?: { code: number } };
+		expect(body.jsonrpc).toBe('2.0');
+		expect(typeof body.error).toBe('object');
+	});
 });

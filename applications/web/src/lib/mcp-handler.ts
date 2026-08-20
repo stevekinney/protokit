@@ -9,6 +9,10 @@ import { environment } from '@web/env';
 import { resourceSubscriptionManager } from '@web/lib/resource-subscription-manager';
 import { disconnectRedisSubscriberClient } from '@web/lib/redis-client';
 import { readMcpRequestAuthExtra } from '@web/lib/mcp-request-context';
+import { boundRequestBody, PayloadTooLargeError } from '@web/lib/bounded-request-body';
+import { createMcpProtocolErrorResponse } from '@web/lib/mcp-protocol-error-response';
+import { mcpLatestProtocolVersion } from '@web/lib/mcp-protocol-constants';
+import { mcpRequestMaxBodyBytes } from '@web/lib/request-limits';
 
 async function fetchUserProfile(userId: string): Promise<McpUserProfile | null> {
 	const [user] = await database
@@ -69,9 +73,37 @@ const mcpHttpHandler = createMcpHandler(
 	},
 );
 
+/**
+ * S-05: MCP request bodies were handed straight to the SDK, which buffers
+ * and JSON-RPC-parses them internally with no size limit of its own. Every
+ * body the SDK will ever read here goes through `boundRequestBody` first —
+ * a declared `Content-Length` over the limit is rejected before the SDK
+ * sees the request at all (no server-factory call, no database read); an
+ * actual byte count that only exceeds the limit once streaming begins
+ * (a dishonest or absent `Content-Length`, i.e. chunked transfer encoding)
+ * errors the wrapped stream, which the SDK itself turns into its own
+ * stable JSON-RPC parse-error response rather than ever reaching the
+ * server factory.
+ */
 export async function handleMcpRequest(request: Request, authInfo: AuthInfo): Promise<Response> {
 	const options: McpHandlerRequestOptions = { authInfo };
-	return mcpHttpHandler.fetch(request, options);
+
+	let boundedRequest: Request;
+	try {
+		boundedRequest = boundRequestBody(request, mcpRequestMaxBodyBytes);
+	} catch (error) {
+		if (error instanceof PayloadTooLargeError) {
+			return createMcpProtocolErrorResponse({
+				status: 413,
+				error: 'payload_too_large',
+				errorDescription: error.message,
+				headers: { 'MCP-Protocol-Version': mcpLatestProtocolVersion },
+			});
+		}
+		throw error;
+	}
+
+	return mcpHttpHandler.fetch(boundedRequest, options);
 }
 
 export async function shutdownMcpTransports(): Promise<void> {

@@ -5,6 +5,7 @@ import { environment } from '@web/env';
 import { loadAssetManifest } from '@web/lib/asset-manifest';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
+import { mcpRequestMaxBodyBytes } from '@web/lib/request-limits';
 import { assertProductionStartupInvariants } from '@web/lib/startup-invariants';
 import { resolvePublicFile } from '@web/resolve-public-file';
 
@@ -49,9 +50,18 @@ for (const entry of staticFileEntries) {
 	}
 }
 
+// S-05 defense in depth: every route already enforces its own byte limit
+// while *reading* the body (see `request-limits.ts`), but this caps what
+// Bun will buffer for any request at all, including a route this template
+// adds later and forgets to bound individually. Set just above the largest
+// per-route limit (`/mcp`'s) rather than at it, so the route-specific limit
+// is always what actually rejects a request in normal operation.
+const globalMaxRequestBodyBytes = mcpRequestMaxBodyBytes * 2;
+
 const server = Bun.serve({
 	port,
 	static: staticRoutes,
+	maxRequestBodySize: globalMaxRequestBodyBytes,
 	fetch(request, bunServer) {
 		const requestIpAddress = bunServer.requestIP(request)?.address;
 		return handleApplicationRequest(request, { clientAddress: requestIpAddress });

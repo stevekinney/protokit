@@ -22,6 +22,8 @@ declare module 'bun:test' {
 	export const expect: (value: unknown) => Expectation;
 	export const beforeEach: (fn: () => void | Promise<void>) => void;
 	export const afterEach: (fn: () => void | Promise<void>) => void;
+	export const beforeAll: (fn: () => void | Promise<void>) => void;
+	export const afterAll: (fn: () => void | Promise<void>) => void;
 	export const mock: {
 		module: (moduleName: string, factory: () => unknown) => void;
 	};
@@ -54,6 +56,8 @@ declare namespace Bun {
 	type ServeOptions = {
 		port?: number;
 		static?: Record<string, Response>;
+		/** Hard cap, in bytes, on any request body Bun will buffer before handing the request to `fetch`. Defense in depth below the route-specific limits in `request-limits.ts`. */
+		maxRequestBodySize?: number;
 		fetch: (request: Request, server: Server) => Response | Promise<Response>;
 	};
 

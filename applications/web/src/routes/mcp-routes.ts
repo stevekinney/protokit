@@ -24,6 +24,7 @@ import {
 } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
 import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-authorization-policy';
+import { mcpMaxBearerTokenLength } from '@web/lib/request-limits';
 
 async function authenticateMcpUser(context: RequestContext): Promise<Response | AuthInfo> {
 	const mcpCorsHeaders = createMcpCorsHeaders(context.request);
@@ -84,6 +85,21 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 	}
 
 	const accessToken = authorizationHeader.slice(7);
+	if (accessToken.length === 0 || accessToken.length > mcpMaxBearerTokenLength) {
+		const baseUrl = getBaseUrl(context.request);
+		const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/mcp`;
+		return createMcpProtocolErrorResponse({
+			status: 401,
+			error: 'unauthorized',
+			errorDescription: 'Malformed bearer token.',
+			headers: {
+				...mcpCorsHeaders,
+				'MCP-Protocol-Version': mcpLatestProtocolVersion,
+				'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
+			},
+		});
+	}
+
 	const accessTokenHash = hashCredential(accessToken);
 	const [oauthToken] = await database
 		.select()
