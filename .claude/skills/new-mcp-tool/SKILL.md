@@ -41,12 +41,7 @@ export const myToolNameTool = {
 	inputSchema: z.object({
 		// Define input parameters
 	}),
-	handler: async (
-		input: {
-			/* typed input */
-		},
-		context: { userId: string },
-	) => {
+	handler: async (input: {/* typed input */}, context: { userId: string }) => {
 		const requestLogger = logger.child({ tool: 'my_tool_name', userId: context.userId });
 		const start = Date.now();
 		try {
