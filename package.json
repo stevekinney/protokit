@@ -28,6 +28,7 @@
 		"test:workflow-authorization": "bun test ./.github/tests/workflow-authorization.test.ts",
 		"test:workflow-prompt-injection": "bun test ./.github/tests/workflow-prompt-injection.test.ts",
 		"test:production-migration-gate": "bun test ./.github/tests/production-migration-gate.test.ts",
+		"test:container-smoke": "bun scripts/test-container-smoke.ts",
 		"prepare": "husky"
 	},
 	"devDependencies": {

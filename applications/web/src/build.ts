@@ -1,13 +1,22 @@
-import { cpSync, rmSync } from 'node:fs';
-import { basename } from 'node:path';
+import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import type { AssetManifest } from '@web/lib/asset-manifest';
 import { createTailwindPlugin } from './plugins/tailwind.js';
 
+// Every generated asset is built into this scratch directory first, never
+// straight into `public/assets`. That lets the build validate exactly what
+// came out before anything is published, so a previous build's stale hashed
+// files can never survive alongside a new one and an unexpected extra output
+// can never slip into the served directory unnoticed.
+const stagingDirectory = 'dist/assets-staging';
+const publishedAssetsDirectory = 'public/assets';
+
 rmSync('dist', { recursive: true, force: true });
+mkdirSync(stagingDirectory, { recursive: true });
 
 const styleBuildResult = await Bun.build({
 	entrypoints: ['src/styles/application.css'],
-	outdir: 'public/assets',
+	outdir: stagingDirectory,
 	plugins: [createTailwindPlugin({ minify: true })],
 	naming: '[name]-[hash].[ext]',
 });
@@ -22,7 +31,7 @@ if (!styleBuildResult.success) {
 const clientBuildResult = await Bun.build({
 	entrypoints: ['src/client/entry.tsx'],
 	target: 'browser',
-	outdir: 'public/assets',
+	outdir: stagingDirectory,
 	naming: 'client-[hash].[ext]',
 	minify: true,
 	sourcemap: 'external',
@@ -42,13 +51,54 @@ const clientSourceMapFilename = basename(
 	clientOutputs.find((o) => o.path.endsWith('.js.map'))!.path,
 );
 
+// Fail the build if either bundler produced anything beyond the three files
+// this build script knows how to name, validate, and publish. A silent
+// extra output (an unexpected chunk, an image asset copied through, a second
+// source map) is exactly the kind of undeclared artifact that erodes
+// reproducibility.
+const declaredOutputFilenames = new Set([
+	stylesheetFilename,
+	clientBundleFilename,
+	clientSourceMapFilename,
+]);
+const producedOutputFilenames = [...styleBuildResult.outputs, ...clientOutputs].map((output) =>
+	basename(output.path),
+);
+const undeclaredOutputFilenames = producedOutputFilenames.filter(
+	(filename) => !declaredOutputFilenames.has(filename),
+);
+if (undeclaredOutputFilenames.length > 0) {
+	console.error(`Build produced undeclared asset output: ${undeclaredOutputFilenames.join(', ')}`);
+	process.exit(1);
+}
+
+// Publish only the declared, non-source-map files. Clearing the published
+// directory first (rather than overwriting into it) guarantees no
+// previously built hashed asset is ever left behind for a request to find.
+rmSync(publishedAssetsDirectory, { recursive: true, force: true });
+mkdirSync(publishedAssetsDirectory, { recursive: true });
+cpSync(
+	join(stagingDirectory, stylesheetFilename),
+	join(publishedAssetsDirectory, stylesheetFilename),
+);
+cpSync(
+	join(stagingDirectory, clientBundleFilename),
+	join(publishedAssetsDirectory, clientBundleFilename),
+);
+// The client source map stays in the staging directory only. It is never
+// copied into `public/assets`, so it is never published to the production
+// image or served over HTTP by default.
+
 const manifest: AssetManifest = {
 	stylesheetPath: `/assets/${stylesheetFilename}`,
 	clientBundlePath: `/assets/${clientBundleFilename}`,
 	clientSourceMapPath: `/assets/${clientSourceMapFilename}`,
 };
 
-await Bun.write('public/assets/manifest.json', JSON.stringify(manifest, null, '\t'));
+await Bun.write(
+	join(publishedAssetsDirectory, 'manifest.json'),
+	JSON.stringify(manifest, null, '\t'),
+);
 
 const serverBuildResult = await Bun.build({
 	entrypoints: ['src/server.ts'],
@@ -66,5 +116,6 @@ if (!serverBuildResult.success) {
 }
 
 cpSync('public', 'dist/public', { recursive: true });
+rmSync(stagingDirectory, { recursive: true, force: true });
 
 export {};

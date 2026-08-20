@@ -10,7 +10,5 @@ dist
 .DS_Store
 coverage
 .vercel
-applications/web/public/assets/application.css
-applications/web/public/assets/client.js
-applications/web/public/assets/client.js.map
+applications/web/public/assets/
 applications/web/test-results

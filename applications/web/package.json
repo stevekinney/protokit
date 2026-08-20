@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "bun run src/development.ts",
-		"build": "SKIP_ENV_VALIDATION=true bun run src/build.ts",
+		"build": "bun run src/build.ts",
 		"start": "NODE_ENV=production bun run dist/server.js",
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",

@@ -6,12 +6,12 @@ COPY package.json bun.lock ./
 COPY applications/web/package.json ./applications/web/
 COPY packages/database/package.json ./packages/database/
 COPY packages/mcp/package.json ./packages/mcp/
+COPY packages/mcp-apps/package.json ./packages/mcp-apps/
 
 RUN bun install --frozen-lockfile
 
 COPY . .
 
-ENV SKIP_ENV_VALIDATION=true
 ENV NODE_ENV=production
 
 RUN bun turbo build --filter=./applications/web

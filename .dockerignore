@@ -10,3 +10,4 @@ dist
 .vscode
 .claude
 documentation
+applications/web/public/assets
