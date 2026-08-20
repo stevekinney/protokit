@@ -14,8 +14,6 @@ import { metricsCollector } from './metrics.js';
 import type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
 import type { McpUserProfile } from './types/primitives.js';
 
-const oauthClientCredentialsExtensionIdentifier =
-	'io.modelcontextprotocol/oauth-client-credentials';
 const enterpriseAuthorizationExtensionIdentifier =
 	'io.modelcontextprotocol/enterprise-managed-authorization';
 
@@ -23,7 +21,6 @@ export function createMcpServer(context: {
 	userId: string;
 	user: McpUserProfile;
 	enableUiExtension: boolean;
-	enableClientCredentialsExtension: boolean;
 	enableEnterpriseAuthorizationExtension: boolean;
 	enableConformanceMode?: boolean;
 	subscriptionBackend?: ResourceSubscriptionBackend;
@@ -32,9 +29,6 @@ export function createMcpServer(context: {
 	const experimentalCapabilities: Record<string, object> = {};
 	if (context.enableUiExtension) {
 		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
-	}
-	if (context.enableClientCredentialsExtension) {
-		experimentalCapabilities[oauthClientCredentialsExtensionIdentifier] = { version: '1.0.0' };
 	}
 	if (context.enableEnterpriseAuthorizationExtension) {
 		experimentalCapabilities[enterpriseAuthorizationExtensionIdentifier] = { version: '1.0.0' };

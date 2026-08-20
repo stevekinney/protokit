@@ -118,7 +118,6 @@ async function handleMcpRequest(request: Request): Promise<Response> {
 			userId,
 			user: createConformanceUser(userId),
 			enableUiExtension: true,
-			enableClientCredentialsExtension: true,
 			enableEnterpriseAuthorizationExtension: true,
 			enableConformanceMode: true,
 		});
@@ -135,7 +134,6 @@ async function handleMcpRequest(request: Request): Promise<Response> {
 		userId: statelessUserId,
 		user: createConformanceUser(statelessUserId),
 		enableUiExtension: true,
-		enableClientCredentialsExtension: true,
 		enableEnterpriseAuthorizationExtension: true,
 		enableConformanceMode: true,
 	});

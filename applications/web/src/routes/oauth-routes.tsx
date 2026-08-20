@@ -11,7 +11,6 @@ import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import {
 	mcpEnterpriseAuthorizationExtensionIdentifier,
-	mcpOauthClientCredentialsExtensionIdentifier,
 	mcpProtocolVersion,
 	mcpUiExtensionIdentifier,
 } from '@web/lib/mcp-protocol-constants';
@@ -25,7 +24,7 @@ import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-autho
 import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';
 import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
 
-const supportedGrantTypes = ['authorization_code', 'refresh_token', 'client_credentials'] as const;
+const supportedGrantTypes = ['authorization_code', 'refresh_token'] as const;
 const supportedResponseTypes = ['code'] as const;
 const supportedTokenEndpointAuthenticationMethods = ['client_secret_post', 'none'] as const;
 
@@ -314,28 +313,6 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 
 	const { client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method } =
 		parsedBody.data;
-	const includesClientCredentialsGrant = grant_types.includes('client_credentials');
-
-	if (includesClientCredentialsGrant && !environment.MCP_ENABLE_CLIENT_CREDENTIALS) {
-		return jsonResponse(
-			{
-				error: 'invalid_client_metadata',
-				error_description: 'client_credentials is disabled on this server.',
-			},
-			{ status: 400, headers: oauthCorsHeaders },
-		);
-	}
-
-	if (token_endpoint_auth_method === 'none' && includesClientCredentialsGrant) {
-		return jsonResponse(
-			{
-				error: 'invalid_client_metadata',
-				error_description:
-					'client_credentials requires token_endpoint_auth_method=client_secret_post.',
-			},
-			{ status: 400, headers: oauthCorsHeaders },
-		);
-	}
 
 	if (token_endpoint_auth_method === 'none' && grant_types.includes('refresh_token')) {
 		return jsonResponse(
@@ -349,18 +326,6 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 
 	const clientId = randomUUID();
 	const clientSecret = randomBytes(32).toString('hex');
-	const serviceAccountUserId = includesClientCredentialsGrant ? randomUUID() : null;
-
-	if (serviceAccountUserId) {
-		await database.insert(schema.users).values({
-			id: serviceAccountUserId,
-			email: `mcp-service-${clientId}@local.invalid`,
-			name: `${client_name} service account`,
-			image: null,
-			emailVerified: true,
-			role: 'service',
-		});
-	}
 
 	await database.insert(schema.oauthClients).values({
 		clientId,
@@ -368,7 +333,6 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 		clientName: client_name,
 		clientType: token_endpoint_auth_method === 'none' ? 'public' : 'confidential',
 		tokenEndpointAuthMethod: token_endpoint_auth_method,
-		serviceAccountUserId,
 		redirectUris: redirect_uris,
 		grantTypes: grant_types,
 		responseTypes: response_types,
@@ -689,110 +653,6 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 	);
 }
 
-async function handleOauthTokenClientCredentialsGrant(
-	body: Record<string, string>,
-): Promise<Response> {
-	const tokenResponseHeaders = {
-		'Cache-Control': 'no-store',
-		Pragma: 'no-cache',
-		...oauthCorsHeaders,
-	};
-
-	if (!environment.MCP_ENABLE_CLIENT_CREDENTIALS) {
-		return jsonResponse(
-			{
-				error: 'unsupported_grant_type',
-				error_description: 'client_credentials is disabled on this server',
-			},
-			{ status: 400, headers: tokenResponseHeaders },
-		);
-	}
-
-	const { client_id, client_secret, scope } = body;
-	if (!client_id || !client_secret) {
-		return jsonResponse(
-			{
-				error: 'invalid_request',
-				error_description: 'Missing client_id or client_secret parameter',
-			},
-			{ status: 400, headers: tokenResponseHeaders },
-		);
-	}
-
-	const [client] = await database
-		.select()
-		.from(schema.oauthClients)
-		.where(eq(schema.oauthClients.clientId, client_id))
-		.limit(1);
-	if (!client) {
-		return jsonResponse(
-			{ error: 'invalid_client' },
-			{ status: 401, headers: tokenResponseHeaders },
-		);
-	}
-
-	if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
-		return jsonResponse(
-			{ error: 'invalid_client' },
-			{ status: 401, headers: tokenResponseHeaders },
-		);
-	}
-
-	if (!client.grantTypes.includes('client_credentials')) {
-		return jsonResponse(
-			{
-				error: 'unauthorized_client',
-				error_description: 'Client is not authorized for client_credentials.',
-			},
-			{ status: 400, headers: tokenResponseHeaders },
-		);
-	}
-
-	if (!client.serviceAccountUserId) {
-		return jsonResponse(
-			{
-				error: 'invalid_client',
-				error_description: 'Client is missing a service account identity.',
-			},
-			{ status: 401, headers: tokenResponseHeaders },
-		);
-	}
-
-	const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
-		clientId: client.clientId,
-		userId: client.serviceAccountUserId,
-		action: 'issue_token',
-	});
-	if (!enterpriseDecision.allowed) {
-		return jsonResponse(
-			{
-				error: 'access_denied',
-				error_description: `Enterprise authorization policy denied token issuance: ${enterpriseDecision.reason}`,
-			},
-			{ status: 403, headers: tokenResponseHeaders },
-		);
-	}
-
-	const tokens = issueTokens();
-	await database.insert(schema.oauthTokens).values({
-		accessToken: tokens.accessTokenHash,
-		clientId: client.clientId,
-		userId: client.serviceAccountUserId,
-		scope: scope ?? '',
-		expiresAt: tokens.accessTokenExpiresAt,
-	});
-
-	return jsonResponse(
-		{
-			access_token: tokens.accessToken,
-			token_type: 'Bearer',
-			expires_in: tokens.tokenTimeToLiveSeconds,
-			scope: scope ?? '',
-		},
-		{ headers: tokenResponseHeaders },
-	);
-}
-
 export async function handleOauthRevokePost(context: RequestContext): Promise<Response> {
 	const rateLimitResult = await enforceOauthTokenRateLimit({
 		request: context.request,
@@ -914,9 +774,6 @@ export async function handleOauthTokenPost(context: RequestContext): Promise<Res
 	if (body.grant_type === 'refresh_token') {
 		return handleOauthTokenRefreshGrant(body);
 	}
-	if (body.grant_type === 'client_credentials') {
-		return handleOauthTokenClientCredentialsGrant(body);
-	}
 
 	return jsonResponse(
 		{ error: 'unsupported_grant_type' },
@@ -943,16 +800,11 @@ export async function handleOauthAuthorizationMetadataGet(
 			registration_endpoint: `${baseUrl}/oauth/register`,
 			revocation_endpoint: `${baseUrl}/oauth/revoke`,
 			response_types_supported: ['code'],
-			grant_types_supported: environment.MCP_ENABLE_CLIENT_CREDENTIALS
-				? ['authorization_code', 'refresh_token', 'client_credentials']
-				: ['authorization_code', 'refresh_token'],
+			grant_types_supported: ['authorization_code', 'refresh_token'],
 			code_challenge_methods_supported: ['S256'],
 			token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
 			extensions: {
 				...(environment.MCP_ENABLE_UI_EXTENSION ? { [mcpUiExtensionIdentifier]: {} } : {}),
-				...(environment.MCP_ENABLE_CLIENT_CREDENTIALS
-					? { [mcpOauthClientCredentialsExtensionIdentifier]: {} }
-					: {}),
 				...(environment.MCP_ENABLE_ENTERPRISE_AUTH
 					? { [mcpEnterpriseAuthorizationExtensionIdentifier]: {} }
 					: {}),

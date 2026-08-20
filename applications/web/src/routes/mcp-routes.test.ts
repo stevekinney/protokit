@@ -6,7 +6,6 @@ mock.module('@web/env', () => ({
 		MCP_CONFORMANCE_MODE: false,
 		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_ENABLE_CLIENT_CREDENTIALS: true,
 		MCP_PROTOCOL_VERSION: '2025-11-25',
 		BASE_URL: undefined,
 	},

@@ -13,7 +13,6 @@ describe('createMcpServer', () => {
 				role: 'user',
 			},
 			enableUiExtension: true,
-			enableClientCredentialsExtension: true,
 			enableEnterpriseAuthorizationExtension: true,
 			enableConformanceMode: false,
 		});

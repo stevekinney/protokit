@@ -79,7 +79,6 @@ Optional:
 - `RATE_LIMIT_TOKEN_WINDOW_SECONDS` (default `60`)
 - `MCP_PROTOCOL_VERSION` (default `2025-11-25`)
 - `MCP_ENABLE_UI_EXTENSION` (default `true`)
-- `MCP_ENABLE_CLIENT_CREDENTIALS` (default `true`)
 - `MCP_ENABLE_ENTERPRISE_AUTH` (default `true`)
 - `MCP_CONFORMANCE_MODE` (default `false`)
 

@@ -192,9 +192,6 @@ async function setupMcpProtocolAndExtensions() {
 	if (!getEnvironmentValue('MCP_ENABLE_UI_EXTENSION')) {
 		appendToEnvironmentFile('MCP_ENABLE_UI_EXTENSION', 'true');
 	}
-	if (!getEnvironmentValue('MCP_ENABLE_CLIENT_CREDENTIALS')) {
-		appendToEnvironmentFile('MCP_ENABLE_CLIENT_CREDENTIALS', 'true');
-	}
 	if (!getEnvironmentValue('MCP_ENABLE_ENTERPRISE_AUTH')) {
 		appendToEnvironmentFile('MCP_ENABLE_ENTERPRISE_AUTH', 'true');
 	}

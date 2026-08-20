@@ -84,7 +84,7 @@ If a POST arrives without an `mcp-session-id` header and is not an initializatio
 
 ### Dynamic Client Registration
 
-`POST /oauth/register` accepts a JSON body with `client_name`, `redirect_uris`, `grant_types`, `response_types`, and `token_endpoint_auth_method`. The server generates a `client_id` (UUID) and `client_secret` (random 32 bytes, hex-encoded). The secret is SHA-256 hashed before storage. Public clients use `token_endpoint_auth_method: "none"` and are restricted from `refresh_token` and `client_credentials` grants.
+`POST /oauth/register` accepts a JSON body with `client_name`, `redirect_uris`, `grant_types`, `response_types`, and `token_endpoint_auth_method`. The server generates a `client_id` (UUID) and `client_secret` (random 32 bytes, hex-encoded). The secret is SHA-256 hashed before storage. Only `authorization_code` and `refresh_token` are supported grant types; the server rejects any other grant type at registration. Public clients use `token_endpoint_auth_method: "none"` and are restricted from the `refresh_token` grant.
 
 ### Authorization Code + PKCE
 
@@ -105,10 +105,6 @@ When a client presents a refresh token at `POST /oauth/token` with `grant_type=r
 3. A new access token and a new refresh token are issued.
 
 This rotation pattern ensures that a compromised refresh token can only be used once. If both the legitimate client and an attacker try to use the same refresh token, the second attempt fails and signals a breach.
-
-### Client Credentials Grant
-
-When `MCP_ENABLE_CLIENT_CREDENTIALS` is enabled, machine-to-machine clients can authenticate directly with `client_id` and `client_secret` at `POST /oauth/token` with `grant_type=client_credentials`. A service account user is created during client registration and linked via `service_account_user_id`. No refresh token is issued for this grant type.
 
 ### Token Revocation
 

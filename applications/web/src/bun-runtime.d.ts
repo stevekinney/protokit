@@ -7,8 +7,11 @@ declare module 'bun:test' {
 		toBeGreaterThan: (expected: number) => void;
 		toBeGreaterThanOrEqual: (expected: number) => void;
 		toBeNull: () => void;
+		toBeUndefined: () => void;
+		toHaveProperty: (property: string, value?: unknown) => void;
 		not: {
 			toBeNull: () => void;
+			toHaveProperty: (property: string, value?: unknown) => void;
 		};
 	};
 

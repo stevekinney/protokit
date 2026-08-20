@@ -95,7 +95,6 @@ mock.module('@web/lib/validate-redirect-uri', () => ({
 mock.module('@web/lib/mcp-protocol-constants', () => ({
 	mcpProtocolVersion: '2025-11-25',
 	mcpUiExtensionIdentifier: 'io.modelcontextprotocol/ui',
-	mcpOauthClientCredentialsExtensionIdentifier: 'io.modelcontextprotocol/oauth-client-credentials',
 	mcpEnterpriseAuthorizationExtensionIdentifier:
 		'io.modelcontextprotocol/enterprise-managed-authorization',
 }));
@@ -124,7 +123,6 @@ function setEnvironment(overrides: Record<string, unknown>) {
 	}
 	Object.assign(mockEnvironment, {
 		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_ENABLE_CLIENT_CREDENTIALS: true,
 		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		MCP_TOKEN_TTL_SECONDS: 3600,
 		MCP_REFRESH_TOKEN_TTL_SECONDS: 2592000,
@@ -174,24 +172,23 @@ describe('authorization metadata endpoint', () => {
 		expect(body.registration_endpoint).toBe('http://localhost:3000/oauth/register');
 	});
 
-	it('includes client_credentials in grant types when enabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: true });
+	it('never advertises client_credentials in grant types', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
 		});
 		const response = await handleOauthAuthorizationMetadataGet(context);
 		const body = await response.json();
-		expect(body.grant_types_supported).toContain('client_credentials');
+		expect(body.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+		expect((body.grant_types_supported as string[]).includes('client_credentials')).toBe(false);
 	});
 
-	it('excludes client_credentials when disabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: false });
+	it('never advertises the client_credentials extension', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
 		});
 		const response = await handleOauthAuthorizationMetadataGet(context);
-		const body = await response.json();
-		expect((body.grant_types_supported as string[]).includes('client_credentials')).toBe(false);
+		const body = (await response.json()) as { extensions: Record<string, unknown> };
+		expect(body.extensions['io.modelcontextprotocol/oauth-client-credentials']).toBeUndefined();
 	});
 });
 
@@ -267,8 +264,7 @@ describe('client registration', () => {
 		expect(typeof body.client_secret).toBe('string');
 	});
 
-	it('returns 400 when client_credentials is disabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: false });
+	it('rejects client_credentials in grant_types and creates no rows', async () => {
 		const context = createContext({
 			body: JSON.stringify({
 				client_name: 'My App',
@@ -281,21 +277,7 @@ describe('client registration', () => {
 		expect(response.status).toBe(400);
 		const body = await response.json();
 		expect(body.error).toBe('invalid_client_metadata');
-	});
-
-	it('returns 400 when client_credentials with auth_method none', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: true });
-		const context = createContext({
-			body: JSON.stringify({
-				client_name: 'My App',
-				redirect_uris: ['https://example.com/callback'],
-				grant_types: ['authorization_code', 'client_credentials'],
-				token_endpoint_auth_method: 'none',
-			}),
-			headers: { 'content-type': 'application/json' },
-		});
-		const response = await handleOauthRegisterPost(context);
-		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
 	});
 
 	it('returns 400 when refresh_token with auth_method none', async () => {
@@ -605,8 +587,8 @@ describe('authorization code token exchange', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('returns 400 for client_credentials when disabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: false });
+	it('returns unsupported_grant_type for client_credentials and mints no token', async () => {
+		mockInsertedValues = [];
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/token',
 			body: new URLSearchParams({
@@ -618,5 +600,8 @@ describe('authorization code token exchange', () => {
 		});
 		const response = await handleOauthTokenPost(context);
 		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('unsupported_grant_type');
+		expect(mockInsertedValues).toEqual([]);
 	});
 });

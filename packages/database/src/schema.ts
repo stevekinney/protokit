@@ -54,7 +54,6 @@ export const oauthClients = pgTable('oauth_clients', {
 	tokenEndpointAuthMethod: text('token_endpoint_auth_method')
 		.notNull()
 		.default('client_secret_post'),
-	serviceAccountUserId: uuid('service_account_user_id').references(() => users.id),
 	redirectUris: jsonb('redirect_uris').$type<string[]>().notNull().default([]),
 	grantTypes: jsonb('grant_types').$type<string[]>().notNull().default([]),
 	responseTypes: jsonb('response_types').$type<string[]>().notNull().default([]),

@@ -53,7 +53,6 @@ export async function handleHealthGet(): Promise<Response> {
 			protocolVersion: mcpProtocolVersion,
 			extensions: {
 				ui: environment.MCP_ENABLE_UI_EXTENSION,
-				oauthClientCredentials: environment.MCP_ENABLE_CLIENT_CREDENTIALS,
 				enterpriseManagedAuthorization: environment.MCP_ENABLE_ENTERPRISE_AUTH,
 			},
 			dependencies: {

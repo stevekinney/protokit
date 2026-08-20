@@ -5,6 +5,7 @@ import { logger } from '@template/mcp/logger';
 
 const DEVELOPMENT_USER_EMAIL = 'dev@localhost';
 const DEVELOPMENT_USER_NAME = 'Development User';
+const SEED_CLIENT_NAME = 'Seed Test Client';
 
 function hashCredential(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
@@ -35,7 +36,7 @@ async function seedDevelopmentUser(): Promise<string> {
 	return userId;
 }
 
-async function seedOauthClient(serviceAccountUserId: string): Promise<{
+async function seedOauthClient(): Promise<{
 	clientId: string;
 	clientSecret: string;
 }> {
@@ -46,27 +47,29 @@ async function seedOauthClient(serviceAccountUserId: string): Promise<{
 	const [existing] = await database
 		.select({ clientId: schema.oauthClients.clientId })
 		.from(schema.oauthClients)
-		.where(eq(schema.oauthClients.serviceAccountUserId, serviceAccountUserId))
+		.where(eq(schema.oauthClients.clientName, SEED_CLIENT_NAME))
 		.limit(1);
 
 	if (existing) {
-		logger.info({ clientId: existing.clientId }, 'OAuth client for service account already exists');
+		logger.info({ clientId: existing.clientId }, 'Seed OAuth client already exists');
 		return {
 			clientId: existing.clientId,
 			clientSecret: '(already created — secret not retrievable)',
 		};
 	}
 
+	// Registered with the interactive authorization_code + refresh_token grants that
+	// Claude, Codex, and ChatGPT connectors use. client_credentials is not a supported
+	// grant on this server — see SEC-001.
 	await database.insert(schema.oauthClients).values({
 		clientId,
 		clientSecret: clientSecretHash,
-		clientName: 'Seed Test Client',
+		clientName: SEED_CLIENT_NAME,
 		clientType: 'confidential',
 		tokenEndpointAuthMethod: 'client_secret_post',
-		serviceAccountUserId,
 		redirectUris: ['http://localhost:9999/callback'],
-		grantTypes: ['client_credentials'],
-		responseTypes: [],
+		grantTypes: ['authorization_code', 'refresh_token'],
+		responseTypes: ['code'],
 	});
 
 	logger.info({ clientId }, 'Created OAuth client');
@@ -75,7 +78,7 @@ async function seedOauthClient(serviceAccountUserId: string): Promise<{
 
 async function main() {
 	const userId = await seedDevelopmentUser();
-	const { clientId, clientSecret } = await seedOauthClient(userId);
+	const { clientId, clientSecret } = await seedOauthClient();
 
 	console.log('\n=== Seed Complete ===\n');
 	console.log(`Development User: ${DEVELOPMENT_USER_EMAIL} (${userId})`);

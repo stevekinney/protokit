@@ -85,7 +85,6 @@ Write defaults to `.env.local` if not already set:
 - `MCP_PROTOCOL_VERSION=2025-11-25`
 - `MCP_ALLOWED_ORIGINS=http://localhost:3000` (ask user if they want a different value)
 - `MCP_ENABLE_UI_EXTENSION=true`
-- `MCP_ENABLE_CLIENT_CREDENTIALS=true`
 - `MCP_ENABLE_ENTERPRISE_AUTH=true`
 - `MCP_CONFORMANCE_MODE=false`
 - Enterprise auth placeholders (empty values):

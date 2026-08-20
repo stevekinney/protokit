@@ -44,7 +44,6 @@ function setEnvironment(overrides: Record<string, unknown>) {
 	}
 	Object.assign(mockEnvironment, {
 		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_ENABLE_CLIENT_CREDENTIALS: true,
 		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		...overrides,
 	});
