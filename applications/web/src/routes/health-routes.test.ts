@@ -61,7 +61,6 @@ function setEnvironment(overrides: Record<string, unknown>) {
 	}
 	Object.assign(mockEnvironment, {
 		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		...overrides,
 	});
 }
@@ -100,11 +99,10 @@ describe('handleHealthGet', () => {
 		expect(body.dependencies.redis).toBe('unavailable');
 	});
 
-	it('reports enterprise policy as unconfigured when enabled but not configured', async () => {
-		setEnvironment({ MCP_ENABLE_ENTERPRISE_AUTH: true });
+	it('never advertises the enterprise-managed authorization extension', async () => {
 		const response = await handleHealthGet(testContext);
-		expect(response.status).toBe(503);
 		const body = await response.json();
-		expect(body.dependencies.enterprisePolicyBackend).toBe('unconfigured');
+		expect(body.extensions).not.toHaveProperty('enterpriseManagedAuthorization');
+		expect(body.dependencies).not.toHaveProperty('enterprisePolicyBackend');
 	});
 });

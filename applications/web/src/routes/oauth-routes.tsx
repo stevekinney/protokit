@@ -11,7 +11,6 @@ import { hashCredential } from '@web/lib/hash-credential';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import {
-	mcpEnterpriseAuthorizationExtensionIdentifier,
 	mcpLatestProtocolVersion,
 	mcpUiExtensionIdentifier,
 } from '@web/lib/mcp-protocol-constants';
@@ -26,7 +25,6 @@ import {
 	recordFailedAuthentication,
 } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
-import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-authorization-policy';
 import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';
 import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
 import {
@@ -788,21 +786,6 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		);
 	}
 
-	const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
-		clientId: authorizationCode.clientId,
-		userId: authorizationCode.userId,
-		action: 'issue_token',
-	});
-	if (!enterpriseDecision.allowed) {
-		return jsonResponse(
-			{
-				error: 'access_denied',
-				error_description: `Enterprise authorization policy denied token issuance: ${enterpriseDecision.reason}`,
-			},
-			{ status: 403, headers: tokenResponseHeaders },
-		);
-	}
-
 	const tokens = issueTokens();
 	await database.insert(schema.oauthTokens).values({
 		accessToken: tokens.accessTokenHash,
@@ -935,21 +918,6 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 				isNull(schema.oauthTokens.revokedAt),
 			),
 		);
-
-	const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
-		clientId: revokedRefreshToken.clientId,
-		userId: revokedRefreshToken.userId,
-		action: 'issue_token',
-	});
-	if (!enterpriseDecision.allowed) {
-		return jsonResponse(
-			{
-				error: 'access_denied',
-				error_description: `Enterprise authorization policy denied token issuance: ${enterpriseDecision.reason}`,
-			},
-			{ status: 403, headers: tokenResponseHeaders },
-		);
-	}
 
 	const tokens = issueTokens();
 	await database.insert(schema.oauthTokens).values({
@@ -1155,9 +1123,6 @@ export async function handleOauthAuthorizationMetadataGet(
 			token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
 			extensions: {
 				...(environment.MCP_ENABLE_UI_EXTENSION ? { [mcpUiExtensionIdentifier]: {} } : {}),
-				...(environment.MCP_ENABLE_ENTERPRISE_AUTH
-					? { [mcpEnterpriseAuthorizationExtensionIdentifier]: {} }
-					: {}),
 			},
 		},
 		{ headers: oauthCorsHeaders },

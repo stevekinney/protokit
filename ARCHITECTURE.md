@@ -2,7 +2,7 @@
 
 ## Overview
 
-This template provides a production-ready remote MCP (Model Context Protocol) server with OAuth 2.1 authentication. It is built on Bun, server-rendered React, Neon Postgres (via Drizzle ORM), and Redis. The system supports multi-instance deployments with session affinity, sliding-window rate limiting, and optional enterprise authorization policy evaluation.
+This template provides a production-ready remote MCP (Model Context Protocol) server with OAuth 2.1 authentication. It is built on Bun, server-rendered React, Neon Postgres (via Drizzle ORM), and Redis. The system supports multi-instance deployments backed by the official MCP SDK's stateless transport and a shared, atomic Redis-backed sliding-window rate limiter.
 
 ## Monorepo Layout
 
@@ -144,24 +144,15 @@ A sliding window rate limiter backed by Redis sorted sets protects sensitive end
 
 All limits are configurable via environment variables. When a request is rate-limited, the server returns **429 Too Many Requests** with a `Retry-After` header calculated from the oldest entry in the window.
 
-## Enterprise Authorization
-
-An optional policy evaluation layer gates token issuance and MCP access. When `MCP_ENABLE_ENTERPRISE_AUTH` is enabled, the system checks whether the requesting `client_id` appears in the `ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS` allowlist before:
-
-- Issuing tokens (authorization code exchange, refresh, and client credentials grants).
-- Allowing access to the `/mcp` endpoint.
-
-If the client is not in the allowlist, the request is rejected with a 403 status. The configuration accepts an external provider URL (`ENTERPRISE_AUTH_PROVIDER_URL`), tenant, audience, and credentials, which allows extending the policy evaluation to call an external authorization service.
-
 ## Key Design Decisions
 
 ### Cookie sessions over JWT for revocability
 
 User sessions store a SHA-256 hash of a random token in the database. Revoking a session takes effect immediately on the next request. JWTs would require either short expiration times (poor user experience) or a token blocklist (which reintroduces server-side state without the simplicity of a session table). The cookie approach also avoids exposing user claims to client-side JavaScript.
 
-### Redis for session affinity over sticky sessions at the load balancer
+### Shared Redis rate limiting over per-instance state
 
-MCP transports are stateful and pinned to the server instance that created them. Rather than relying on provider-specific load balancer features (cookie-based sticky sessions, IP hashing), the server stores session ownership in Redis and returns a 409 when a request hits the wrong instance. This works identically across Railway, Fly, AWS, and any other provider. The client reconnects and the new session lands on whatever instance handles it.
+The MCP transport itself is stateless (owned by the official SDK — no session identifiers, no server-side transport registry to pin a client to one instance), so a multi-instance deployment needs no sticky routing at all. What does need to be shared across instances is abuse control: rate limits, concurrency caps, and failed-authentication lockouts are backed by one atomic Redis-backed sliding window rather than per-process counters, so the limit is enforced correctly no matter which instance a request lands on. Production refuses to start without Redis configured for exactly this reason (`startup-invariants.ts`) — an in-memory fallback exists for local development, but it is per-process and would let a multi-instance deployment be trivially over-admitted.
 
 ### Bun runtime for performance and simplified toolchain
 

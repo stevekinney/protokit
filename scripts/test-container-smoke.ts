@@ -113,12 +113,44 @@ async function verifyReproducibleAssetBuild(): Promise<void> {
 	}
 }
 
+/**
+ * CONFIG-001 acceptance: "A production process exits before listening for
+ * every missing or insecure required setting." This runs the exact image
+ * this repository ships with `NODE_ENV=production` baked in (see the
+ * Dockerfile) and no other configuration at all — matching the roadmap's own
+ * `docker run --rm protokit-audit bun applications/web/dist/server.js`
+ * verification line — and asserts the container exits nonzero instead of
+ * accepting traffic.
+ */
+async function verifyProductionRefusesInsecureConfiguration(): Promise<void> {
+	console.log('[smoke] verifying NODE_ENV=production with no configuration refuses to start');
+
+	const refusalContainer = `protokit-smoke-refusal-${runId}`;
+	try {
+		let exitCode: number;
+		try {
+			await $`docker run --rm --name ${refusalContainer} ${imageTag}`.quiet();
+			exitCode = 0;
+		} catch (error) {
+			exitCode = (error as { exitCode?: number }).exitCode ?? 1;
+		}
+		assert(
+			exitCode !== 0,
+			`expected the production image to refuse to start with no configuration, but it exited 0`,
+		);
+	} finally {
+		await $`docker rm -f ${refusalContainer}`.quiet().catch(() => {});
+	}
+}
+
 async function main(): Promise<void> {
 	await verifyReproducibleAssetBuild();
 
 	console.log(`[smoke] building production image (${imageTag})`);
 	await $`docker build --no-cache -t ${imageTag} .`;
 	trackCleanup(`docker rmi -f ${imageTag}`);
+
+	await verifyProductionRefusesInsecureConfiguration();
 
 	console.log('[smoke] creating isolated network');
 	await $`docker network create ${networkName}`;
@@ -152,11 +184,16 @@ async function main(): Promise<void> {
 
 	console.log('[smoke] starting the application container');
 	const sessionSigningSecret = randomBytes(32).toString('hex');
-	// `MCP_ENABLE_ENTERPRISE_AUTH` is `z.coerce.boolean()`, which coerces any
-	// non-empty string (including "false") to `true` — so it cannot actually
-	// be turned off through the environment. Rather than rely on that, supply
-	// dummy values for every `ENTERPRISE_AUTH_*` variable so the health
-	// check's enterprise-policy check passes on its own terms.
+	// CONFIG-001: `NODE_ENV=production` now refuses to start without an
+	// encrypted, certificate-verified `REDIS_URL`/`DATABASE_URL` (no local
+	// host, no placeholder credentials) — see `startup-invariants.ts`. This
+	// harness's job is exercising the *artifact* (real HTTP behavior, real
+	// health/discovery endpoints), not standing up TLS-terminated ephemeral
+	// Redis/Postgres containers, so the functional run below boots as
+	// `NODE_ENV=test` (every other setting matches what production would
+	// receive). `verifyProductionRefusesInsecureConfiguration` below is what
+	// actually proves the production fail-closed path against this exact
+	// image, matching CONFIG-001's own named verification command.
 	const appRunArguments = [
 		'run',
 		'-d',
@@ -167,7 +204,7 @@ async function main(): Promise<void> {
 		'-p',
 		'0:3000',
 		'-e',
-		'NODE_ENV=production',
+		'NODE_ENV=test',
 		'-e',
 		'PORT=3000',
 		'-e',
@@ -178,16 +215,6 @@ async function main(): Promise<void> {
 		'REDIS_URL=redis://redis:6379',
 		'-e',
 		'DATABASE_URL=postgresql://smoke:smoke@postgres:5432/smoke',
-		'-e',
-		'ENTERPRISE_AUTH_PROVIDER_URL=https://smoke.invalid/enterprise',
-		'-e',
-		'ENTERPRISE_AUTH_TENANT=smoke-tenant',
-		'-e',
-		'ENTERPRISE_AUTH_AUDIENCE=smoke-audience',
-		'-e',
-		'ENTERPRISE_AUTH_CLIENT_ID=smoke-client',
-		'-e',
-		'ENTERPRISE_AUTH_CLIENT_SECRET=smoke-secret',
 		imageTag,
 	];
 	await $`docker ${appRunArguments}`;

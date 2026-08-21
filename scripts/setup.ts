@@ -132,6 +132,19 @@ async function setupGoogle() {
 	}
 }
 
+async function setupEnvironmentMode() {
+	console.log('\n--- Environment Mode ---\n');
+
+	// CONFIG-001: NODE_ENV has no schema default anymore — every environment
+	// must set it explicitly, including a local `.env.local` for `bun turbo dev`.
+	if (!getEnvironmentValue('NODE_ENV')) {
+		appendToEnvironmentFile('NODE_ENV', 'development');
+		console.log('Wrote NODE_ENV=development to .env.local.');
+	} else {
+		console.log('NODE_ENV already exists in .env.local.');
+	}
+}
+
 async function setupSessionConfiguration() {
 	console.log('\n--- Session Configuration ---\n');
 
@@ -189,20 +202,8 @@ async function setupMcpProtocolAndExtensions() {
 	if (!getEnvironmentValue('MCP_ENABLE_UI_EXTENSION')) {
 		appendToEnvironmentFile('MCP_ENABLE_UI_EXTENSION', 'true');
 	}
-	if (!getEnvironmentValue('MCP_ENABLE_ENTERPRISE_AUTH')) {
-		appendToEnvironmentFile('MCP_ENABLE_ENTERPRISE_AUTH', 'true');
-	}
 	if (!getEnvironmentValue('MCP_CONFORMANCE_MODE')) {
 		appendToEnvironmentFile('MCP_CONFORMANCE_MODE', 'false');
-	}
-
-	if (!getEnvironmentValue('ENTERPRISE_AUTH_PROVIDER_URL')) {
-		appendToEnvironmentFile('ENTERPRISE_AUTH_PROVIDER_URL', '');
-		appendToEnvironmentFile('ENTERPRISE_AUTH_TENANT', '');
-		appendToEnvironmentFile('ENTERPRISE_AUTH_AUDIENCE', '');
-		appendToEnvironmentFile('ENTERPRISE_AUTH_CLIENT_ID', '');
-		appendToEnvironmentFile('ENTERPRISE_AUTH_CLIENT_SECRET', '');
-		appendToEnvironmentFile('ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS', '');
 	}
 }
 
@@ -283,7 +284,6 @@ async function setupGithubSecrets(neonProjectId?: string) {
 		setGithubSecret('NEON_PROJECT_ID', projectId);
 		setGithubSecret('DATABASE_URL', connectionString);
 		setGithubSecret('DATABASE_URL_UNPOOLED', directConnectionString);
-		setGithubSecret('SKIP_ENV_VALIDATION', 'true');
 
 		const neonApiKey = await prompt(
 			'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip): ',
@@ -330,6 +330,7 @@ async function runFullSetup() {
 	checkPrerequisites(['neonctl']);
 	console.log('All prerequisites found.');
 
+	await setupEnvironmentMode();
 	const neonResult = await setupNeon();
 	await setupSessionConfiguration();
 	await setupGoogle();
@@ -342,17 +343,20 @@ async function runFullSetup() {
 	console.log('\n=== Setup Complete ===');
 	console.log('');
 	console.log('Next steps:');
-	console.log('  1. bun turbo dev         — Start development server');
-	console.log('  2. bunx cloudflared tunnel --url http://localhost:3000/mcp');
-	console.log('                           — Expose MCP endpoint for claude.ai');
+	console.log('  1. bun turbo dev             — Start development server');
+	console.log('  2. bun scripts/develop.ts --tunnel');
+	console.log('                               — Start dev server + a public tunnel for claude.ai');
 	console.log('  3. bunx @modelcontextprotocol/inspector');
-	console.log('                           — Debug MCP locally');
+	console.log('                               — Debug MCP locally');
 	console.log('');
 }
 
 const subcommand = process.argv[2];
 
 const phases: Record<string, () => Promise<void>> = {
+	environment: async () => {
+		await setupEnvironmentMode();
+	},
 	neon: async () => {
 		await setupNeon();
 	},

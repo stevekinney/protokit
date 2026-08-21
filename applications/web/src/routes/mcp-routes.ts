@@ -23,7 +23,6 @@ import {
 	recordFailedAuthentication,
 } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
-import { evaluateEnterpriseAuthorizationPolicy } from '@web/lib/enterprise-authorization-policy';
 import { mcpMaxBearerTokenLength } from '@web/lib/request-limits';
 
 async function authenticateMcpUser(context: RequestContext): Promise<Response | AuthInfo> {
@@ -125,20 +124,6 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 				'MCP-Protocol-Version': mcpLatestProtocolVersion,
 				'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
 			},
-		});
-	}
-
-	const enterpriseDecision = await evaluateEnterpriseAuthorizationPolicy({
-		clientId: oauthToken.clientId,
-		userId: oauthToken.userId,
-		action: 'access_mcp',
-	});
-	if (!enterpriseDecision.allowed) {
-		return createMcpProtocolErrorResponse({
-			status: 403,
-			error: 'forbidden',
-			errorDescription: `Enterprise authorization policy denied access: ${enterpriseDecision.reason}`,
-			headers: { ...mcpCorsHeaders, 'MCP-Protocol-Version': mcpLatestProtocolVersion },
 		});
 	}
 

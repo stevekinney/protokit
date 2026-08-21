@@ -12,7 +12,6 @@ export const MANAGED_GITHUB_SECRETS = [
 	'DATABASE_URL',
 	'DATABASE_URL_UNPOOLED',
 	'SESSION_SIGNING_SECRET',
-	'SKIP_ENV_VALIDATION',
 ] as const;
 
 export function commandExists(command: string): boolean {

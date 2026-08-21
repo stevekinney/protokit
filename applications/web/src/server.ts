@@ -58,8 +58,16 @@ for (const entry of staticFileEntries) {
 // is always what actually rejects a request in normal operation.
 const globalMaxRequestBodyBytes = mcpRequestMaxBodyBytes * 2;
 
+// CONFIG-001: bind to loopback outside production so a forgotten NODE_ENV
+// (or a plain `bun turbo dev`) is never reachable from the LAN by default.
+// `assertProductionStartupInvariants()` above already refuses to start a
+// production process with an insecure or missing BASE_URL, so there is
+// nothing left to warn about here.
+const hostname = environment.NODE_ENV === 'production' ? undefined : '127.0.0.1';
+
 const server = Bun.serve({
 	port,
+	hostname,
 	static: staticRoutes,
 	maxRequestBodySize: globalMaxRequestBodyBytes,
 	fetch(request, bunServer) {
@@ -68,11 +76,7 @@ const server = Bun.serve({
 	},
 });
 
-logger.info({ port }, 'Web server started');
-
-if (environment.NODE_ENV === 'production' && !environment.BASE_URL) {
-	logger.warn('BASE_URL is not set in production; base URL will be derived from request.url');
-}
+logger.info({ port, hostname: hostname ?? '0.0.0.0' }, 'Web server started');
 
 let isShuttingDown = false;
 

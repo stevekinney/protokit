@@ -1,6 +1,17 @@
 import { createEnv } from '@t3-oss/env-core';
 import { z } from 'zod';
 
+// CONFIG-001 / BUG-001: `SKIP_ENV_VALIDATION=true` used to make `@t3-oss/env-core`
+// bypass the whole Zod schema, including every `.default(...)` value — that is
+// exactly what produced BUG-001's `NaN`-into-Redis defect. The escape hatch is
+// removed outright rather than merely gated on `NODE_ENV`: setting the variable
+// now fails loudly instead of being silently ignored or silently trusted.
+if (process.env.SKIP_ENV_VALIDATION) {
+	throw new Error(
+		'SKIP_ENV_VALIDATION is not supported. Supply a real environment instead — see .env.example.',
+	);
+}
+
 export const environment = createEnv({
 	server: {
 		BASE_URL: z.string().url().optional(),
@@ -19,7 +30,6 @@ export const environment = createEnv({
 		HOSTNAME_IDENTIFIER: z.string().optional(),
 		MCP_ALLOWED_ORIGINS: z.string().min(1).default('http://localhost:3000'),
 		MCP_ENABLE_UI_EXTENSION: z.coerce.boolean().optional().default(true),
-		MCP_ENABLE_ENTERPRISE_AUTH: z.coerce.boolean().optional().default(true),
 		MCP_CONFORMANCE_MODE: z.coerce.boolean().optional().default(false),
 		MCP_TOKEN_TTL_SECONDS: z.coerce.number().positive().optional().default(3600),
 		MCP_REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().positive().optional().default(2592000),
@@ -41,15 +51,19 @@ export const environment = createEnv({
 		TRUSTED_PROXY_CIDRS: z.string().min(1).optional(),
 		TRUSTED_PROXY_HEADER: z.enum(['x-forwarded-for', 'forwarded', 'cf-connecting-ip']).optional(),
 		TRUSTED_PROXY_HOP_COUNT: z.coerce.number().int().positive().optional().default(1),
-		ENTERPRISE_AUTH_PROVIDER_URL: z.string().url().optional(),
-		ENTERPRISE_AUTH_TENANT: z.string().optional(),
-		ENTERPRISE_AUTH_AUDIENCE: z.string().optional(),
-		ENTERPRISE_AUTH_CLIENT_ID: z.string().optional(),
-		ENTERPRISE_AUTH_CLIENT_SECRET: z.string().optional(),
-		ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS: z.string().optional(),
 		METRICS_API_KEY: z.string().min(1).optional(),
 		PORT: z.coerce.number().int().positive().optional().default(3000),
-		NODE_ENV: z.enum(['development', 'production', 'test']).optional().default('development'),
+		// CONFIG-001 (S-06): no default. A host that forgets to set this must
+		// crash rather than silently run as `development` — the mode that
+		// leaves `GET /auth/dev/login` reachable. Every legitimate entry point
+		// (dev script, test scripts, `start`, the Dockerfile) sets this
+		// explicitly; see PROGRESS.local.md / `.roadmap-progress/CONFIG-001.md`.
+		NODE_ENV: z.enum(['development', 'production', 'test']),
+		// CONFIG-001: set by `scripts/develop.ts` only when it is invoked with
+		// `--tunnel`. When true, the development-only login route refuses to
+		// issue a session even though `NODE_ENV === 'development'`, because a
+		// tunnel makes that route reachable from the public internet.
+		PROTOKIT_TUNNEL_ACTIVE: z.coerce.boolean().optional().default(false),
 	},
 	runtimeEnv: {
 		BASE_URL: process.env.BASE_URL,
@@ -68,7 +82,6 @@ export const environment = createEnv({
 		HOSTNAME_IDENTIFIER: process.env.HOSTNAME,
 		MCP_ALLOWED_ORIGINS: process.env.MCP_ALLOWED_ORIGINS,
 		MCP_ENABLE_UI_EXTENSION: process.env.MCP_ENABLE_UI_EXTENSION,
-		MCP_ENABLE_ENTERPRISE_AUTH: process.env.MCP_ENABLE_ENTERPRISE_AUTH,
 		MCP_CONFORMANCE_MODE: process.env.MCP_CONFORMANCE_MODE,
 		MCP_TOKEN_TTL_SECONDS: process.env.MCP_TOKEN_TTL_SECONDS,
 		MCP_REFRESH_TOKEN_TTL_SECONDS: process.env.MCP_REFRESH_TOKEN_TTL_SECONDS,
@@ -91,16 +104,10 @@ export const environment = createEnv({
 		TRUSTED_PROXY_HEADER: process.env.TRUSTED_PROXY_HEADER as
 			'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip' | undefined,
 		TRUSTED_PROXY_HOP_COUNT: process.env.TRUSTED_PROXY_HOP_COUNT,
-		ENTERPRISE_AUTH_PROVIDER_URL: process.env.ENTERPRISE_AUTH_PROVIDER_URL,
-		ENTERPRISE_AUTH_TENANT: process.env.ENTERPRISE_AUTH_TENANT,
-		ENTERPRISE_AUTH_AUDIENCE: process.env.ENTERPRISE_AUTH_AUDIENCE,
-		ENTERPRISE_AUTH_CLIENT_ID: process.env.ENTERPRISE_AUTH_CLIENT_ID,
-		ENTERPRISE_AUTH_CLIENT_SECRET: process.env.ENTERPRISE_AUTH_CLIENT_SECRET,
-		ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS: process.env.ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS,
 		METRICS_API_KEY: process.env.METRICS_API_KEY,
 		PORT: process.env.PORT,
 		NODE_ENV: process.env.NODE_ENV as 'development' | 'production' | 'test' | undefined,
+		PROTOKIT_TUNNEL_ACTIVE: process.env.PROTOKIT_TUNNEL_ACTIVE,
 	},
 	emptyStringAsUndefined: true,
-	skipValidation: process.env.SKIP_ENV_VALIDATION === 'true',
 });

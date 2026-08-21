@@ -20,6 +20,7 @@ declare module 'bun:test' {
 			toBeNull: () => void;
 			toHaveProperty: (property: string, value?: unknown) => void;
 			toThrow: (expected?: unknown) => void;
+			toContain: (expected: unknown) => void;
 		};
 	};
 
@@ -61,6 +62,7 @@ declare namespace Bun {
 
 	type ServeOptions = {
 		port?: number;
+		hostname?: string;
 		static?: Record<string, Response>;
 		/** Hard cap, in bytes, on any request body Bun will buffer before handing the request to `fetch`. Defense in depth below the route-specific limits in `request-limits.ts`. */
 		maxRequestBodySize?: number;

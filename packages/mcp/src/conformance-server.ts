@@ -52,7 +52,6 @@ const mcpHttpHandler = createMcpHandler(
 			userId,
 			user: createConformanceUser(userId),
 			enableUiExtension: true,
-			enableEnterpriseAuthorizationExtension: true,
 			enableConformanceMode: true,
 		});
 	},

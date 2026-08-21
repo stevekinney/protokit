@@ -104,10 +104,6 @@ mock.module('@web/lib/base-url', () => ({
 	getBaseUrl: () => 'http://localhost:3000',
 }));
 
-mock.module('@web/lib/enterprise-authorization-policy', () => ({
-	evaluateEnterpriseAuthorizationPolicy: async () => ({ allowed: true }),
-}));
-
 mock.module('@web/lib/hash-credential', () => ({
 	hashCredential: (value: string) => `hashed:${value}`,
 }));
@@ -121,8 +117,6 @@ mock.module('@web/lib/mcp-protocol-constants', () => ({
 	mcpSupportedProtocolVersions: ['2025-11-25', '2026-07-28'],
 	mcpLatestProtocolVersion: '2026-07-28',
 	mcpUiExtensionIdentifier: 'io.modelcontextprotocol/ui',
-	mcpEnterpriseAuthorizationExtensionIdentifier:
-		'io.modelcontextprotocol/enterprise-managed-authorization',
 }));
 
 mock.module('@web/lib/cors', () => ({
@@ -149,7 +143,6 @@ function setEnvironment(overrides: Record<string, unknown>) {
 	}
 	Object.assign(mockEnvironment, {
 		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		MCP_TOKEN_TTL_SECONDS: 3600,
 		MCP_REFRESH_TOKEN_TTL_SECONDS: 2592000,
 		...overrides,

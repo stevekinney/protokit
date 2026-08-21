@@ -14,6 +14,10 @@ The standalone script at `scripts/setup.ts` remains available for terminal use. 
 - Before each phase, read `.env.local` to check for existing values — skip or confirm before overwriting
 - Track the Neon project ID across phases (needed for GitHub secrets and migration)
 
+## Phase 0: Environment Mode
+
+`NODE_ENV` has no default — every environment must set it explicitly, or the server refuses to start (this is what keeps a host that forgets to set it from silently running as `development`, which is what makes `/auth/dev/login` reachable). Write `NODE_ENV=development` to `.env.local` if not already set.
+
 ## Phase 1: Neon Database
 
 ### With neonctl
@@ -84,15 +88,7 @@ Write defaults to `.env.local` if not already set:
 
 - `MCP_ALLOWED_ORIGINS=http://localhost:3000` (ask user if they want a different value)
 - `MCP_ENABLE_UI_EXTENSION=true`
-- `MCP_ENABLE_ENTERPRISE_AUTH=true`
 - `MCP_CONFORMANCE_MODE=false`
-- Enterprise auth placeholders (empty values):
-  - `ENTERPRISE_AUTH_PROVIDER_URL`
-  - `ENTERPRISE_AUTH_TENANT`
-  - `ENTERPRISE_AUTH_AUDIENCE`
-  - `ENTERPRISE_AUTH_CLIENT_ID`
-  - `ENTERPRISE_AUTH_CLIENT_SECRET`
-  - `ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS`
 
 ## Phase 6: Railway
 

@@ -14,5 +14,3 @@ export const mcpSupportedProtocolVersions = ['2025-11-25', '2026-07-28'] as cons
 export const mcpLatestProtocolVersion =
 	mcpSupportedProtocolVersions[mcpSupportedProtocolVersions.length - 1];
 export const mcpUiExtensionIdentifier = 'io.modelcontextprotocol/ui';
-export const mcpEnterpriseAuthorizationExtensionIdentifier =
-	'io.modelcontextprotocol/enterprise-managed-authorization';

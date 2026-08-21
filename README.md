@@ -78,7 +78,6 @@ Optional:
 - `RATE_LIMIT_TOKEN_MAX` (default `30`)
 - `RATE_LIMIT_TOKEN_WINDOW_SECONDS` (default `60`)
 - `MCP_ENABLE_UI_EXTENSION` (default `true`)
-- `MCP_ENABLE_ENTERPRISE_AUTH` (default `true`)
 - `MCP_CONFORMANCE_MODE` (default `false`)
 
 ## Commands

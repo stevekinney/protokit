@@ -4,7 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "bun run src/development.ts",
+		"dev": "NODE_ENV=development bun run src/development.ts",
 		"build": "bun run src/build.ts",
 		"start": "NODE_ENV=production bun run dist/server.js",
 		"typecheck": "tsc --noEmit",

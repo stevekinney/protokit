@@ -5,8 +5,8 @@ import type { AuthInfo } from '@modelcontextprotocol/server';
 mock.module('@web/env', () => ({
 	environment: {
 		MCP_ENABLE_UI_EXTENSION: false,
-		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		MCP_CONFORMANCE_MODE: false,
+		PROTOKIT_TUNNEL_ACTIVE: false,
 	},
 }));
 
@@ -37,7 +37,27 @@ mock.module('drizzle-orm', () => ({
 	eq: (column: unknown, value: unknown) => ({ column, value }),
 }));
 
-const { handleMcpRequest } = await import('@web/lib/mcp-handler');
+const { handleMcpRequest, shouldEnableConformanceMode } = await import('@web/lib/mcp-handler');
+
+describe('shouldEnableConformanceMode', () => {
+	it('is false when conformance mode is not configured', () => {
+		expect(
+			shouldEnableConformanceMode({ conformanceModeConfigured: false, tunnelActive: false }),
+		).toBe(false);
+	});
+
+	it('is true when conformance mode is configured and no tunnel is active', () => {
+		expect(
+			shouldEnableConformanceMode({ conformanceModeConfigured: true, tunnelActive: false }),
+		).toBe(true);
+	});
+
+	it('is false when a tunnel is active, even if conformance mode is configured', () => {
+		expect(
+			shouldEnableConformanceMode({ conformanceModeConfigured: true, tunnelActive: true }),
+		).toBe(false);
+	});
+});
 
 function buildAuthInfo(): AuthInfo {
 	return {

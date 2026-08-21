@@ -14,6 +14,17 @@ import { createMcpProtocolErrorResponse } from '@web/lib/mcp-protocol-error-resp
 import { mcpLatestProtocolVersion } from '@web/lib/mcp-protocol-constants';
 import { mcpRequestMaxBodyBytes } from '@web/lib/request-limits';
 
+// CONFIG-001: exported so it can be unit-tested directly without booting a
+// full MCP client/server round trip. Conformance fixtures are dev/test-only
+// surface area and must never register while a public tunnel is active,
+// regardless of what MCP_CONFORMANCE_MODE happens to be set to locally.
+export function shouldEnableConformanceMode(input: {
+	conformanceModeConfigured: boolean;
+	tunnelActive: boolean;
+}): boolean {
+	return input.conformanceModeConfigured && !input.tunnelActive;
+}
+
 async function fetchUserProfile(userId: string): Promise<McpUserProfile | null> {
 	const [user] = await database
 		.select({
@@ -57,8 +68,10 @@ const mcpHttpHandler = createMcpHandler(
 			userId: requestAuthExtra.userId,
 			user,
 			enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
-			enableEnterpriseAuthorizationExtension: environment.MCP_ENABLE_ENTERPRISE_AUTH,
-			enableConformanceMode: environment.MCP_CONFORMANCE_MODE,
+			enableConformanceMode: shouldEnableConformanceMode({
+				conformanceModeConfigured: environment.MCP_CONFORMANCE_MODE,
+				tunnelActive: environment.PROTOKIT_TUNNEL_ACTIVE,
+			}),
 			subscriptionBackend: resourceSubscriptionManager,
 		});
 	},

@@ -10,14 +10,10 @@ import { metricsCollector } from './metrics.js';
 import type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
 import type { McpUserProfile } from './types/primitives.js';
 
-const enterpriseAuthorizationExtensionIdentifier =
-	'io.modelcontextprotocol/enterprise-managed-authorization';
-
 export function createMcpServer(context: {
 	userId: string;
 	user: McpUserProfile;
 	enableUiExtension: boolean;
-	enableEnterpriseAuthorizationExtension: boolean;
 	enableConformanceMode?: boolean;
 	subscriptionBackend?: ResourceSubscriptionBackend;
 }): McpServer {
@@ -25,9 +21,6 @@ export function createMcpServer(context: {
 	const experimentalCapabilities: Record<string, { version: string }> = {};
 	if (context.enableUiExtension) {
 		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
-	}
-	if (context.enableEnterpriseAuthorizationExtension) {
-		experimentalCapabilities[enterpriseAuthorizationExtensionIdentifier] = { version: '1.0.0' };
 	}
 
 	const serverName = environment.MCP_SERVER_NAME ?? 'template-mcp-server';

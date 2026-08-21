@@ -22,7 +22,6 @@ const handler = createMcpHandler(
 			userId,
 			user: conformanceUser(userId),
 			enableUiExtension: false,
-			enableEnterpriseAuthorizationExtension: false,
 			enableConformanceMode: false,
 		});
 	},

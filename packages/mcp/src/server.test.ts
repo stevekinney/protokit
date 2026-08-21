@@ -13,7 +13,6 @@ describe('createMcpServer', () => {
 				role: 'user',
 			},
 			enableUiExtension: true,
-			enableEnterpriseAuthorizationExtension: true,
 			enableConformanceMode: false,
 		});
 		expect(server).toBeDefined();

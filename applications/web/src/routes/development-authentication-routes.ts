@@ -16,6 +16,15 @@ export async function handleDevelopmentLogin(context: RequestContext): Promise<R
 		return jsonResponse({ error: 'not_found' }, { status: 404 });
 	}
 
+	// CONFIG-001 (S-06): `scripts/develop.ts --tunnel` sets this before it
+	// opens a public cloudflared tunnel in front of the dev server. A tunnel
+	// makes every route — including this one — reachable from the public
+	// internet even though NODE_ENV stays 'development', so the login bypass
+	// must refuse regardless of NODE_ENV whenever a tunnel is active.
+	if (environment.PROTOKIT_TUNNEL_ACTIVE) {
+		return jsonResponse({ error: 'not_found' }, { status: 404 });
+	}
+
 	const rateLimitResult = await enforceSessionCreationRateLimit({
 		networkIdentity: context.networkIdentity,
 	});

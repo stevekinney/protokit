@@ -18,20 +18,6 @@ async function isDatabaseHealthy(): Promise<boolean> {
 	}
 }
 
-function isEnterprisePolicyConfigured(): boolean {
-	if (!environment.MCP_ENABLE_ENTERPRISE_AUTH) {
-		return true;
-	}
-
-	return Boolean(
-		environment.ENTERPRISE_AUTH_PROVIDER_URL &&
-		environment.ENTERPRISE_AUTH_TENANT &&
-		environment.ENTERPRISE_AUTH_AUDIENCE &&
-		environment.ENTERPRISE_AUTH_CLIENT_ID &&
-		environment.ENTERPRISE_AUTH_CLIENT_SECRET,
-	);
-}
-
 export async function handleHealthGet(context: RequestContext): Promise<Response> {
 	const rateLimitResult = await enforceHealthProbeRateLimit({
 		networkIdentity: context.networkIdentity,
@@ -43,10 +29,8 @@ export async function handleHealthGet(context: RequestContext): Promise<Response
 	const redisConfigured = isRedisConfigured();
 	const redisHealthy = redisConfigured ? await isRedisHealthy() : false;
 	const databaseHealthy = await isDatabaseHealthy();
-	const enterprisePolicyConfigured = isEnterprisePolicyConfigured();
 
-	const degradedDependencies =
-		(redisConfigured && !redisHealthy) || !databaseHealthy || !enterprisePolicyConfigured;
+	const degradedDependencies = (redisConfigured && !redisHealthy) || !databaseHealthy;
 	const status = degradedDependencies ? 'degraded' : 'ok';
 
 	let redisStatus: 'ok' | 'unavailable' | 'not_configured';
@@ -63,12 +47,10 @@ export async function handleHealthGet(context: RequestContext): Promise<Response
 			protocolVersions: mcpSupportedProtocolVersions,
 			extensions: {
 				ui: environment.MCP_ENABLE_UI_EXTENSION,
-				enterpriseManagedAuthorization: environment.MCP_ENABLE_ENTERPRISE_AUTH,
 			},
 			dependencies: {
 				redis: redisStatus,
 				database: databaseHealthy ? 'ok' : 'unavailable',
-				enterprisePolicyBackend: enterprisePolicyConfigured ? 'ok' : 'unconfigured',
 			},
 		},
 		{ status: status === 'ok' ? 200 : 503 },

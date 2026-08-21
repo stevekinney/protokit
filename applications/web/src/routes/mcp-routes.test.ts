@@ -4,7 +4,6 @@ mock.module('@web/env', () => ({
 	environment: {
 		MCP_ALLOWED_ORIGINS: 'http://localhost:3000',
 		MCP_CONFORMANCE_MODE: false,
-		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		MCP_ENABLE_UI_EXTENSION: true,
 		BASE_URL: undefined,
 	},
@@ -60,10 +59,6 @@ mock.module('@web/lib/request-rate-limiter', () => ({
 
 mock.module('@web/lib/mcp-concurrency-limiter', () => ({
 	acquireMcpConcurrencySlot: async () => ({ allowed: true, release: async () => {} }),
-}));
-
-mock.module('@web/lib/enterprise-authorization-policy', () => ({
-	evaluateEnterpriseAuthorizationPolicy: async () => ({ allowed: true }),
 }));
 
 mock.module('@web/lib/mcp-origin-validation', () => ({

@@ -8,7 +8,7 @@ Bun-native React SSR application — UI, OAuth endpoints, and MCP server transpo
 - `src/application.tsx` — Route dispatch, session hydration, OAuth + MCP HTTP handlers
 - `src/lib/session-authentication.ts` — Custom cookie sessions backed by `user_sessions`
 - `src/lib/google-authentication.ts` — Google OAuth redirect/callback state handling and profile fetch
-- `src/lib/mcp-handler.ts` — MCP transport handling with Redis-backed ownership and affinity validation
+- `src/lib/mcp-handler.ts` — MCP transport handling; hands validated requests to the official SDK, which owns the transport statelessly (no session affinity/ownership tracking)
 - `src/views/` — Server-only components (async, database access, env reads). Never included in client bundle.
 - `src/components/` — Shared/client components. Must be isomorphic — no server-only imports. Receive all data via props.
 - `src/client/` — Client-only code (entry point, hydration bootstrap, page registry).
