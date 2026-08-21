@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { $ } from 'bun';
+import { runTrivy } from './trivy.ts';
 
 /**
  * SUPPLY-001 acceptance gate: builds the exact production image this
@@ -56,14 +57,7 @@ if (shouldBuild) {
 // reported that as "reported an unexpired HIGH/CRITICAL vulnerability" — a
 // missing scanner and a vulnerable image are very different facts and must
 // never share a message.
-const TRIVY_IMAGE =
-	'aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c';
-
-console.log('[audit:runtime-image] scanning image with trivy');
-
-const hasLocalTrivy = (await $`command -v trivy`.nothrow().quiet()).exitCode === 0;
-
-const trivyArguments = [
+const trivyResult = await runTrivy([
 	'image',
 	'--exit-code',
 	'1',
@@ -72,21 +66,8 @@ const trivyArguments = [
 	'--scanners',
 	'vuln,secret',
 	imageTag,
-];
+]);
 
-const trivyResult = hasLocalTrivy
-	? await $`trivy ${trivyArguments}`.nothrow().quiet()
-	: await $`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${TRIVY_IMAGE} ${trivyArguments}`
-			.nothrow()
-			.quiet();
-
-if (!hasLocalTrivy) {
-	console.log(`[audit:runtime-image] no local trivy binary; using pinned ${TRIVY_IMAGE}`);
-}
-
-// Trivy documents exit code 1 as "findings present". Anything else means the
-// scanner itself could not run, which is a failure of this check rather than a
-// verdict about the image — report it as such instead of implying findings.
 if (trivyResult.exitCode === 1) {
 	fail('trivy image reported an unexpired HIGH/CRITICAL vulnerability or a secret finding');
 	process.stderr.write(trivyResult.stdout.toString());

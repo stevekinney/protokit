@@ -1,0 +1,87 @@
+import { $ } from 'bun';
+
+/**
+ * One way to run trivy, shared by every script that needs it.
+ *
+ * Continuous-integration runners have no `trivy` on PATH — the security
+ * workflow runs it as a pinned container image instead. Scripts that shelled
+ * out to a bare `trivy` therefore did not scan anything there, and each failed
+ * in its own misleading way: `audit-runtime-image.ts` reported the missing
+ * binary as "an unexpired HIGH/CRITICAL vulnerability", and
+ * `audit-provenance.ts` died with a raw ShellError. Two scripts, the same
+ * defect, found one CI run apart — which is the argument for a single helper
+ * rather than a third copy of the fallback.
+ *
+ * The digest is pinned to the same value `.github/workflows/security-scan.yml`
+ * uses for its own trivy steps. Keep them in step: `bun run audit:workflows`
+ * checks that every action reference stays SHA-pinned, and this image should be
+ * held to the same standard.
+ */
+export const TRIVY_IMAGE =
+	'aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c';
+
+let cachedHasLocalTrivy: boolean | undefined;
+
+async function hasLocalTrivy(): Promise<boolean> {
+	cachedHasLocalTrivy ??= (await $`command -v trivy`.nothrow().quiet()).exitCode === 0;
+	return cachedHasLocalTrivy;
+}
+
+/**
+ * Runs trivy with the given arguments, preferring a local binary and otherwise
+ * using the pinned image.
+ *
+ * `outputPath`, when given, names a host file trivy writes to. The container
+ * cannot see the host filesystem, so that directory is mounted and the path is
+ * rewritten to the container's view of it — without which `--output` silently
+ * writes inside the container and the caller finds nothing on disk.
+ *
+ * Never throws on a nonzero exit: callers must distinguish trivy's documented
+ * exit code 1 ("findings present") from any other code ("trivy could not run"),
+ * and conflating those is exactly what made the original failure unreadable.
+ */
+export async function runTrivy(
+	trivyArguments: string[],
+	options: { outputPath?: string } = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+	const useLocal = await hasLocalTrivy();
+
+	if (useLocal) {
+		const result = await $`trivy ${trivyArguments}`.nothrow().quiet();
+		return {
+			exitCode: result.exitCode,
+			stdout: result.stdout.toString(),
+			stderr: result.stderr.toString(),
+		};
+	}
+
+	const dockerArguments = [
+		'run',
+		'--rm',
+		// Trivy inspects images through the daemon rather than pulling them, so
+		// a locally built tag is only visible with the socket mounted.
+		'-v',
+		'/var/run/docker.sock:/var/run/docker.sock',
+	];
+
+	let effectiveArguments = trivyArguments;
+
+	if (options.outputPath) {
+		const outputDirectory = options.outputPath.replace(/\/[^/]+$/, '');
+		const outputFileName = options.outputPath.slice(outputDirectory.length + 1);
+		dockerArguments.push('-v', `${outputDirectory}:/trivy-output`);
+		effectiveArguments = trivyArguments.map((argument) =>
+			argument === options.outputPath ? `/trivy-output/${outputFileName}` : argument,
+		);
+	}
+
+	const result = await $`docker ${dockerArguments} ${TRIVY_IMAGE} ${effectiveArguments}`
+		.nothrow()
+		.quiet();
+
+	return {
+		exitCode: result.exitCode,
+		stdout: result.stdout.toString(),
+		stderr: result.stderr.toString(),
+	};
+}

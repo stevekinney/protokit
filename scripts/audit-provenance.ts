@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { $ } from 'bun';
+import { runTrivy } from './trivy.ts';
 
 /**
  * SUPPLY-001 acceptance gate: a generated software bill of materials and
@@ -30,7 +31,25 @@ await mkdir(outputDirectory, { recursive: true });
 
 console.log('[audit:provenance] generating CycloneDX SBOM with trivy');
 const sbomPath = `${outputDirectory}/sbom.cdx.json`;
-await $`trivy image --format cyclonedx --output ${sbomPath} ${imageTag}`;
+// Shared helper rather than a bare `trivy`: continuous-integration runners have
+// no trivy on PATH, and this script previously died there with a raw ShellError
+// while its sibling reported the same missing binary as a vulnerability. See
+// `scripts/trivy.ts`. `outputPath` is what makes `--output` land on the host
+// rather than inside the container.
+const sbomResult = await runTrivy(
+	['image', '--format', 'cyclonedx', '--output', sbomPath, imageTag],
+	{ outputPath: sbomPath },
+);
+
+if (sbomResult.exitCode !== 0) {
+	console.error(
+		`[audit:provenance] FAIL: trivy could not generate the SBOM (exit ${sbomResult.exitCode}). ` +
+			'No SBOM was produced — this is a broken step, not an empty result.',
+	);
+	process.stderr.write(sbomResult.stdout);
+	process.stderr.write(sbomResult.stderr);
+	process.exit(1);
+}
 
 const gitRevision = (await $`git rev-parse HEAD`.text()).trim();
 const gitStatusOutput = (await $`git status --porcelain`.text()).trim();
