@@ -205,6 +205,11 @@ async function main(): Promise<void> {
 		'0:3000',
 		'-e',
 		'NODE_ENV=test',
+		// DEPLOY-001: outside production the server binds to loopback by default,
+		// which inside a container makes the published port unreachable. Widening
+		// the binding is deliberate and explicit — see `lib/resolve-bind-address.ts`.
+		'-e',
+		'SERVER_BIND_ADDRESS=0.0.0.0',
 		'-e',
 		'PORT=3000',
 		'-e',

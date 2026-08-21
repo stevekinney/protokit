@@ -122,6 +122,26 @@ if (!serverBuildResult.success) {
 	process.exit(1);
 }
 
+// Bun's bundler constant-folds `process.env.NODE_ENV` at build time. That made
+// the shipped server read whichever value happened to be set on the *build*
+// machine — "production" inside the Docker builder stage, "development" for a
+// local build — so CONFIG-001's fail-closed startup invariants could never
+// observe the real runtime value, and the image could not be booted in any other
+// mode. `env.ts` reads `process.env['NODE_ENV']` instead, which Bun leaves alone.
+//
+// That is a subtle property to preserve by convention alone, so assert it here:
+// a future edit that reverts to the dot form fails the build rather than quietly
+// shipping an artifact whose environment is frozen at build time.
+const serverBundleSource = await Bun.file('dist/server.js').text();
+if (!serverBundleSource.includes(`process.env["NODE_ENV"]`)) {
+	console.error(
+		'Build aborted: dist/server.js contains no runtime read of NODE_ENV, which means the\n' +
+			'bundler inlined it at build time. Read it as `process.env["NODE_ENV"]` (bracket\n' +
+			'literal) rather than `process.env.NODE_ENV` so the value stays configurable at runtime.',
+	);
+	process.exit(1);
+}
+
 cpSync('public', 'dist/public', { recursive: true });
 rmSync(stagingDirectory, { recursive: true, force: true });
 

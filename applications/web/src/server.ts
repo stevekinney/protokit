@@ -6,6 +6,7 @@ import { loadAssetManifest } from '@web/lib/asset-manifest';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 import { mcpRequestMaxBodyBytes } from '@web/lib/request-limits';
+import { describeBindAddress, resolveBindAddress } from '@web/lib/resolve-bind-address';
 import { assertProductionStartupInvariants } from '@web/lib/startup-invariants';
 import { resolvePublicFile } from '@web/resolve-public-file';
 
@@ -63,7 +64,15 @@ const globalMaxRequestBodyBytes = mcpRequestMaxBodyBytes * 2;
 // `assertProductionStartupInvariants()` above already refuses to start a
 // production process with an insecure or missing BASE_URL, so there is
 // nothing left to warn about here.
-const hostname = environment.NODE_ENV === 'production' ? undefined : '127.0.0.1';
+//
+// DEPLOY-001: that default is correct on a developer machine and wrong inside a
+// container, where loopback binding makes a published port unreachable. The
+// address is therefore configurable rather than inferred from NODE_ENV alone —
+// the restrictive default is unchanged, but widening it is now a deliberate act.
+const hostname = resolveBindAddress({
+	nodeEnvironment: environment.NODE_ENV,
+	configuredBindAddress: environment.SERVER_BIND_ADDRESS,
+});
 
 const server = Bun.serve({
 	port,
@@ -76,7 +85,7 @@ const server = Bun.serve({
 	},
 });
 
-logger.info({ port, listenHostname: hostname ?? '0.0.0.0' }, 'Web server started');
+logger.info({ port, listenHostname: describeBindAddress(hostname) }, 'Web server started');
 
 let isShuttingDown = false;
 

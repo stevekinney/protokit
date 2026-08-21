@@ -56,7 +56,13 @@ export const environment = createEnv({
 		TRUSTED_PROXY_HOP_COUNT: process.env.TRUSTED_PROXY_HOP_COUNT,
 		METRICS_API_KEY: process.env.METRICS_API_KEY,
 		PORT: process.env.PORT,
-		NODE_ENV: process.env.NODE_ENV as 'development' | 'production' | 'test' | undefined,
+		SERVER_BIND_ADDRESS: process.env.SERVER_BIND_ADDRESS,
+		// Read via a bracket literal, never `process.env.NODE_ENV`. Bun's bundler
+		// constant-folds the dot form at BUILD time — it baked "production" into the
+		// container image and "development" into a local build — so the shipped
+		// artifact could never observe the runtime value and CONFIG-001's fail-closed
+		// invariants were unable to fire. `build.ts` asserts this stays true.
+		NODE_ENV: process.env['NODE_ENV'] as 'development' | 'production' | 'test' | undefined,
 		PROTOKIT_TUNNEL_ACTIVE: process.env.PROTOKIT_TUNNEL_ACTIVE,
 	},
 	emptyStringAsUndefined: true,

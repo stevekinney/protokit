@@ -56,6 +56,11 @@ export const webServerEnvironmentSchema = {
 	TRUSTED_PROXY_HOP_COUNT: z.coerce.number().int().positive().optional().default(1),
 	METRICS_API_KEY: z.string().min(1).optional(),
 	PORT: z.coerce.number().int().positive().optional().default(3000),
+	// Which interface to listen on. Left unset, the server binds to loopback
+	// outside production so a forgotten NODE_ENV is never reachable from the LAN.
+	// Set it explicitly (`0.0.0.0`) to run in a container, where loopback binding
+	// makes a published port unreachable. See `lib/resolve-bind-address.ts`.
+	SERVER_BIND_ADDRESS: z.string().min(1).optional(),
 	// CONFIG-001 (S-06): no default. A host that forgets to set this must
 	// crash rather than silently run as `development` — the mode that
 	// leaves `GET /auth/dev/login` reachable. Every legitimate entry point

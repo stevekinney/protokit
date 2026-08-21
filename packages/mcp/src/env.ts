@@ -17,7 +17,12 @@ export const environment = createEnv({
 		MCP_SERVER_NAME: process.env.MCP_SERVER_NAME,
 		MCP_CONFORMANCE_MODE: process.env.MCP_CONFORMANCE_MODE,
 		LOG_LEVEL: process.env.LOG_LEVEL,
-		NODE_ENV: process.env.NODE_ENV,
+		// Read via a bracket literal, never `process.env.NODE_ENV`. Bun's bundler
+		// constant-folds the dot form at BUILD time — it baked "production" into the
+		// container image and "development" into a local build — so the shipped
+		// artifact could never observe the runtime value and CONFIG-001's fail-closed
+		// invariants were unable to fire. `build.ts` asserts this stays true.
+		NODE_ENV: process.env['NODE_ENV'],
 	},
 	emptyStringAsUndefined: true,
 });
