@@ -51,18 +51,41 @@ export type McpConcurrencySlot = {
 };
 
 /**
+ * Dependencies `acquireMcpConcurrencySlot` needs beyond the request input.
+ * Defaults to the real, module-level `@web/env` / `@web/lib/redis-client`
+ * singletons — production call sites never pass this. Tests inject a fake
+ * dependency object instead of `mock.module`-ing `@web/env` /
+ * `@web/lib/redis-client`, which would otherwise leak globally into every
+ * test file that runs afterward in the same process (OPEN-5).
+ */
+export type McpConcurrencyLimiterDependencies = {
+	maximumConcurrent: number;
+	isRedisConfigured: () => boolean;
+	getRedisClient: () => Promise<Awaited<ReturnType<typeof getRedisClient>>>;
+};
+
+const liveMcpConcurrencyLimiterDependencies: McpConcurrencyLimiterDependencies = {
+	get maximumConcurrent() {
+		return environment.RATE_LIMIT_MCP_CONCURRENT_MAX;
+	},
+	isRedisConfigured,
+	getRedisClient,
+};
+
+/**
  * Bounds how many MCP requests one user may have in flight at once —
  * distinct from the time-windowed `enforceMcpRateLimit`, which bounds
  * request *rate* rather than concurrent *load*. Callers must always
  * `release()` the slot, typically in a `finally` block.
  */
-export async function acquireMcpConcurrencySlot(input: {
-	userId: string;
-}): Promise<McpConcurrencySlot> {
+export async function acquireMcpConcurrencySlot(
+	input: { userId: string },
+	dependencies: McpConcurrencyLimiterDependencies = liveMcpConcurrencyLimiterDependencies,
+): Promise<McpConcurrencySlot> {
 	const key = `rate_limit:mcp_concurrent:${input.userId}`;
 
-	if (!isRedisConfigured()) {
-		const allowed = acquireInMemorySlot(key, environment.RATE_LIMIT_MCP_CONCURRENT_MAX);
+	if (!dependencies.isRedisConfigured()) {
+		const allowed = acquireInMemorySlot(key, dependencies.maximumConcurrent);
 		return {
 			allowed,
 			release: async () => {
@@ -71,13 +94,10 @@ export async function acquireMcpConcurrencySlot(input: {
 		};
 	}
 
-	const redisClient = await getRedisClient();
+	const redisClient = await dependencies.getRedisClient();
 	const reply = (await redisClient.eval(acquireScript, {
 		keys: [key],
-		arguments: [
-			String(environment.RATE_LIMIT_MCP_CONCURRENT_MAX),
-			String(CONCURRENCY_SLOT_TTL_MILLISECONDS),
-		],
+		arguments: [String(dependencies.maximumConcurrent), String(CONCURRENCY_SLOT_TTL_MILLISECONDS)],
 	})) as number;
 	const allowed = reply === 1;
 
