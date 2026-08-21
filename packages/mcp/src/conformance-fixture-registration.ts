@@ -3,49 +3,95 @@ import { ResourceTemplate, completable } from '@modelcontextprotocol/server';
 import type { McpServer } from '@modelcontextprotocol/server';
 import {
 	readProgressToken,
-	readSessionIdentifier,
 	readNotificationSender,
 	readRequestSender,
 	stringifyUnknown,
 	parseSampledText,
 } from './handler-context.js';
-import type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
+import { runWithStandardizedTimeout } from './long-running-operation-support.js';
 
 const oneByOnePngBase64 =
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5m0QAAAABJRU5ErkJggg==';
 
 const minimalWavBase64 = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YQAAAAA=';
 
-function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => {
-		setTimeout(resolve, milliseconds);
+function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const timer = setTimeout(resolve, milliseconds);
+		signal?.addEventListener(
+			'abort',
+			() => {
+				clearTimeout(timer);
+				reject(signal.reason);
+			},
+			{ once: true },
+		);
 	});
 }
 
+/**
+ * PROTO-002: test-only observability for `test_cancellable_operation`
+ * below. A response reaching (or failing to reach) the client proves the
+ * HTTP exchange was torn down on abort — the SDK's transport does that
+ * regardless of whether a handler's own operation actually observed
+ * cancellation. Proving the operation ITSELF stopped (the actual SEC-004
+ * bug this wiring fixes: a timeout/abort that only rejects a wrapper
+ * promise while the real work keeps running unobserved) needs a side
+ * channel outside the response — these counters are it.
+ * `mcp-handler.test.ts` asserts `completedCount` stays `0` well past the
+ * fixture's full delay once the request was aborted early, which is only
+ * true if the underlying `setTimeout` was genuinely cleared, not merely
+ * abandoned.
+ */
+export const cancellableOperationTestHooks = {
+	completedCount: 0,
+	abortedCount: 0,
+	reset(): void {
+		this.completedCount = 0;
+		this.abortedCount = 0;
+	},
+};
+
+/**
+ * PROTO-002 / S-11: `resources/subscribe` and `resources/unsubscribe` are
+ * registered unconditionally by `server.ts` (spec-compliant ack; real
+ * delivery happens on the `subscriptions/listen` stream against a per-user
+ * event bus — see that file's comment). This fixture no longer needs its
+ * own interest-tracking map: it publishes directly to whatever URI the
+ * caller names, and the SDK's own listen-router filters delivery to
+ * whichever open streams actually opted into that URI.
+ */
 export function registerConformanceFixtures(
 	server: McpServer,
-	subscriptionBackend?: ResourceSubscriptionBackend,
+	publishResourceUpdate?: (uri: string) => Promise<void>,
 ): void {
-	const resourceSubscriptions = new Map<string, Set<string>>();
+	// INTEROP-001: found by actually running the pinned
+	// `@modelcontextprotocol/conformance` CLI's default "active" suite against
+	// this server (not merely reading its scenario list) — `tools-call-simple-text`
+	// and `tools-call-error` both failed with "Tool ... not found", not a
+	// behavioral mismatch. Confirmed the exact expected tool names and result
+	// shapes directly against the installed conformance package's own
+	// (unexported, dist-only) scenario source rather than guessing.
+	server.registerTool(
+		'test_simple_text',
+		{ description: 'Conformance fixture: returns a single plain-text content block.' },
+		async () => ({
+			content: [{ type: 'text' as const, text: 'This is a simple text response.' }],
+		}),
+	);
 
-	if (!subscriptionBackend) {
-		server.server.setRequestHandler('resources/subscribe', async (request, ctx) => {
-			const sessionIdentifier = ctx.sessionId ?? 'stateless';
-			const subscriptionsForSession =
-				resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
-			subscriptionsForSession.add(request.params.uri);
-			resourceSubscriptions.set(sessionIdentifier, subscriptionsForSession);
-			return {};
-		});
-		server.server.setRequestHandler('resources/unsubscribe', async (request, ctx) => {
-			const sessionIdentifier = ctx.sessionId ?? 'stateless';
-			const subscriptionsForSession =
-				resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
-			subscriptionsForSession.delete(request.params.uri);
-			resourceSubscriptions.set(sessionIdentifier, subscriptionsForSession);
-			return {};
-		});
-	}
+	server.registerTool(
+		'test_error_handling',
+		{ description: 'Conformance fixture: always returns a tool-level error result.' },
+		async () => ({
+			isError: true,
+			content: [{ type: 'text' as const, text: 'This is a deliberate test error.' }],
+		}),
+	);
 
 	server.registerTool(
 		'test_image_content',
@@ -623,32 +669,66 @@ export function registerConformanceFixtures(
 		'test_watched_resource_update',
 		{
 			description:
-				'Conformance fixture helper that emits resource update notifications for subscribed URIs.',
-			inputSchema: z.object({}),
+				'Conformance fixture helper that publishes a resource update notification for the given URI, scoped to this connection.',
+			inputSchema: z.object({
+				uri: z.string().describe('The resource URI to publish an update for.'),
+			}),
 		},
-		async (_input, ctx) => {
-			if (subscriptionBackend) {
-				const sessionIdentifier = readSessionIdentifier(ctx) ?? 'stateless';
-				const subscriptionsForSession =
-					resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
-				for (const uri of subscriptionsForSession) {
-					await subscriptionBackend.publishResourceUpdate(uri);
-				}
+		async (input) => {
+			if (publishResourceUpdate) {
+				await publishResourceUpdate(input.uri);
 			} else {
-				const sessionIdentifier = readSessionIdentifier(ctx) ?? 'stateless';
-				const subscriptionsForSession =
-					resourceSubscriptions.get(sessionIdentifier) ?? new Set<string>();
-				for (const uri of subscriptionsForSession) {
-					await server.server.sendResourceUpdated({ uri });
-				}
+				await server.server.sendResourceUpdated({ uri: input.uri });
 			}
 			return {
 				content: [
 					{
 						type: 'text' as const,
-						text: 'Sent resource updates for current subscriptions.',
+						text: `Sent a resource update notification for ${input.uri}.`,
 					},
 				],
+			};
+		},
+	);
+
+	server.registerTool(
+		'test_cancellable_operation',
+		{
+			description:
+				'Conformance fixture: awaits a slow operation through runWithStandardizedTimeout, ' +
+				"threaded from the request's own AbortSignal, to prove disconnecting the caller " +
+				'genuinely aborts the underlying work rather than only abandoning a wrapper promise.',
+			inputSchema: z.object({
+				delayMilliseconds: z
+					.number()
+					.int()
+					.positive()
+					.max(60_000)
+					.describe('How long the underlying operation sleeps before resolving.'),
+			}),
+		},
+		async (input, ctx) => {
+			try {
+				await runWithStandardizedTimeout({
+					operation: (signal) => delay(input.delayMilliseconds, signal),
+					abortSignal: ctx.mcpReq.signal,
+					timeoutMilliseconds: input.delayMilliseconds + 60_000,
+				});
+				cancellableOperationTestHooks.completedCount += 1;
+			} catch (error) {
+				cancellableOperationTestHooks.abortedCount += 1;
+				return {
+					content: [
+						{
+							type: 'text' as const,
+							text: `Cancelled: ${error instanceof Error ? error.message : String(error)}`,
+						},
+					],
+					isError: true,
+				};
+			}
+			return {
+				content: [{ type: 'text' as const, text: 'Cancellable operation completed.' }],
 			};
 		},
 	);

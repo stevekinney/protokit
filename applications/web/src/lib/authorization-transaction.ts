@@ -27,6 +27,8 @@ export type AuthorizationTransactionInput = {
 	issuer: string;
 	/** OAUTH-001 / RFC 8707: the canonical MCP resource URL this authorization was requested for, already validated by the caller. */
 	resource: string;
+	/** AUTHZ-001: the canonical, space-delimited scope string the consent screen will display, already validated and defaulted by the caller. */
+	scope: string;
 };
 
 export type CreatedAuthorizationTransaction = {
@@ -52,6 +54,7 @@ export async function createAuthorizationTransaction(
 		state: input.state,
 		issuer: input.issuer,
 		resource: input.resource,
+		scope: input.scope,
 		expiresAt: new Date(Date.now() + authorizationTransactionTimeToLiveMs),
 	});
 
@@ -66,6 +69,7 @@ export type ConsumedAuthorizationTransaction = {
 	state: string | null;
 	issuer: string;
 	resource: string;
+	scope: string;
 };
 
 /**
@@ -117,5 +121,6 @@ export async function consumeAuthorizationTransaction(input: {
 		state: consumed.state,
 		issuer: consumed.issuer,
 		resource: consumed.resource,
+		scope: consumed.scope,
 	};
 }

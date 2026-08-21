@@ -43,8 +43,14 @@ jobs:
       - name: Apply database migrations
         run: bun run test:infrastructure:migrate
 
-      - name: Test
-        run: bun turbo test
+      # INTEROP-001: an unexpected skip must fail the build, not read as
+      # green -- this branch's own history has three separate incidents
+      # where a suite passed only because the test that mattered never ran.
+      # `assert-no-unexpected-skips.ts` runs the real command, streams its
+      # output live, and fails if `bun:test`'s own `N skip` summary line
+      # (only ever printed when N > 0) appears anywhere in it.
+      - name: Test (fails on any unexpected skip)
+        run: bun scripts/assert-no-unexpected-skips.ts -- bun turbo test
         env:
           REDIS_URL: 'redis://localhost:6379'
 
@@ -67,27 +73,102 @@ jobs:
           RATE_LIMIT_REGISTER_WINDOW_SECONDS: '60'
           RATE_LIMIT_TOKEN_MAX: '30'
           RATE_LIMIT_TOKEN_WINDOW_SECONDS: '60'
-          MCP_PROTOCOL_VERSION: '2025-11-25'
           MCP_ALLOWED_ORIGINS: 'http://localhost:3000'
           MCP_ENABLE_UI_EXTENSION: 'true'
           MCP_ENABLE_ENTERPRISE_AUTH: 'false'
           MCP_CONFORMANCE_MODE: 'false'
           LOG_LEVEL: 'info'
 
+  # INTEROP-001: modern (`2026-07-28`) and legacy (`2025-11-25`) conformance
+  # each get their own job, run in parallel with `check` rather than as two
+  # sequential steps bolted onto it -- the roadmap's compatibility contract
+  # requires proving both eras, not just the one Claude's hosted connector
+  # currently documents. Both jobs run the exact same
+  # `packages/mcp/src/conformance-server.ts` (the one SDK v2 factory PROTO-001
+  # built to serve both eras) against the pinned, locked
+  # `@modelcontextprotocol/conformance` CLI -- never an unpinned `bunx`
+  # download. The 0.2.x line is a pre-stable alpha (no stable release
+  # supports `2026-07-28` yet); the roadmap names this explicitly as a
+  # temporary state to revisit once a stable release covers the current
+  # specification.
+  mcp-conformance-legacy:
+    name: MCP Conformance (2025-11-25)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.14'
+
+      - run: bun install --frozen-lockfile
+
+      # The pinned conformance CLI ships a `node`-shebang binary.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
-      - name: MCP Conformance (Server, 2025-11-25)
+      - name: Start conformance server
         run: |
-          set -euo pipefail
-          (cd packages/mcp && MCP_CONFORMANCE_PORT=3137 bun ./src/conformance-server.ts) &
-          SERVER_PID=$!
-          trap "kill ${SERVER_PID}" EXIT
-          sleep 4
-          bunx @modelcontextprotocol/conformance server \
+          (cd packages/mcp && MCP_CONFORMANCE_PORT=3137 NODE_ENV=test bun ./src/conformance-server.ts) &
+          echo $! > /tmp/conformance-server.pid
+
+      # Replaces a fixed `sleep` with a real, bounded readiness probe --
+      # fails after 5 attempts instead of racing a server that hasn't
+      # finished booting or hanging on one that never will.
+      - name: Wait for conformance server
+        run: bun scripts/wait-for-http.ts http://127.0.0.1:3137/mcp --max-attempts 5
+
+      - name: Run conformance (server, 2025-11-25)
+        run: |
+          bunx --bun @modelcontextprotocol/conformance server \
             --url http://127.0.0.1:3137/mcp \
-            --spec-version 2025-11-25
+            --spec-version 2025-11-25 \
+            --expected-failures .github/conformance/legacy-expected-failures.yaml
+
+      - name: Stop conformance server
+        if: always()
+        run: kill "$(cat /tmp/conformance-server.pid)" 2>/dev/null || true
+
+  mcp-conformance-modern:
+    name: MCP Conformance (2026-07-28)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.3.14'
+
+      - run: bun install --frozen-lockfile
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Start conformance server
+        run: |
+          (cd packages/mcp && MCP_CONFORMANCE_PORT=3138 NODE_ENV=test bun ./src/conformance-server.ts) &
+          echo $! > /tmp/conformance-server.pid
+
+      - name: Wait for conformance server
+        run: bun scripts/wait-for-http.ts http://127.0.0.1:3138/mcp --max-attempts 5
+
+      - name: Run conformance (server, 2026-07-28)
+        run: |
+          bunx --bun @modelcontextprotocol/conformance server \
+            --url http://127.0.0.1:3138/mcp \
+            --spec-version 2026-07-28
+
+      - name: Stop conformance server
+        if: always()
+        run: kill "$(cat /tmp/conformance-server.pid)" 2>/dev/null || true
 
   validate-database:
     name: Validate Database

@@ -1,4 +1,4 @@
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer, ProtocolError } from '@modelcontextprotocol/server';
 import type { ServerCapabilities } from '@modelcontextprotocol/server';
 import { allTools, conformanceOnlyTools } from './tools/index.js';
 import { allResources } from './resources/index.js';
@@ -18,8 +18,13 @@ import { EXTENSION_ID, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps
 import { registerConformanceFixtures } from './conformance-fixture-registration.js';
 import { environment } from './env.js';
 import { metricsCollector } from './metrics.js';
-import type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
-import type { McpToolDefinition, McpUserProfile } from './types/primitives.js';
+import type {
+	McpPromptDefinition,
+	McpResourceDefinition,
+	McpToolDefinition,
+	McpUserProfile,
+} from './types/primitives.js';
+import type { McpScope } from './scopes.js';
 
 // META-001 / S-20: a capability advertised here is a promise a connector is
 // entitled to rely on. `sampling` and `elicitation` are not even real server
@@ -38,10 +43,25 @@ import type { McpToolDefinition, McpUserProfile } from './types/primitives.js';
 function buildServerCapabilities(input: {
 	enableConformanceMode: boolean;
 	experimentalCapabilities: Record<string, { version: string }>;
+	/**
+	 * PROTO-002 / S-11: `resources.subscribe` is now genuinely implemented
+	 * on the modern (`2026-07-28`) era via the per-request factory's
+	 * `subscriptions/listen` stream (see `mcp-handler.ts`'s per-user
+	 * `ServerEventBus`, which is what makes delivery authorization-safe —
+	 * each user's handler instance has its own event bus, so a
+	 * `notifications/resources/updated` push can never reach another
+	 * user's stream). The legacy (`2025-11-25`) era still has no delivery
+	 * path — PROTO-001 established that legacy serving is per-request and
+	 * stateless, so there is no long-lived session to push to — so it
+	 * stays unadvertised there; a legacy client's `resources/subscribe`
+	 * call still gets a spec-compliant ack (see the handler registration
+	 * below), it just never receives an update.
+	 */
+	subscriptionsEnabled: boolean;
 }): ServerCapabilities {
 	return {
 		tools: { listChanged: false },
-		resources: { listChanged: false },
+		resources: { listChanged: false, ...(input.subscriptionsEnabled ? { subscribe: true } : {}) },
 		prompts: { listChanged: false },
 		experimental: input.experimentalCapabilities,
 		// Conformance fixtures (registered only in conformance mode, never in
@@ -53,13 +73,70 @@ function buildServerCapabilities(input: {
 	};
 }
 
+/**
+ * AUTHZ-001: the JSON-RPC error code this server uses for an authenticated
+ * but under-scoped `tools/call` / `resources/read` / `prompts/get` request.
+ * JSON-RPC reserves `-32000` through `-32099` for implementation-defined
+ * server errors; the SDK's own `ProtocolErrorCode` enum (`server.ts`'s
+ * `@modelcontextprotocol/server` dependency) does not assign anything in
+ * that range to an authorization failure, and no spec-defined MCP error
+ * code exists for "the token was valid but lacked the scope this operation
+ * needs" — confirmed by reading the installed SDK's error-code enum
+ * directly, not assumed. `-32001` is unused by that enum.
+ */
+const mcpInsufficientScopeErrorCode = -32001;
+
+/**
+ * AUTHZ-001: the RFC 6750-shaped challenge this server attaches wherever a
+ * request fails purely because the caller's token lacks `requiredScope` —
+ * as a tool result's `_meta['mcp/www_authenticate']` (the SDK has no typed
+ * `securitySchemes` field on `Tool` to attach this to instead; confirmed
+ * against the installed `@modelcontextprotocol/server@2.0.0` type
+ * definitions) and as `data` on the `ProtocolError` thrown for resources
+ * and prompts, which have no error-result shape of their own to carry a
+ * `_meta` object on.
+ */
+function insufficientScopeChallenge(requiredScope: McpScope): string {
+	return `Bearer error="insufficient_scope", scope="${requiredScope}"`;
+}
+
+function hasRequiredScope(grantedScopes: readonly string[], requiredScope: McpScope): boolean {
+	return grantedScopes.includes(requiredScope);
+}
+
 export function createMcpServer(context: {
 	userId: string;
 	user: McpUserProfile;
 	enableUiExtension: boolean;
 	enableConformanceMode?: boolean;
-	subscriptionBackend?: ResourceSubscriptionBackend;
+	/**
+	 * PROTO-002: which protocol era this particular `McpServer` instance
+	 * will serve. Drives whether `resources.subscribe` is advertised (only
+	 * ever true on `'modern'` — see `buildServerCapabilities`) — legacy
+	 * serving has no delivery path for a subscription push. Defaults to
+	 * `'legacy'` so existing callers (tests, the standalone conformance
+	 * server) that do not pass it keep today's unadvertised behavior.
+	 */
+	era?: 'legacy' | 'modern';
+	/**
+	 * PROTO-002 / S-11: publishes a `notifications/resources/updated` event
+	 * scoped to only this context's `userId` (see
+	 * `applications/web/src/lib/mcp-user-event-bus.ts`). Undefined when no
+	 * event bus is wired for this request (e.g. the standalone conformance
+	 * server) — `resources/subscribe` still acks, it just never delivers.
+	 */
+	publishResourceUpdate?: (uri: string) => Promise<void>;
+	/**
+	 * AUTHZ-001: the OAuth scopes the caller's access token actually carries
+	 * (`McpRequestAuthExtra.scopes`, verified against the database by the
+	 * HTTP boundary before this factory is ever called). Enforced here,
+	 * once, before any tool/resource/prompt handler runs — "missing scopes
+	 * fail before application data is read," per the roadmap's own wording
+	 * for this item.
+	 */
+	scopes: readonly string[];
 }): McpServer {
+	const era = context.era ?? 'legacy';
 	const enableConformanceMode = context.enableConformanceMode ?? environment.MCP_CONFORMANCE_MODE;
 	const experimentalCapabilities: Record<string, { version: string }> = {};
 	// CONTENT-001: advertising the MCP Apps extension is not just gated on the
@@ -86,7 +163,11 @@ export function createMcpServer(context: {
 		},
 		{
 			instructions,
-			capabilities: buildServerCapabilities({ enableConformanceMode, experimentalCapabilities }),
+			capabilities: buildServerCapabilities({
+				enableConformanceMode,
+				experimentalCapabilities,
+				subscriptionsEnabled: era === 'modern' && context.publishResourceUpdate !== undefined,
+			}),
 		},
 	);
 
@@ -101,9 +182,30 @@ export function createMcpServer(context: {
 				annotations: tool.annotations,
 				...(tool._meta ? { _meta: tool._meta } : {}),
 			},
-			async (input) => {
+			async (input, ctx) => {
+				if (!hasRequiredScope(context.scopes, tool.requiredScope)) {
+					metricsCollector.recordToolInvocation(tool.name, 0, true);
+					return {
+						content: [
+							{
+								type: 'text' as const,
+								text: `Insufficient scope: this tool requires '${tool.requiredScope}'.`,
+							},
+						],
+						isError: true,
+						_meta: { 'mcp/www_authenticate': insufficientScopeChallenge(tool.requiredScope) },
+					};
+				}
+
 				const start = Date.now();
-				const result = await tool.handler(input as never, context);
+				// PROTO-002: thread the SDK's own per-request AbortSignal through
+				// so a handler that awaits a cancellable operation genuinely stops
+				// work on client disconnect/`notifications/cancelled`, instead of
+				// only abandoning a wrapper promise.
+				const result = await tool.handler(input as never, {
+					...context,
+					signal: ctx.mcpReq.signal,
+				});
 				metricsCollector.recordToolInvocation(
 					tool.name,
 					Date.now() - start,
@@ -118,12 +220,37 @@ export function createMcpServer(context: {
 		registerToolDefinition(tool);
 	}
 
+	/**
+	 * AUTHZ-001: `resources/read` and `prompts/get` have no `isError` result
+	 * variant to answer an under-scoped request with (unlike `CallToolResult`
+	 * above), so an under-scoped request throws instead — the SDK turns a
+	 * thrown `ProtocolError` into a JSON-RPC error response carrying its
+	 * `data`, which is where the `_meta['mcp/www_authenticate']` challenge
+	 * lives for these two primitive kinds.
+	 */
+	function assertRequiredScope(
+		definition: Pick<McpResourceDefinition | McpPromptDefinition, 'name' | 'requiredScope'>,
+	): void {
+		if (hasRequiredScope(context.scopes, definition.requiredScope)) return;
+		throw new ProtocolError(
+			mcpInsufficientScopeErrorCode,
+			`Insufficient scope: '${definition.name}' requires '${definition.requiredScope}'.`,
+			{
+				requiredScope: definition.requiredScope,
+				_meta: { 'mcp/www_authenticate': insufficientScopeChallenge(definition.requiredScope) },
+			},
+		);
+	}
+
 	for (const resource of allResources) {
 		server.registerResource(
 			resource.name,
 			resource.uri,
 			{ title: resource.title, description: resource.description, mimeType: resource.mimeType },
-			async (uri) => resource.handler(uri, context),
+			async (uri, ctx) => {
+				assertRequiredScope(resource);
+				return resource.handler(uri, { ...context, signal: ctx.mcpReq.signal });
+			},
 		);
 	}
 
@@ -135,34 +262,30 @@ export function createMcpServer(context: {
 				description: prompt.description,
 				...(prompt.arguments ? { argsSchema: prompt.arguments } : {}),
 			},
-			async (arguments_) => prompt.handler(arguments_ as never, context),
+			async (arguments_, ctx) => {
+				assertRequiredScope(prompt);
+				return prompt.handler(arguments_ as never, { ...context, signal: ctx.mcpReq.signal });
+			},
 		);
 	}
 
-	// META-001 / PROTO-001 notes: `resources.subscribe` is deliberately NOT
-	// advertised above — subscribing records interest in the backend but
-	// nothing ever delivers a `notifications/resources/updated` push to the
-	// caller (PROTO-001 removed the in-process transport registry that used
-	// to do that; building the `2026-07-28` replacement, e.g.
-	// `subscriptions/listen`, is PROTO-002's job). The handlers are left
-	// registered rather than removed because a spec-compliant client only
-	// calls `resources/subscribe` when the capability is advertised (the SDK
-	// itself does not gate this method on any capability check), so this is
-	// dead-but-harmless surface area today and the exact seam PROTO-002 will
-	// build real delivery onto — removing it now would just be undone there.
-	if (context.subscriptionBackend) {
-		const backend = context.subscriptionBackend;
-		server.server.setRequestHandler('resources/subscribe', async (request, ctx) => {
-			const sessionIdentifier = ctx.sessionId ?? 'stateless';
-			await backend.subscribe(sessionIdentifier, request.params.uri);
-			return {};
-		});
-		server.server.setRequestHandler('resources/unsubscribe', async (request, ctx) => {
-			const sessionIdentifier = ctx.sessionId ?? 'stateless';
-			await backend.unsubscribe(sessionIdentifier, request.params.uri);
-			return {};
-		});
-	}
+	// PROTO-002 / S-11: `resources/subscribe` and `resources/unsubscribe` are
+	// always registered (spec-compliant ack) because a low-level `Server`
+	// (unlike `McpServer`'s auto-handling) is responsible for answering any
+	// method it advertises a capability for, and — on the legacy era, or
+	// when the era hasn't been told — the capability may be absent while a
+	// tolerant client still probes the method. Real delivery happens
+	// entirely on the `2026-07-28` `subscriptions/listen` stream, which the
+	// SDK's `createMcpHandler` serves itself against the per-user
+	// `ServerEventBus` `mcp-handler.ts` constructs (see
+	// `applications/web/src/lib/mcp-user-event-bus.ts`); there is no
+	// interest-tracking bookkeeping left to do here — the SDK's own listen
+	// router filters each stream to the URIs its own request opted into,
+	// and the per-user bus means one user's published update is physically
+	// unreachable from another user's stream. `resources/subscribe` itself
+	// does not need to record anything for that to be true.
+	server.server.setRequestHandler('resources/subscribe', async () => ({}));
+	server.server.setRequestHandler('resources/unsubscribe', async () => ({}));
 
 	if (enableConformanceMode) {
 		// CONTENT-001: synthetic/protocol-only fixtures (e.g. `list_audit_events`,
@@ -173,7 +296,7 @@ export function createMcpServer(context: {
 		for (const tool of conformanceOnlyTools) {
 			registerToolDefinition(tool);
 		}
-		registerConformanceFixtures(server, context.subscriptionBackend);
+		registerConformanceFixtures(server, context.publishResourceUpdate);
 	}
 
 	return server;

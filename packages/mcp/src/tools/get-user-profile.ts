@@ -17,6 +17,7 @@ export const getUserProfileTool = defineTool({
 		"Returns the authenticated user's own profile (id, email, name, avatar image, role). Use this when a request needs to know who the current user is or display their identity — it never accepts a target user and never reads anyone else's profile.",
 	inputSchema: z.object({}),
 	outputSchema: getUserProfileOutputSchema,
+	requiredScope: 'profile:read',
 	annotations: {
 		readOnlyHint: true,
 		destructiveHint: false,

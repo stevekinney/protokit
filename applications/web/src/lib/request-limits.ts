@@ -51,6 +51,14 @@ export const oauthMaxAuthorizationCodeLength = 512;
 export const oauthMaxTokenLength = 512;
 
 /**
+ * `scope` (AUTHZ-001): a space-delimited list drawn from this server's own
+ * small, fixed scope vocabulary (`@template/mcp`'s `mcpScopes`) — generous
+ * relative to the longest real value (every scope requested, space-joined)
+ * while still ruling out an attacker-supplied multi-kilobyte string.
+ */
+export const oauthMaxScopeLength = 512;
+
+/**
  * `client_id` (OAUTH-002): a DCR client ID is a `randomUUID()` (36
  * characters), but a Client ID Metadata Document client ID is the full
  * HTTPS URL the document lives at -- same shape and bound as a redirect
@@ -89,6 +97,22 @@ export const pkceCodeChallengeLength = 43;
 /** Bearer tokens are 96 hex characters (`randomBytes(48).toString('hex')`); cap generously above that. */
 export const mcpMaxBearerTokenLength = 512;
 
+// -- Per-user MCP handler cache (PROTO-002) ---------------------------------
+//
+// `mcp-handler.ts` keeps one `McpHttpHandler` (and one `subscriptions/listen`
+// event bus) per authenticated user, so a resource-update push can never
+// reach another user's stream (S-11). These bound that cache so it cannot
+// grow or stay open without limit.
+
+/** Reject a new `subscriptions/listen` stream once one user already has this many open. Small on purpose — one browser tab realistically needs one. */
+export const mcpMaxSubscriptionsPerUserHandler = 8;
+
+/** How long a user's handler may sit with no open listen stream and no in-flight request before the idle sweep evicts it. */
+export const mcpUserHandlerIdleMs = 5 * 60 * 1000;
+
+/** How often the idle sweep runs. */
+export const mcpUserHandlerSweepIntervalMs = 60 * 1000;
+
 // -- Client ID Metadata Document (CIMD) fetch limits (OAUTH-002) -----------
 //
 // The authorization server fetches these documents from a URL the *client*
@@ -111,3 +135,42 @@ export const cimdCacheTtlMs = 10 * 60 * 1000;
 
 /** Caps the in-memory cache so an attacker cycling through many distinct `client_id` URLs cannot grow it without bound. */
 export const cimdCacheMaxEntries = 1000;
+
+// -- Upstream Google identity flow (FEDAUTH-001) ----------------------------
+//
+// Google's token, userinfo, and JWKS endpoints are fixed, operator-chosen
+// HTTPS URLs (not attacker input), but every response is still bounded: a
+// slow, oversized, or wrong-content-type upstream reply must fail closed
+// rather than hang the request or buffer without limit.
+
+/** Abort the authorization-code token exchange if Google has not responded in time. */
+export const googleTokenFetchTimeoutMs = 5000;
+
+/** Abort the userinfo fetch if Google has not responded in time. */
+export const googleUserInfoFetchTimeoutMs = 5000;
+
+/** Abort the JWKS (signing key) fetch if Google has not responded in time. */
+export const googleJwksFetchTimeoutMs = 5000;
+
+/** Google's token response is a small JSON object; bound it generously above real payloads. */
+export const googleTokenMaxResponseBytes = 16 * 1024;
+
+/** Same shape as the token response. */
+export const googleUserInfoMaxResponseBytes = 16 * 1024;
+
+/** Google's JWKS document holds a handful of RSA keys; bound it well above the real size. */
+export const googleJwksMaxResponseBytes = 64 * 1024;
+
+/** How long a fetched JWKS is trusted before this server fetches it again. */
+export const googleJwksCacheTtlMs = 60 * 60 * 1000;
+
+/** RFC 7519 `exp`/`iat`/`nbf` clock-skew allowance when validating a Google ID token. */
+export const googleIdTokenClockToleranceSeconds = 30;
+
+/**
+ * How many pending `google_oauth_state_*` cookies (one per concurrent
+ * sign-in attempt/tab) this server keeps at once. Starting a new attempt
+ * beyond this cap evicts the oldest instead of growing the `Cookie` header
+ * without bound.
+ */
+export const googleOauthStateCookieMaxCount = 5;

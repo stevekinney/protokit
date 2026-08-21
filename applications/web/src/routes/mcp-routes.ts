@@ -1,7 +1,11 @@
 import { and, eq, gt, isNull } from 'drizzle-orm';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import { database, schema } from '@template/database';
-import { isLoopbackHostname, hasValidLocalhostRebindingHeaders } from '@template/mcp';
+import {
+	getSupportedScopes,
+	isLoopbackHostname,
+	hasValidLocalhostRebindingHeaders,
+} from '@template/mcp';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { hashCredential } from '@web/lib/hash-credential';
@@ -24,6 +28,25 @@ import {
 } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
 import { mcpMaxBearerTokenLength } from '@web/lib/request-limits';
+
+/**
+ * AUTHZ-001: every `WWW-Authenticate` challenge this endpoint returns
+ * carries the same RFC 6750 §3 `scope` attribute — the space-delimited set
+ * of scopes this server supports — so a caller (or a human debugging one)
+ * always knows what to ask for, regardless of which specific failure
+ * produced the `401`. Built once, here, rather than at each of this file's
+ * four challenge call sites, so they cannot drift out of sync with each
+ * other or with the identical list the OAuth metadata endpoints publish
+ * (`getSupportedScopes()`, shared with `oauth-routes.tsx`).
+ */
+function bearerChallenge(resourceMetadataUrl: string, errorCode?: string): string {
+	const parts = [
+		...(errorCode ? [`error="${errorCode}"`] : []),
+		`resource_metadata="${resourceMetadataUrl}"`,
+		`scope="${getSupportedScopes().join(' ')}"`,
+	];
+	return `Bearer ${parts.join(', ')}`;
+}
 
 async function authenticateMcpUser(context: RequestContext): Promise<Response | AuthInfo> {
 	const mcpCorsHeaders = createMcpCorsHeaders(context.request);
@@ -78,7 +101,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 			headers: {
 				...mcpCorsHeaders,
 				'MCP-Protocol-Version': mcpLatestProtocolVersion,
-				'WWW-Authenticate': `Bearer resource_metadata="${resourceMetadataUrl}"`,
+				'WWW-Authenticate': bearerChallenge(resourceMetadataUrl),
 			},
 		});
 	}
@@ -94,7 +117,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 			headers: {
 				...mcpCorsHeaders,
 				'MCP-Protocol-Version': mcpLatestProtocolVersion,
-				'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
+				'WWW-Authenticate': bearerChallenge(resourceMetadataUrl, 'invalid_token'),
 			},
 		});
 	}
@@ -122,7 +145,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 			headers: {
 				...mcpCorsHeaders,
 				'MCP-Protocol-Version': mcpLatestProtocolVersion,
-				'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
+				'WWW-Authenticate': bearerChallenge(resourceMetadataUrl, 'invalid_token'),
 			},
 		});
 	}
@@ -147,7 +170,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 			headers: {
 				...mcpCorsHeaders,
 				'MCP-Protocol-Version': mcpLatestProtocolVersion,
-				'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
+				'WWW-Authenticate': bearerChallenge(resourceMetadataUrl, 'invalid_token'),
 			},
 		});
 	}

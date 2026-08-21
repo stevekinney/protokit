@@ -170,6 +170,18 @@ export const oauthAuthorizationTransactions = pgTable('oauth_authorization_trans
 	 * code approve mints, and from there onto the issued tokens.
 	 */
 	resource: text('resource').notNull().default(''),
+	/**
+	 * AUTHZ-001: the canonical, space-delimited, sorted scope string this
+	 * consent screen actually displayed to the user -- either the client's
+	 * explicit `scope` request (narrowed to a subset of the scopes this
+	 * server supports) or, when the request named none, the full supported
+	 * set (RFC 6749 §3.3's "pre-defined default"). Copied onto the
+	 * authorization code approve mints, and from there onto the issued
+	 * tokens, so a granted scope is always traceable back to the exact
+	 * transaction a human approved -- never re-derived or trusted from a
+	 * form field.
+	 */
+	scope: text('scope').notNull().default(''),
 	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 	consumedAt: timestamp('consumed_at', { withTimezone: true }),
 	createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

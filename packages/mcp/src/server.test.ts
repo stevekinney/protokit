@@ -14,6 +14,7 @@ describe('createMcpServer', () => {
 			},
 			enableUiExtension: true,
 			enableConformanceMode: false,
+			scopes: ['profile:read'],
 		});
 		expect(server).toBeDefined();
 	});

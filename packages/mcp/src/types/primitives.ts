@@ -4,6 +4,7 @@ import type {
 	GetPromptResult,
 	ReadResourceResult,
 } from '@modelcontextprotocol/server';
+import type { McpScope } from '../scopes.js';
 
 export type McpUserProfile = {
 	id: string;
@@ -16,6 +17,23 @@ export type McpUserProfile = {
 export type McpContext = {
 	userId: string;
 	user: McpUserProfile;
+	/**
+	 * PROTO-002: the SDK's own per-request `AbortSignal`
+	 * (`ctx.mcpReq.signal`), threaded through so a handler that awaits a
+	 * cancellable operation (e.g. `runWithStandardizedTimeout` from
+	 * `long-running-operation-support.ts`) can pass it straight through and
+	 * genuinely stop work when the caller disconnects or sends
+	 * `notifications/cancelled` — not just abandon a wrapper promise.
+	 */
+	signal: AbortSignal;
+	/**
+	 * PROTO-002 / S-11: publishes a `notifications/resources/updated` event
+	 * for `uri`, scoped to only the authenticated user this context was
+	 * built for (see `applications/web/src/lib/mcp-user-event-bus.ts`).
+	 * Undefined when no event bus is wired for this request (e.g. a
+	 * standalone test context) — nothing to publish to in that case.
+	 */
+	publishResourceUpdate?: (uri: string) => Promise<void>;
 };
 
 /**
@@ -60,6 +78,16 @@ export type McpToolDefinition<
 	inputSchema: InputSchema;
 	outputSchema?: OutputSchema;
 	annotations: McpToolAnnotations;
+	/**
+	 * AUTHZ-001: the single OAuth scope a caller's access token must carry to
+	 * invoke this tool, checked before `handler` runs (never before —
+	 * `tools/list` is unaffected, so a client can still see a tool it does
+	 * not currently have the scope to call). Required, not optional: an
+	 * operation with no meaningfully distinct access requirement still
+	 * declares the scope that best describes what it does, rather than the
+	 * type system silently allowing "no scope check" to mean "public."
+	 */
+	requiredScope: McpScope;
 	/** MCP Apps UI metadata (`_meta.ui.resourceUri`, `_meta.ui.visibility`). See the package `CLAUDE.md`. */
 	_meta?: Record<string, unknown>;
 	// Method shorthand (not an arrow-typed property) is deliberate: it keeps
@@ -104,6 +132,8 @@ export type McpResourceDefinition = {
 	uri: string;
 	description: string;
 	mimeType: string;
+	/** AUTHZ-001: see `McpToolDefinition.requiredScope` — same contract, checked before `resources/read` reaches `handler`. */
+	requiredScope: McpScope;
 	handler(uri: URL, context: McpContext): Promise<ReadResourceResult>;
 };
 
@@ -117,6 +147,8 @@ export type McpPromptDefinition<
 	// out `arguments: undefined` — an omitted key here reads as "forgot
 	// to define the schema," not "intentionally none."
 	arguments: Arguments;
+	/** AUTHZ-001: see `McpToolDefinition.requiredScope` — same contract, checked before `prompts/get` reaches `handler`. */
+	requiredScope: McpScope;
 	handler(
 		arguments_: Arguments extends Record<string, z.ZodType>
 			? { [Key in keyof Arguments]: z.infer<Arguments[Key]> }

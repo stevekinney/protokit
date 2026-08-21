@@ -45,4 +45,12 @@ describe('isValidRedirectUri', () => {
 	it('rejects a password-only userinfo form', () => {
 		expect(isValidRedirectUri('https://:secret@evil.com/callback')).toBe(false);
 	});
+
+	it('rejects a wildcard host', () => {
+		expect(isValidRedirectUri('https://*.example.com/callback')).toBe(false);
+	});
+
+	it('rejects a wildcard embedded in a subdomain label', () => {
+		expect(isValidRedirectUri('https://evil.*.example.com/callback')).toBe(false);
+	});
 });

@@ -77,6 +77,10 @@ mock.module('@web/lib/base-url', () => ({
 mock.module('@template/mcp', () => ({
 	isLoopbackHostname: () => false,
 	hasValidLocalhostRebindingHeaders: () => true,
+	// AUTHZ-001: real value, not a stub — this is the same production-derived
+	// scope list `oauth-routes.tsx`'s metadata endpoints publish, and this
+	// suite's `WWW-Authenticate` assertions check against it by name.
+	getSupportedScopes: () => ['profile:read', 'prompts:read'],
 }));
 
 let mockTokenResult: unknown[] = [];
@@ -175,5 +179,15 @@ describe('handleMcpRequestWithAuthentication', () => {
 		const response = await handleMcpRequestWithAuthentication(context);
 		expect(response.status).toBe(401);
 		expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
+	});
+
+	// AUTHZ-001: the challenge previously carried no `scope` attribute at all
+	// (there was no scope concept yet to back one). Every 401 challenge this
+	// endpoint returns now names the actual supported scope set.
+	it('carries a scope attribute naming the supported scopes on every 401 challenge', async () => {
+		const context = createContext();
+		const response = await handleMcpRequestWithAuthentication(context);
+		expect(response.status).toBe(401);
+		expect(response.headers.get('www-authenticate')).toContain('scope="profile:read prompts:read"');
 	});
 });

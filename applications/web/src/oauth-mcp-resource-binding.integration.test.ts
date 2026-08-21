@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
@@ -48,12 +49,8 @@ try {
 // run that already spent part of another file's budget on the same
 // network identity can't leave this file too little headroom.
 if (redisAvailable) {
-	const { getRedisClient } = await import('@web/lib/redis-client');
-	const redisClient = await getRedisClient();
-	const staleRateLimitKeys = await redisClient.keys('rate_limit:*');
-	if (staleRateLimitKeys.length > 0) {
-		await redisClient.del(staleRateLimitKeys);
-	}
+	const { resetRateLimitState } = await import('@web/test-support/reset-rate-limit-state');
+	await resetRateLimitState();
 }
 
 const describeWithRedis = redisAvailable
@@ -96,6 +93,12 @@ const testRunId = randomUUID();
 const userId = randomUUID();
 const clientId = `resource-binding-interop-test-${testRunId}`;
 const clientSecret = 'test-client-secret';
+// OAUTH-004: a second, otherwise-identical client, used only to prove an
+// authorization code is client-bound — that a code issued to `clientId`
+// cannot be redeemed by presenting a different, equally valid client's
+// credentials.
+const otherClientId = `resource-binding-interop-test-other-${testRunId}`;
+const otherClientSecret = 'test-other-client-secret';
 
 beforeAll(async () => {
 	await database.insert(schema.users).values({
@@ -116,18 +119,30 @@ beforeAll(async () => {
 		grantTypes: ['authorization_code', 'refresh_token'],
 		responseTypes: ['code'],
 	});
+	await database.insert(schema.oauthClients).values({
+		clientId: otherClientId,
+		clientSecret: hashCredential(otherClientSecret),
+		clientName: 'Resource Binding Interop Test Other Client',
+		clientType: 'confidential',
+		tokenEndpointAuthMethod: 'client_secret_post',
+		redirectUris: ['https://example.com/callback'],
+		grantTypes: ['authorization_code', 'refresh_token'],
+		responseTypes: ['code'],
+	});
 });
 
 afterAll(async () => {
-	await database.delete(schema.oauthTokens).where(eq(schema.oauthTokens.clientId, clientId));
-	await database
-		.delete(schema.oauthRefreshTokens)
-		.where(eq(schema.oauthRefreshTokens.clientId, clientId));
-	await database.delete(schema.oauthCodes).where(eq(schema.oauthCodes.clientId, clientId));
-	await database
-		.delete(schema.oauthAuthorizationTransactions)
-		.where(eq(schema.oauthAuthorizationTransactions.clientId, clientId));
-	await database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId));
+	for (const id of [clientId, otherClientId]) {
+		await database.delete(schema.oauthTokens).where(eq(schema.oauthTokens.clientId, id));
+		await database
+			.delete(schema.oauthRefreshTokens)
+			.where(eq(schema.oauthRefreshTokens.clientId, id));
+		await database.delete(schema.oauthCodes).where(eq(schema.oauthCodes.clientId, id));
+		await database
+			.delete(schema.oauthAuthorizationTransactions)
+			.where(eq(schema.oauthAuthorizationTransactions.clientId, id));
+		await database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, id));
+	}
 	await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
 	await database.delete(schema.users).where(eq(schema.users.id, userId));
 });
@@ -141,11 +156,12 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		return session.cookieHeaderValue.split(';')[0]!;
 	}
 
-	async function obtainAccessToken(port: number, cookie: string): Promise<string> {
+	async function obtainAccessToken(port: number, cookie: string, scope?: string): Promise<string> {
 		const resource = `http://127.0.0.1:${port}/mcp`;
+		const scopeParameter = scope ? `&scope=${encodeURIComponent(scope)}` : '';
 
 		const consentResponse = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}${scopeParameter}`,
 			{ headers: { cookie } },
 		);
 		expect(consentResponse.status).toBe(200);
@@ -257,6 +273,76 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		expect(tokenBody.error).toBe('invalid_target');
 	});
 
+	it('OAUTH-004: rejects a token request presenting a code issued to a different client (client-bound)', async () => {
+		const port = startServer();
+		const cookie = await signIn(port);
+		const resource = `http://127.0.0.1:${port}/mcp`;
+
+		const consentResponse = await fetch(
+			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+			{ headers: { cookie } },
+		);
+		const html = await consentResponse.text();
+		const transactionId = extractHiddenInputValue(html, 'transaction_id');
+		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
+
+		const approveResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+			method: 'POST',
+			redirect: 'manual',
+			headers: {
+				cookie,
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'same-origin',
+			},
+			body: new URLSearchParams({
+				transaction_id: transactionId,
+				csrf_token: csrfToken,
+			}).toString(),
+		});
+		const location = new URL(approveResponse.headers.get('location')!);
+		const code = location.searchParams.get('code')!;
+
+		// The code above was issued to `clientId`. `otherClientId` is a real,
+		// equally valid, registered client with its own credentials — not an
+		// unregistered or malformed one — presenting the same code, redirect
+		// URI, and (unknowable, since PKCE binds the code to whoever
+		// requested it) correct code_verifier for `clientId`'s own flow.
+		const tokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				redirect_uri: 'https://example.com/callback',
+				client_id: otherClientId,
+				client_secret: otherClientSecret,
+				code_verifier: codeVerifier,
+				resource,
+			}).toString(),
+		});
+		expect(tokenResponse.status).toBe(400);
+		const tokenBody = (await tokenResponse.json()) as { error: string };
+		expect(tokenBody.error).toBe('invalid_grant');
+
+		// The code must still be redeemable by its actual, rightful owner —
+		// proving the rejection above was really client-binding and not a
+		// side effect that also burned or corrupted the code.
+		const rightfulTokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code,
+				redirect_uri: 'https://example.com/callback',
+				client_id: clientId,
+				client_secret: clientSecret,
+				code_verifier: codeVerifier,
+				resource,
+			}).toString(),
+		});
+		expect(rightfulTokenResponse.status).toBe(200);
+	});
+
 	it('a token minted through the real authorize/token flow is accepted at /mcp', async () => {
 		const port = startServer();
 		const cookie = await signIn(port);
@@ -301,5 +387,44 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		});
 		expect(mcpResponse.status).toBe(401);
 		expect(mcpResponse.headers.get('www-authenticate')).toContain('error="invalid_token"');
+	});
+
+	// INTEROP-001: `AUTHZ-001`'s scope enforcement is proven in-process against
+	// a real `McpServer` (`packages/mcp/src/scope-enforcement.test.ts`), but no
+	// existing test drove a real, narrowed-scope OAuth grant through the real
+	// authorize -> approve -> token chain and hit the real `/mcp` HTTP boundary
+	// with it. This is that gap — a token that never carries `profile:read`
+	// still authenticates (it is a perfectly valid token, just under-scoped for
+	// this particular tool), and the tool call itself is refused without ever
+	// calling `get_user_profile`'s own handler.
+	it('a real narrowed-scope token authenticates at /mcp but is refused insufficient_scope for a tool outside its grant', async () => {
+		const port = startServer();
+		const cookie = await signIn(port);
+		const accessToken = await obtainAccessToken(port, cookie, 'prompts:read');
+
+		const client = new Client({ name: 'scope-interop-test-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+			fetch: (input, init) => {
+				// Build from `new Headers(...)` rather than spreading. The SDK passes a
+				// `Headers` instance, and object-spreading one yields `{}` — which
+				// silently dropped `Content-Type` and made the server answer 415 under
+				// SEC-004's exact-content-type check, looking like a scope failure.
+				const headers = new Headers(init?.headers);
+				headers.set('authorization', `Bearer ${accessToken}`);
+				return fetch(input, { ...init, headers });
+			},
+		});
+
+		await client.connect(transport);
+
+		const tools = await client.listTools();
+		expect(tools.tools.some((tool) => tool.name === 'get_user_profile')).toBe(true);
+
+		const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
+		expect(result.isError).toBe(true);
+		expect(result._meta?.['mcp/www_authenticate']).toContain('error="insufficient_scope"');
+		expect(result._meta?.['mcp/www_authenticate']).toContain('scope="profile:read"');
+
+		await client.close();
 	});
 });

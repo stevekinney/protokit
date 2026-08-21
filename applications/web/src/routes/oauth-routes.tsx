@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { database, schema } from '@template/database';
+import { getSupportedScopes, isMcpScope, mcpScopeDescriptions } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
@@ -36,6 +37,7 @@ import {
 	recordFailedAuthentication,
 } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
+import { redirectUriMatchesRegistered } from '@web/lib/redirect-uri-matching';
 import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';
 import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
 import {
@@ -45,6 +47,13 @@ import {
 } from '@web/lib/bounded-request-body';
 import { isExactContentType } from '@web/lib/exact-content-type';
 import { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from '@web/lib/pkce-validation';
+import {
+	canonicalizeScopes,
+	isScopeSubsetOf,
+	parseRefreshScopeRequest,
+	parseRequestedScope,
+	splitScopeString,
+} from '@web/lib/oauth-scope';
 import { findDuplicateParameterName } from '@web/lib/reject-duplicate-parameters';
 import {
 	oauthAuthorizeApproveMaxBodyBytes,
@@ -57,6 +66,7 @@ import {
 	oauthMaxRedirectUriLength,
 	oauthMaxResourceLength,
 	oauthMaxResponseTypeCount,
+	oauthMaxScopeLength,
 	oauthMaxStateLength,
 	oauthMaxTokenLength,
 	oauthRegisterMaxBodyBytes,
@@ -172,6 +182,7 @@ const tokenEndpointParameterNames = [
 	'token',
 	'token_type_hint',
 	'resource',
+	'scope',
 ] as const;
 
 class UnsupportedContentTypeError extends Error {
@@ -302,6 +313,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		'code_challenge_method',
 		'state',
 		'resource',
+		'scope',
 	] as const;
 	const duplicateParameterName = findDuplicateParameterName(
 		context.requestUrl.searchParams,
@@ -327,6 +339,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	const codeChallengeMethod = context.requestUrl.searchParams.get('code_challenge_method');
 	const state = context.requestUrl.searchParams.get('state') || '';
 	const resource = context.requestUrl.searchParams.get('resource');
+	const rawScope = context.requestUrl.searchParams.get('scope');
 
 	if (!clientId || !redirectUri || responseType !== 'code' || !codeChallenge) {
 		return createStaticHtmlResponse({
@@ -365,7 +378,8 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		clientId.length > oauthMaxClientIdLength ||
 		redirectUri.length > oauthMaxRedirectUriLength ||
 		state.length > oauthMaxStateLength ||
-		resource.length > oauthMaxResourceLength
+		resource.length > oauthMaxResourceLength ||
+		(rawScope && rawScope.length > oauthMaxScopeLength)
 	) {
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
@@ -373,6 +387,26 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
 		});
 	}
+
+	// AUTHZ-001 / RFC 6749 §3.3: an unrecognized scope token is rejected
+	// outright, before any client lookup or transaction is created — the
+	// same fail-fast placement as the resource check above. A request that
+	// names no `scope` at all gets this server's pre-defined default (every
+	// scope it supports); see `parseRequestedScope`'s own comment for why.
+	const scopeRequest = parseRequestedScope(rawScope);
+	if (!scopeRequest.ok) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: (
+				<OauthAuthorizePage
+					mode="error"
+					error={`Unsupported scope: ${scopeRequest.unknownScopes.join(', ')}.`}
+				/>
+			),
+		});
+	}
+	const grantedScope = canonicalizeScopes(scopeRequest.scopes);
 
 	if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
 		return createStaticHtmlResponse({
@@ -458,7 +492,17 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
-	if (client.redirectUris.length === 0 || !client.redirectUris.includes(redirectUri)) {
+	// OAUTH-004 / RFC 8252 §7.3: exact string match for every redirect URI
+	// except a registered loopback one, where the port is deliberately
+	// allowed to differ from whatever was registered — see
+	// `redirect-uri-matching.ts`. `isValidRedirectUri` is passed in (not
+	// imported by the matcher) so a request carrying a fragment or
+	// embedded userinfo is rejected before the port-flexible comparison
+	// ever runs.
+	if (
+		client.redirectUris.length === 0 ||
+		!redirectUriMatchesRegistered(redirectUri, client.redirectUris, isValidRedirectUri)
+	) {
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
@@ -478,6 +522,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		state: state || null,
 		issuer: getBaseUrl(context.request),
 		resource,
+		scope: grantedScope,
 	});
 
 	// Defense in depth against a client name registered before this check
@@ -498,6 +543,10 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 				transactionId={transaction.transactionId}
 				csrfToken={transaction.csrfToken}
 				user={context.user}
+				scopes={splitScopeString(grantedScope).map((scope) => ({
+					scope,
+					description: isMcpScope(scope) ? mcpScopeDescriptions[scope] : scope,
+				}))}
 			/>
 		),
 	});
@@ -601,6 +650,10 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 		codeChallengeMethod: transaction.codeChallengeMethod,
 		state: transaction.state,
 		resource: transaction.resource,
+		// AUTHZ-001: the exact scope the consent screen displayed and the
+		// user approved — never re-derived from the form, only ever carried
+		// forward from the transaction row `handleOauthAuthorizeGet` created.
+		scope: transaction.scope,
 		expiresAt: new Date(Date.now() + 10 * 60 * 1000),
 	});
 
@@ -609,6 +662,12 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 	if (transaction.state) {
 		redirectUrl.searchParams.set('state', transaction.state);
 	}
+	// OAUTH-004 / RFC 9207: the issuer identifier this authorization was
+	// issued under, bound at authorize time (`transaction.issuer`), never
+	// re-derived from the current request — a client validates this
+	// against the issuer it expects before redeeming the code, which is
+	// exactly the mix-up attack RFC 9207 exists to close.
+	redirectUrl.searchParams.set('iss', transaction.issuer);
 
 	return redirectResponse(redirectUrl.toString(), 302);
 }
@@ -705,6 +764,9 @@ export async function handleOauthAuthorizeDeny(context: RequestContext): Promise
 	if (transaction.state) {
 		redirectUrl.searchParams.set('state', transaction.state);
 	}
+	// RFC 9207 §2.4 covers error responses too, not only successful ones —
+	// see the identical comment on the approve handler above.
+	redirectUrl.searchParams.set('iss', transaction.issuer);
 
 	return redirectResponse(redirectUrl.toString(), 302);
 }
@@ -1080,7 +1142,7 @@ async function handleOauthTokenRefreshGrant(
 		...oauthCorsHeaders,
 	};
 
-	const { refresh_token, client_id, client_secret, resource } = body;
+	const { refresh_token, client_id, client_secret, resource, scope: rawRefreshScope } = body;
 	if (!refresh_token) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Missing refresh_token parameter' },
@@ -1103,7 +1165,8 @@ async function handleOauthTokenRefreshGrant(
 	if (
 		refresh_token.length > oauthMaxTokenLength ||
 		client_id.length > oauthMaxClientIdLength ||
-		resource.length > oauthMaxResourceLength
+		resource.length > oauthMaxResourceLength ||
+		(rawRefreshScope !== undefined && rawRefreshScope.length > oauthMaxScopeLength)
 	) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'A parameter exceeded its maximum length' },
@@ -1119,6 +1182,23 @@ async function handleOauthTokenRefreshGrant(
 			{
 				error: 'invalid_target',
 				error_description: "resource does not match this server's MCP resource URL",
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	// AUTHZ-001 / RFC 6749 §6: an unrecognized scope token in an explicit
+	// refresh-time `scope` request is rejected before any database work —
+	// same fail-fast placement as the resource check above. Whether the
+	// requested set is actually a *subset* of what this refresh token was
+	// originally granted can only be checked once the token's own stored
+	// scope is known, below.
+	const refreshScopeRequest = parseRefreshScopeRequest(rawRefreshScope);
+	if (!refreshScopeRequest.ok) {
+		return jsonResponse(
+			{
+				error: 'invalid_scope',
+				error_description: `Unsupported scope: ${refreshScopeRequest.unknownScopes.join(', ')}`,
 			},
 			{ status: 400, headers: tokenResponseHeaders },
 		);
@@ -1214,6 +1294,36 @@ async function handleOauthTokenRefreshGrant(
 		);
 	}
 
+	// AUTHZ-001 / RFC 6749 §6: "the requested scope MUST NOT include any
+	// scope not originally granted." An explicit refresh-time `scope`
+	// request that is not a subset of what this refresh token actually
+	// carries is rejected here, before the old access token is revoked and
+	// before any new token pair is minted -- the just-rotated refresh token
+	// row above is already consumed (this codebase's atomic
+	// revoke-then-check rotation pattern; see OAUTH-003's comment on the
+	// predicate above), but nothing beyond that single-use token is spent
+	// on a request this server is about to refuse.
+	const grantedRefreshScopes = splitScopeString(revokedRefreshToken.scope || '');
+	if (
+		refreshScopeRequest.scope !== undefined &&
+		!isScopeSubsetOf(refreshScopeRequest.scope, grantedRefreshScopes)
+	) {
+		return jsonResponse(
+			{
+				error: 'invalid_scope',
+				error_description:
+					'Requested scope exceeds the scope originally granted to this refresh token.',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+	// Omitted `scope` carries the stored grant forward unchanged; an
+	// explicit (already-validated-as-a-subset) request narrows it.
+	const effectiveRefreshScope =
+		refreshScopeRequest.scope !== undefined
+			? canonicalizeScopes(refreshScopeRequest.scope)
+			: revokedRefreshToken.scope || '';
+
 	await database
 		.update(schema.oauthTokens)
 		.set({ revokedAt: new Date() })
@@ -1229,7 +1339,7 @@ async function handleOauthTokenRefreshGrant(
 		accessToken: tokens.accessTokenHash,
 		clientId: revokedRefreshToken.clientId,
 		userId: revokedRefreshToken.userId,
-		scope: revokedRefreshToken.scope || '',
+		scope: effectiveRefreshScope,
 		resource: revokedRefreshToken.resource,
 		expiresAt: tokens.accessTokenExpiresAt,
 	});
@@ -1237,7 +1347,7 @@ async function handleOauthTokenRefreshGrant(
 		refreshToken: tokens.refreshTokenHash,
 		clientId: revokedRefreshToken.clientId,
 		userId: revokedRefreshToken.userId,
-		scope: revokedRefreshToken.scope || '',
+		scope: effectiveRefreshScope,
 		resource: revokedRefreshToken.resource,
 		accessTokenHash: tokens.accessTokenHash,
 		// OAUTH-003: rotation carries the family forward unchanged, so every
@@ -1253,7 +1363,7 @@ async function handleOauthTokenRefreshGrant(
 			token_type: 'Bearer',
 			expires_in: tokens.tokenTimeToLiveSeconds,
 			refresh_token: tokens.refreshToken,
-			scope: revokedRefreshToken.scope || '',
+			scope: effectiveRefreshScope,
 		},
 		{ headers: tokenResponseHeaders },
 	);
@@ -1493,10 +1603,22 @@ export async function handleOauthAuthorizationMetadataGet(
 			grant_types_supported: ['authorization_code', 'refresh_token'],
 			code_challenge_methods_supported: ['S256'],
 			token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+			// AUTHZ-001: the exact same list `handleOauthProtectedResourceMetadataGet`
+			// and `handleOauthProtectedResourceMcpMetadataGet` below publish —
+			// both derived from `getSupportedScopes()`, never hand-duplicated,
+			// so "authorization server and protected-resource metadata publish
+			// the same supported scopes" is mechanically true rather than
+			// something that can drift.
+			scopes_supported: getSupportedScopes(),
 			// OAUTH-002 / MCP 2026-07-28: this is the exact key clients check
 			// per the spec's "Advertising CIMD Support" section before using an
 			// HTTPS URL as `client_id` instead of falling back to DCR.
 			client_id_metadata_document_supported: true,
+			// OAUTH-004 / RFC 9207: this server includes `iss` on every
+			// authorization response (see `handleOauthAuthorizeApprove` and
+			// `handleOauthAuthorizeDeny`), so it advertises the fact per the
+			// RFC's own registered metadata field.
+			authorization_response_iss_parameter_supported: true,
 			extensions: {
 				...(environment.MCP_ENABLE_UI_EXTENSION ? { [mcpUiExtensionIdentifier]: {} } : {}),
 			},
@@ -1513,6 +1635,7 @@ export async function handleOauthProtectedResourceMetadataGet(
 		{
 			resource: getMcpResourceUrl(context.request),
 			authorization_servers: [baseUrl],
+			scopes_supported: getSupportedScopes(),
 		},
 		{ headers: oauthCorsHeaders },
 	);
@@ -1528,6 +1651,7 @@ export async function handleOauthProtectedResourceMcpMetadataGet(
 			authorization_servers: [baseUrl],
 			bearer_methods_supported: ['header'],
 			mcp_protocol_version: mcpLatestProtocolVersion,
+			scopes_supported: getSupportedScopes(),
 		},
 		{ headers: oauthCorsHeaders },
 	);

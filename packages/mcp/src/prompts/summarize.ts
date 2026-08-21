@@ -10,6 +10,7 @@ export const summarizePrompt = definePrompt({
 	arguments: {
 		topic: z.string().describe('The topic to summarize'),
 	},
+	requiredScope: 'prompts:read',
 	handler: async (arguments_, context) => {
 		// S-14 (owned by OBS-001, not touched here): this logs raw user-supplied
 		// topic content with no redaction policy.

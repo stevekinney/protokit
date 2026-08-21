@@ -18,7 +18,10 @@ mock.module('@web/lib/google-authentication', () => ({
 			status: 302,
 			headers: { Location: 'https://accounts.google.com/o/oauth2/v2/auth' },
 		}),
-	exchangeGoogleCodeForAccessToken: async () => 'mock-access-token',
+	exchangeGoogleCodeForTokens: async () => ({
+		accessToken: 'mock-access-token',
+		idToken: 'mock-id-token',
+	}),
 	getGoogleUserProfile: async () => ({
 		sub: 'google-sub-123',
 		email: 'alice@example.com',
@@ -26,14 +29,34 @@ mock.module('@web/lib/google-authentication', () => ({
 		name: 'Alice',
 		picture: 'https://example.com/photo.jpg',
 	}),
-	validateGoogleCallbackState: (request: Request) => {
+	resolveGoogleOauthCallbackCookieName: (request: Request) => {
+		const url = new URL(request.url);
+		const state = url.searchParams.get('state');
+		return state ? `google_oauth_state_${state}` : null;
+	},
+	validateGoogleCallbackState: async (request: Request) => {
 		const url = new URL(request.url);
 		if (!url.searchParams.get('state')) {
 			return { valid: false, error: 'Missing OAuth state.' };
 		}
-		return { valid: true, callbackPath: '/' };
+		return {
+			valid: true,
+			callbackPath: '/',
+			codeVerifier: 'mock-code-verifier-mock-code-verifier-mock-1',
+			nonce: 'mock-nonce',
+		};
 	},
-	clearGoogleStateCookie: () => 'google_oauth_state=; Max-Age=0',
+	clearGoogleStateCookie: (_request: Request, cookieName: string) => `${cookieName}=; Max-Age=0`,
+}));
+
+mock.module('@web/lib/google-id-token', () => ({
+	validateGoogleIdToken: async () => ({
+		sub: 'google-sub-123',
+		email: 'alice@example.com',
+		email_verified: true,
+		name: 'Alice',
+		picture: 'https://example.com/photo.jpg',
+	}),
 }));
 
 mock.module('@web/lib/request-rate-limiter', () => ({
@@ -76,12 +99,9 @@ mock.module('@template/database', () => ({
 				where: async () => {},
 			}),
 		}),
-		transaction: async (callback: (tx: unknown) => Promise<void>) => {
-			const tx = {
-				insert: () => ({ values: async () => {} }),
-			};
-			await callback(tx);
-		},
+		delete: () => ({
+			where: async () => {},
+		}),
 	},
 	schema: {
 		users: { id: 'id', email: 'email' },

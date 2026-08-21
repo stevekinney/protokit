@@ -45,6 +45,7 @@ export const listAuditEventsTool = defineTool({
 			.describe('Number of events to return per page (1-25, default 10).'),
 	}),
 	outputSchema: listAuditEventsOutputSchema,
+	requiredScope: 'audit:read',
 	annotations: {
 		readOnlyHint: true,
 		destructiveHint: false,

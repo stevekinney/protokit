@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { createMcpServer } from './server.js';
+import { getSupportedScopes } from './supported-scopes.js';
 import type { McpUserProfile } from './types/primitives.js';
 
 function conformanceUser(userId: string): McpUserProfile {
@@ -23,6 +24,7 @@ const handler = createMcpHandler(
 			user: conformanceUser(userId),
 			enableUiExtension: false,
 			enableConformanceMode: false,
+			scopes: getSupportedScopes(),
 		});
 	},
 	{ legacy: 'stateless' },
@@ -60,5 +62,45 @@ describe('MCP 2025-11-25 (legacy) conformance', () => {
 		expect(Boolean(result.isError)).toBe(false);
 
 		await client.close();
+	});
+
+	it('carries no resultType/ttlMs/cacheScope wire fields on a legacy result (those are modern-only, SEP-2549)', async () => {
+		const response = await fetchThroughHandler('http://conformance.local/mcp', {
+			method: 'POST',
+			headers: {
+				accept: 'application/json, text/event-stream',
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+		});
+
+		expect(response.status).toBe(200);
+		const rawText = await response.text();
+		// The legacy stateless fallback answers over SSE (`event:
+		// message\ndata: {...}`) when the client accepts `text/event-stream`
+		// too, rather than plain JSON — unwrap the `data:` payload either way.
+		const jsonText = rawText.trimStart().startsWith('event:')
+			? (rawText.match(/^data: (.+)$/m)?.[1] ?? '{}')
+			: rawText;
+		const body = JSON.parse(jsonText) as {
+			result?: { resultType?: unknown; ttlMs?: unknown; cacheScope?: unknown };
+		};
+		expect(body.result?.resultType).toBeUndefined();
+		expect(body.result?.ttlMs).toBeUndefined();
+		expect(body.result?.cacheScope).toBeUndefined();
+	});
+
+	it("answers a bare notification POST with 202 and an empty body (the legacy lane genuinely, unlike the modern-conformance suite's equivalent name)", async () => {
+		const response = await fetchThroughHandler('http://conformance.local/mcp', {
+			method: 'POST',
+			headers: {
+				accept: 'application/json, text/event-stream',
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+		});
+
+		expect(response.status).toBe(202);
+		expect(await response.text()).toBe('');
 	});
 });

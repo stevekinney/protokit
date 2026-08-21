@@ -1,6 +1,12 @@
 import type { JSX } from 'react';
 import type { ApplicationUser } from '@web/lib/session-authentication';
 
+/** AUTHZ-001: one requested scope, resolved to a human-readable description, for display on the consent screen. */
+export type OAuthAuthorizePageScope = {
+	scope: string;
+	description: string;
+};
+
 type OAuthAuthorizePageInput =
 	| {
 			mode: 'error';
@@ -13,6 +19,8 @@ type OAuthAuthorizePageInput =
 			transactionId: string;
 			csrfToken: string;
 			user: ApplicationUser;
+			/** AUTHZ-001: the exact scopes this authorization will grant if approved — never more than what is shown here. */
+			scopes: OAuthAuthorizePageScope[];
 	  };
 
 export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element {
@@ -53,6 +61,22 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 					You will be redirected to <strong className="text-slate-700">{redirectHost}</strong> after
 					you decide.
 				</p>
+
+				<div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-6">
+					<p className="text-sm font-semibold text-slate-700">
+						This will allow {input.clientName} to:
+					</p>
+					<ul className="mt-3 space-y-2">
+						{input.scopes.map((scope) => (
+							<li key={scope.scope} className="flex items-start gap-2 text-sm text-slate-600">
+								<span aria-hidden="true" className="mt-0.5 text-indigo-600">
+									&bull;
+								</span>
+								<span>{scope.description}</span>
+							</li>
+						))}
+					</ul>
+				</div>
 
 				<div className="mt-8 flex flex-wrap items-center gap-4">
 					<form method="POST" action="/oauth/authorize/approve" className="inline">

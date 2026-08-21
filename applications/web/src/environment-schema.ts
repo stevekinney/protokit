@@ -56,6 +56,10 @@ export const webServerEnvironmentSchema = {
 	RATE_LIMIT_FAILED_AUTH_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
 	RATE_LIMIT_SESSION_MAX: z.coerce.number().int().positive().default(10),
 	RATE_LIMIT_SESSION_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+	// Optional prefix for rate-limit Redis keys. Empty in every real deployment;
+	// set per process by the test suite so concurrent runs do not share one
+	// budget. See `lib/request-rate-limiter.ts`.
+	RATE_LIMIT_KEY_NAMESPACE: z.string().optional(),
 	TRUSTED_PROXY_CIDRS: z.string().min(1).optional(),
 	TRUSTED_PROXY_HEADER: z.enum(['x-forwarded-for', 'forwarded', 'cf-connecting-ip']).optional(),
 	TRUSTED_PROXY_HOP_COUNT: z.coerce.number().int().positive().optional().default(1),

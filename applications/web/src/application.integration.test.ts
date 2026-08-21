@@ -28,12 +28,8 @@ try {
 // expects success into a stale 429. See `oauth-routes.integration.test.tsx`
 // for the sibling copy of this reset.
 if (redisAvailable) {
-	const { getRedisClient } = await import('@web/lib/redis-client');
-	const redisClient = await getRedisClient();
-	const staleRateLimitKeys = await redisClient.keys('rate_limit:*');
-	if (staleRateLimitKeys.length > 0) {
-		await redisClient.del(staleRateLimitKeys);
-	}
+	const { resetRateLimitState } = await import('@web/test-support/reset-rate-limit-state');
+	await resetRateLimitState();
 }
 
 const describeWithRedis = redisAvailable
@@ -82,7 +78,13 @@ describe('application request routing', () => {
 
 			expect(response.status).toBe(302);
 			expect(response.headers.get('location')).toContain('accounts.google.com/o/oauth2/v2/auth');
-			expect(response.headers.get('set-cookie')).toContain('google_oauth_state=');
+
+			// FEDAUTH-001 gives each sign-in attempt its own state cookie,
+			// `google_oauth_state_<suffix>`, so concurrent attempts in one browser
+			// cannot overwrite each other's state. Assert the per-attempt shape
+			// rather than a bare prefix — matching `google_oauth_state_` alone would
+			// still pass if the suffix were dropped and the fixed name came back.
+			expect(response.headers.get('set-cookie')).toMatch(/google_oauth_state_[0-9a-f]+=/);
 		});
 	});
 

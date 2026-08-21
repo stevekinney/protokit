@@ -6,6 +6,7 @@ export const userProfileResource: McpResourceDefinition = {
 	uri: 'user://profile',
 	description: "Exposes the authenticated user's own profile information as a JSON resource.",
 	mimeType: 'application/json',
+	requiredScope: 'profile:read',
 	handler: async (uri, context) => {
 		return {
 			contents: [

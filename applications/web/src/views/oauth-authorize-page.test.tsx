@@ -38,6 +38,7 @@ describe('OauthAuthorizePage', () => {
 				image: null,
 				role: 'user',
 			},
+			scopes: [{ scope: 'profile:read', description: 'Read your profile information.' }],
 		};
 
 		it('renders the client name', () => {
@@ -81,6 +82,31 @@ describe('OauthAuthorizePage', () => {
 			const csrfTokenCount = markup.split('value="csrf-token-xyz"').length - 1;
 			expect(transactionIdCount).toBe(2);
 			expect(csrfTokenCount).toBe(2);
+		});
+
+		it('displays every requested scope description exactly once', () => {
+			const markup = renderToStaticMarkup(
+				<OauthAuthorizePage
+					{...formInput}
+					scopes={[
+						{ scope: 'profile:read', description: 'Read your profile information.' },
+						{ scope: 'prompts:read', description: 'Use this server’s prompt templates.' },
+					]}
+				/>,
+			);
+			expect(markup).toContain('Read your profile information.');
+			expect(markup).toContain('Use this server’s prompt templates.');
+		});
+
+		it('never displays a scope that was not passed in', () => {
+			const markup = renderToStaticMarkup(
+				<OauthAuthorizePage
+					{...formInput}
+					scopes={[{ scope: 'profile:read', description: 'Read your profile information.' }]}
+				/>,
+			);
+			expect(markup).not.toContain('audit:read');
+			expect(markup).not.toContain('prompts:read');
 		});
 	});
 });

@@ -1,6 +1,7 @@
 declare module 'bun:test' {
 	type AsyncExpectation = {
 		toThrow: (expected?: unknown) => Promise<void>;
+		toBeDefined: () => Promise<void>;
 	};
 
 	type Expectation = {
@@ -8,8 +9,10 @@ declare module 'bun:test' {
 		toEqual: (expected: unknown) => void;
 		toMatchObject: (expected: Record<string, unknown>) => void;
 		toContain: (expected: unknown) => void;
+		toMatch: (expected: RegExp | string) => void;
 		toBeGreaterThan: (expected: number) => void;
 		toBeGreaterThanOrEqual: (expected: number) => void;
+		toBeLessThan: (expected: number) => void;
 		toBeNull: () => void;
 		toBeUndefined: () => void;
 		toBeDefined: () => void;
@@ -23,6 +26,7 @@ declare module 'bun:test' {
 			toHaveProperty: (property: string, value?: unknown) => void;
 			toThrow: (expected?: unknown) => void;
 			toContain: (expected: unknown) => void;
+			toMatch: (expected: RegExp | string) => void;
 		};
 	};
 

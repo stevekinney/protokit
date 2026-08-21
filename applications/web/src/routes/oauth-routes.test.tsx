@@ -176,14 +176,23 @@ const mockAuthorizationTransactionState: {
 		state: string | null;
 		issuer: string;
 		resource: string;
+		scope: string;
 	} | null;
 } = {
 	created: { transactionId: 'transaction-id', csrfToken: 'csrf-token' },
 	consumeResult: null,
 };
 const consumeAuthorizationTransactionCalls: unknown[] = [];
+// AUTHZ-001: captures what `handleOauthAuthorizeGet` actually resolved and
+// passed as `scope` -- the default-when-omitted set or the caller's own
+// (already-validated) narrower request -- so tests below can assert on it
+// without standing up Postgres.
+const createAuthorizationTransactionCalls: unknown[] = [];
 mock.module('@web/lib/authorization-transaction', () => ({
-	createAuthorizationTransaction: async () => mockAuthorizationTransactionState.created,
+	createAuthorizationTransaction: async (input: unknown) => {
+		createAuthorizationTransactionCalls.push(input);
+		return mockAuthorizationTransactionState.created;
+	},
 	consumeAuthorizationTransaction: async (input: unknown) => {
 		consumeAuthorizationTransactionCalls.push(input);
 		return mockAuthorizationTransactionState.consumeResult;
@@ -293,6 +302,24 @@ describe('authorization metadata endpoint', () => {
 		const body = await response.json();
 		expect(body.client_id_metadata_document_supported).toBe(true);
 	});
+
+	it('publishes scopes_supported (AUTHZ-001), never including the conformance-only audit:read scope', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthAuthorizationMetadataGet(context);
+		const body = (await response.json()) as { scopes_supported: string[] };
+		expect(body.scopes_supported).toEqual(['profile:read', 'prompts:read']);
+	});
+
+	it('OAUTH-004: advertises authorization_response_iss_parameter_supported (RFC 9207)', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthAuthorizationMetadataGet(context);
+		const body = await response.json();
+		expect(body.authorization_response_iss_parameter_supported).toBe(true);
+	});
 });
 
 describe('protected resource metadata endpoint', () => {
@@ -308,6 +335,24 @@ describe('protected resource metadata endpoint', () => {
 		const body = await response.json();
 		expect(body.resource).toBe('http://localhost:3000/mcp');
 		expect(body.authorization_servers).toEqual(['http://localhost:3000']);
+	});
+
+	it('publishes the exact same scopes_supported as the authorization server metadata (AUTHZ-001)', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-protected-resource',
+		});
+		const authorizationServerContext = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthProtectedResourceMetadataGet(context);
+		const authorizationServerResponse = await handleOauthAuthorizationMetadataGet(
+			authorizationServerContext,
+		);
+		const body = (await response.json()) as { scopes_supported: string[] };
+		const authorizationServerBody = (await authorizationServerResponse.json()) as {
+			scopes_supported: string[];
+		};
+		expect(body.scopes_supported).toEqual(authorizationServerBody.scopes_supported);
 	});
 });
 
@@ -755,6 +800,88 @@ describe('authorization GET', () => {
 			transactionId: 'transaction-id',
 			csrfToken: 'csrf-token',
 		};
+		createAuthorizationTransactionCalls.length = 0;
+	});
+
+	const authorizeClient = {
+		clientId: 'c1',
+		clientName: 'Test App',
+		redirectUris: ['https://example.com/cb'],
+	};
+	const authorizeUrlBase =
+		'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp';
+	const authorizeUser = {
+		id: 'u1',
+		email: 'alice@example.com',
+		name: 'Alice',
+		image: null,
+		role: 'user',
+	};
+
+	describe('AUTHZ-001 scope resolution', () => {
+		it('defaults to every supported scope when the client omits scope entirely', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({ url: authorizeUrlBase, method: 'GET', user: authorizeUser }),
+			);
+			expect(response.status).toBe(200);
+			expect(createAuthorizationTransactionCalls).toHaveLength(1);
+			const call = createAuthorizationTransactionCalls[0] as { scope: string };
+			expect(call.scope).toBe('profile:read prompts:read');
+		});
+
+		it('narrows to exactly the client-requested, canonicalized subset', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=${encodeURIComponent('prompts:read profile:read prompts:read')}`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			expect(response.status).toBe(200);
+			const call = createAuthorizationTransactionCalls[0] as { scope: string };
+			expect(call.scope).toBe('profile:read prompts:read');
+		});
+
+		it('rejects an unsupported scope token before creating a transaction', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=${encodeURIComponent('profile:read admin:everything')}`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			expect(response.status).toBe(400);
+			const body = await response.text();
+			expect(body).toContain('Unsupported scope');
+			expect(createAuthorizationTransactionCalls).toHaveLength(0);
+		});
+
+		it('rejects a duplicate scope query parameter', async () => {
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=profile:read&scope=prompts:read`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			expect(response.status).toBe(400);
+		});
+
+		it('renders a human-readable description for every granted scope on the consent page', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=${encodeURIComponent('profile:read')}`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			const body = await response.text();
+			expect(body).toContain('Read your profile information');
+		});
 	});
 
 	it('OAUTH-002: an https client_id with no matching row fetches and upserts a Client ID Metadata Document', async () => {
@@ -884,6 +1011,74 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(400);
 	});
 
+	it('OAUTH-004: accepts a loopback redirect_uri whose port differs from the registered one', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['http://localhost:1234/callback'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=http://localhost:54321/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(200);
+	});
+
+	it('OAUTH-004: rejects a loopback redirect_uri whose path differs from every registered entry, even with port flexibility', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['http://localhost:1234/callback'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=http://localhost:54321/other&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+	});
+
+	it('OAUTH-004: rejects a hosted HTTPS redirect_uri whose host is merely a lookalike suffix of the registered one', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://claude.ai.evil.com/api/mcp/auth_callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+	});
+
+	it("OAUTH-004: accepts Claude's hosted callback URI when registered exactly", async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Claude',
+				redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://claude.ai/api/mcp/auth_callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(200);
+	});
+
 	it('returns 429 when rate-limited', async () => {
 		mockRateLimitState.authorizeAllowed = false;
 		try {
@@ -932,6 +1127,7 @@ describe('authorization approve', () => {
 		state: 'state-xyz',
 		issuer: 'http://localhost:3000',
 		resource: 'http://localhost:3000/mcp',
+		scope: 'profile:read',
 	};
 
 	beforeEach(() => {
@@ -1080,6 +1276,30 @@ describe('authorization approve', () => {
 		expect(location).toContain('state=state-xyz');
 		expect(mockInsertedValues).toHaveLength(1);
 	});
+
+	it('OAUTH-004: includes the transaction-bound issuer as iss (RFC 9207), never re-derived from the request', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'transaction_id=transaction-id&csrf_token=csrf-token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		const location = new URL(response.headers.get('Location')!);
+		expect(location.searchParams.get('iss')).toBe('http://localhost:3000');
+	});
+
+	it('AUTHZ-001: copies the transaction record scope onto the issued code, never re-deriving it from the form', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'transaction_id=transaction-id&csrf_token=csrf-token&scope=admin:everything',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(302);
+		expect((mockInsertedValues[0] as { scope: string }).scope).toBe('profile:read');
+	});
 });
 
 describe('authorization deny', () => {
@@ -1091,6 +1311,7 @@ describe('authorization deny', () => {
 		state: 'state-xyz',
 		issuer: 'http://localhost:3000',
 		resource: 'http://localhost:3000/mcp',
+		scope: 'profile:read',
 	};
 
 	beforeEach(() => {
@@ -1174,6 +1395,21 @@ describe('authorization deny', () => {
 		expect(location).toContain('error=access_denied');
 		expect(location).toContain('state=state-xyz');
 	});
+
+	it('OAUTH-004: includes the transaction-bound issuer as iss (RFC 9207) on the error response too', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		const location = new URL(response.headers.get('Location')!);
+		expect(location.searchParams.get('iss')).toBe('http://localhost:3000');
+	});
 });
 
 describe('authorization code token exchange', () => {
@@ -1243,6 +1479,112 @@ describe('authorization code token exchange', () => {
 		expect(response.status).toBe(400);
 		const body = await response.json();
 		expect(body.error).toBe('unsupported_grant_type');
+		expect(mockInsertedValues).toEqual([]);
+	});
+});
+
+describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
+	beforeEach(() => {
+		setEnvironment({});
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				tokenEndpointAuthMethod: 'none',
+				clientSecret: null,
+				grantTypes: ['authorization_code', 'refresh_token'],
+			},
+		];
+		mockOauthRefreshTokens = [
+			{
+				clientId: 'c1',
+				userId: 'u1',
+				scope: 'profile:read',
+				resource: 'http://localhost:3000/mcp',
+				accessTokenHash: 'hashed:old-access-token',
+				familyId: 'family-1',
+				revokedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+		mockInsertedValues = [];
+	});
+
+	it('carries the stored scope forward when the refresh request omits scope entirely', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.scope).toBe('profile:read');
+	});
+
+	it('rejects a refresh scope request that exceeds the originally granted scope, minting no new token', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read prompts:read',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_scope');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('accepts a refresh scope request that narrows to a subset of the original grant', async () => {
+		mockOauthRefreshTokens = [
+			{
+				...(mockOauthRefreshTokens[0] as Record<string, unknown>),
+				scope: 'profile:read prompts:read',
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.scope).toBe('profile:read');
+	});
+
+	it('rejects an unrecognized scope token before any database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'admin:everything',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_scope');
 		expect(mockInsertedValues).toEqual([]);
 	});
 });

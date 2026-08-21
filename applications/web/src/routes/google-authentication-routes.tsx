@@ -10,10 +10,12 @@ import { isExactContentType } from '@web/lib/exact-content-type';
 import {
 	clearGoogleStateCookie,
 	createGoogleSignInRedirectResponse,
-	exchangeGoogleCodeForAccessToken,
+	exchangeGoogleCodeForTokens,
 	getGoogleUserProfile,
+	resolveGoogleOauthCallbackCookieName,
 	validateGoogleCallbackState,
 } from '@web/lib/google-authentication';
+import { validateGoogleIdToken } from '@web/lib/google-id-token';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
@@ -60,6 +62,11 @@ async function upsertGoogleUser(input: {
 	name: string;
 	image: string | null;
 }): Promise<string> {
+	// FEDAUTH-001: normalize once, here, at the single choke point every
+	// uniqueness decision below goes through — Google's own `email` claim is
+	// not guaranteed to arrive in one consistent case.
+	const normalizedEmail = input.email.toLowerCase();
+
 	const [existingGoogleAccount] = await database
 		.select({ userId: schema.userGoogleAccounts.userId })
 		.from(schema.userGoogleAccounts)
@@ -71,7 +78,7 @@ async function upsertGoogleUser(input: {
 			await database
 				.update(schema.users)
 				.set({
-					email: input.email,
+					email: normalizedEmail,
 					name: input.name,
 					image: input.image,
 					emailVerified: true,
@@ -87,7 +94,7 @@ async function upsertGoogleUser(input: {
 		await database
 			.update(schema.userGoogleAccounts)
 			.set({
-				email: input.email,
+				email: normalizedEmail,
 				updatedAt: new Date(),
 			})
 			.where(eq(schema.userGoogleAccounts.googleSubject, input.subject));
@@ -97,29 +104,51 @@ async function upsertGoogleUser(input: {
 	const [existingUser] = await database
 		.select({ id: schema.users.id })
 		.from(schema.users)
-		.where(eq(schema.users.email, input.email))
+		.where(eq(schema.users.email, normalizedEmail))
 		.limit(1);
 	if (existingUser) {
 		throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR);
 	}
 
+	// FEDAUTH-001: `database.transaction()` throws "No transactions support
+	// in neon-http driver" against the installed driver (confirmed directly;
+	// `oauth-routes.tsx`'s OAUTH-003 hit and documented the same constraint),
+	// so these two inserts cannot be wrapped in a real transaction. If the
+	// second insert fails, best-effort delete the user row this request just
+	// created rather than leave an orphaned account no Google identity can
+	// ever sign into again — not atomic, but strictly better than a silent
+	// orphan.
 	const userId = randomUUID();
-	await database.transaction(async (transaction) => {
-		await transaction.insert(schema.users).values({
-			id: userId,
-			email: input.email,
-			name: input.name,
-			image: input.image,
-			emailVerified: true,
-			role: 'user',
-		});
+	await database.insert(schema.users).values({
+		id: userId,
+		email: normalizedEmail,
+		name: input.name,
+		image: input.image,
+		emailVerified: true,
+		role: 'user',
+	});
 
-		await transaction.insert(schema.userGoogleAccounts).values({
+	try {
+		await database.insert(schema.userGoogleAccounts).values({
 			googleSubject: input.subject,
 			userId,
-			email: input.email,
+			email: normalizedEmail,
 		});
-	});
+	} catch (error) {
+		try {
+			await database.delete(schema.users).where(eq(schema.users.id, userId));
+		} catch (cleanupError) {
+			logger.error(
+				{ err: cleanupError, userId },
+				'Failed to clean up orphaned user row after a failed Google account insert',
+			);
+		}
+
+		if (isUniqueConstraintViolation(error)) {
+			throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR, { cause: error });
+		}
+		throw error;
+	}
 
 	return userId;
 }
@@ -147,66 +176,109 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 	if (!isGoogleAuthConfigured()) return googleAuthNotConfiguredResponse();
 	const requestUrl = context.requestUrl;
 	const code = requestUrl.searchParams.get('code');
+
+	// FEDAUTH-001: derived from the query string alone, before any signature
+	// or single-use check, so every terminal path below — success or any
+	// error — can clear the one cookie this specific attempt used. `null`
+	// only when `state` itself is missing or malformed, in which case there
+	// is no specific cookie this server can identify as belonging here.
+	const cookieNameToClear = resolveGoogleOauthCallbackCookieName(context.request);
+	const withClearedGoogleStateCookie = (response: Response): Response => {
+		if (cookieNameToClear) {
+			response.headers.append(
+				'Set-Cookie',
+				clearGoogleStateCookie(context.request, cookieNameToClear),
+			);
+		}
+		return response;
+	};
+
 	if (!code) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'Google Sign-In Error' },
-			status: 400,
-			body: <OauthAuthorizePage mode="error" error="Missing OAuth code." />,
-		});
+		return withClearedGoogleStateCookie(
+			createStaticHtmlResponse({
+				metadata: { title: 'Google Sign-In Error' },
+				status: 400,
+				body: <OauthAuthorizePage mode="error" error="Missing OAuth code." />,
+			}),
+		);
 	}
 
-	const stateValidation = validateGoogleCallbackState(context.request);
+	const stateValidation = await validateGoogleCallbackState(context.request);
 	if (!stateValidation.valid) {
 		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
-		return createStaticHtmlResponse({
-			metadata: { title: 'Google Sign-In Error' },
-			status: 400,
-			body: <OauthAuthorizePage mode="error" error={stateValidation.error} />,
-		});
+		return withClearedGoogleStateCookie(
+			createStaticHtmlResponse({
+				metadata: { title: 'Google Sign-In Error' },
+				status: 400,
+				body: <OauthAuthorizePage mode="error" error={stateValidation.error} />,
+			}),
+		);
 	}
 
 	try {
-		const accessToken = await exchangeGoogleCodeForAccessToken(context.request, code);
+		const { accessToken, idToken } = await exchangeGoogleCodeForTokens(
+			context.request,
+			code,
+			stateValidation.codeVerifier,
+		);
+		const idTokenClaims = await validateGoogleIdToken(idToken, {
+			clientId: environment.GOOGLE_CLIENT_ID!,
+			expectedNonce: stateValidation.nonce,
+		});
+		// FEDAUTH-001: the ID token's cryptographically-verified claims are
+		// the authoritative identity. The userinfo fetch is still made (bound
+		// and validated on its own) so an access token that resolves to a
+		// different subject than the one the ID token vouched for is caught
+		// here rather than trusted silently.
 		const googleProfile = await getGoogleUserProfile(accessToken);
+		if (googleProfile.sub !== idTokenClaims.sub) {
+			throw new Error('Google access token and ID token identified different subjects.');
+		}
+
 		const userId = await upsertGoogleUser({
-			subject: googleProfile.sub,
-			email: googleProfile.email,
-			name: googleProfile.name,
-			image: googleProfile.picture ?? null,
+			subject: idTokenClaims.sub,
+			email: idTokenClaims.email,
+			name: idTokenClaims.name,
+			image: idTokenClaims.picture ?? null,
 		});
 
 		const sessionRateLimitResult = await enforceSessionCreationRateLimit({
 			networkIdentity: context.networkIdentity,
 		});
 		if (!sessionRateLimitResult.allowed) {
-			return createRateLimitedResponse(sessionRateLimitResult.retryAfterSeconds);
+			return withClearedGoogleStateCookie(
+				createRateLimitedResponse(sessionRateLimitResult.retryAfterSeconds),
+			);
 		}
 
 		const session = await createSession({ userId, request: context.request });
 		const response = redirectResponse(stateValidation.callbackPath, 302);
 		response.headers.append('Set-Cookie', session.cookieHeaderValue);
-		response.headers.append('Set-Cookie', clearGoogleStateCookie(context.request));
-		return response;
+		return withClearedGoogleStateCookie(response);
 	} catch (error) {
 		if (error instanceof Error && error.message === GOOGLE_IDENTITY_CONFLICT_ERROR) {
-			return createStaticHtmlResponse({
-				metadata: { title: 'Google Sign-In Error' },
-				status: 409,
-				body: (
-					<OauthAuthorizePage
-						mode="error"
-						error="This email is already associated with another account. Contact support to link identities."
-					/>
-				),
-			});
+			return withClearedGoogleStateCookie(
+				createStaticHtmlResponse({
+					metadata: { title: 'Google Sign-In Error' },
+					status: 409,
+					body: (
+						<OauthAuthorizePage
+							mode="error"
+							error="This email is already associated with another account. Contact support to link identities."
+						/>
+					),
+				}),
+			);
 		}
 
 		logger.error({ err: error }, 'Google callback failed');
-		return createStaticHtmlResponse({
-			metadata: { title: 'Google Sign-In Error' },
-			status: 500,
-			body: <OauthAuthorizePage mode="error" error="Google sign-in failed. Please try again." />,
-		});
+		return withClearedGoogleStateCookie(
+			createStaticHtmlResponse({
+				metadata: { title: 'Google Sign-In Error' },
+				status: 500,
+				body: <OauthAuthorizePage mode="error" error="Google sign-in failed. Please try again." />,
+			}),
+		);
 	}
 }
 

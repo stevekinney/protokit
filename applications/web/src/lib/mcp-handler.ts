@@ -1,18 +1,28 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import type { AuthInfo, McpHandlerRequestOptions } from '@modelcontextprotocol/server';
+import type {
+	AuthInfo,
+	McpHandlerRequestOptions,
+	McpHttpHandler,
+} from '@modelcontextprotocol/server';
 import { createMcpServer } from '@template/mcp';
 import type { McpUserProfile } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { database, schema } from '@template/database';
 import { eq } from 'drizzle-orm';
 import { environment } from '@web/env';
-import { resourceSubscriptionManager } from '@web/lib/resource-subscription-manager';
+import { createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
+import { McpUserHandlerCache } from '@web/lib/mcp-user-handler-cache';
 import { disconnectRedisSubscriberClient } from '@web/lib/redis-client';
 import { readMcpRequestAuthExtra } from '@web/lib/mcp-request-context';
 import { boundRequestBody, PayloadTooLargeError } from '@web/lib/bounded-request-body';
 import { createMcpProtocolErrorResponse } from '@web/lib/mcp-protocol-error-response';
 import { mcpLatestProtocolVersion } from '@web/lib/mcp-protocol-constants';
-import { mcpRequestMaxBodyBytes } from '@web/lib/request-limits';
+import {
+	mcpRequestMaxBodyBytes,
+	mcpMaxSubscriptionsPerUserHandler,
+	mcpUserHandlerIdleMs,
+	mcpUserHandlerSweepIntervalMs,
+} from '@web/lib/request-limits';
 
 // CONFIG-001: exported so it can be unit-tested directly without booting a
 // full MCP client/server round trip. Conformance fixtures are dev/test-only
@@ -42,49 +52,92 @@ async function fetchUserProfile(userId: string): Promise<McpUserProfile | null> 
 }
 
 /**
- * The single MCP server entry: one factory serves both the modern
- * (`2026-07-28`, per-request envelope) protocol era and the legacy
- * (`2025-11-25`) era through the SDK's stateless fallback, from the same
- * tool/resource/prompt registrations. There is no in-process transport
- * registry, session map, or sticky-routing state — every request builds a
- * fresh `McpServer` instance from `ctx.authInfo`, which the HTTP boundary
- * (`mcp-routes.ts`) supplies after verifying the bearer token.
+ * PROTO-002 / S-11: one `McpHttpHandler` per authenticated user, not one
+ * shared handler for the whole process. `subscriptions/listen` (the
+ * `2026-07-28` push-notification mechanism) fans out over an SDK-supplied
+ * `ServerEventBus` that `createMcpHandler` binds once at construction and
+ * filters purely by resource URI — it has no notion of caller identity. If
+ * every user shared one handler (and therefore one bus), publishing an
+ * update for user A's `user://profile` would reach user B's open listen
+ * stream too, the moment B also names that same literal URI (which every
+ * user does — it is a fixed "my own profile" address, not per-user). That
+ * is exactly `S-11`: a resource update crossing a user boundary.
+ *
+ * Giving each user their own handler/bus means a published event is
+ * physically confined to that user's Redis channel
+ * (`mcp-user-event-bus.ts`) — there is no filter to get wrong, because
+ * there is nothing else subscribed to that channel. See
+ * `mcp-user-handler-cache.ts` for how this in-process registry stays
+ * bounded (idle eviction) and why correctness does not depend on any one
+ * instance holding a particular user's entry.
  */
-const mcpHttpHandler = createMcpHandler(
-	async (ctx) => {
-		const requestAuthExtra = readMcpRequestAuthExtra(ctx.authInfo);
-		if (!requestAuthExtra) {
-			// The HTTP boundary always authenticates before calling `fetch()`;
-			// a missing extra here means a caller bypassed that boundary.
-			throw new Error('MCP request reached the server factory without verified auth context.');
-		}
+function createUserHandlerEntry(userId: string): {
+	handler: McpHttpHandler;
+	bus: ReturnType<typeof createUserServerEventBus>;
+} {
+	const bus = createUserServerEventBus(userId);
 
-		const user = await fetchUserProfile(requestAuthExtra.userId);
-		if (!user) {
-			throw new Error(`MCP request authenticated as unknown user ${requestAuthExtra.userId}.`);
-		}
+	// `handler` is referenced inside its own factory (`publishResourceUpdate`)
+	// before the `createMcpHandler(...)` call below finishes assigning it —
+	// safe because the factory only runs later, once a request actually
+	// reaches this specific user's handler, by which point this `const`
+	// binding is long since initialized (`createMcpHandler` only wires the
+	// factory in; it never invokes it synchronously during construction).
+	const handler: McpHttpHandler = createMcpHandler(
+		async (ctx) => {
+			const requestAuthExtra = readMcpRequestAuthExtra(ctx.authInfo);
+			if (!requestAuthExtra) {
+				// The HTTP boundary always authenticates before calling `fetch()`;
+				// a missing extra here means a caller bypassed that boundary.
+				throw new Error('MCP request reached the server factory without verified auth context.');
+			}
+			if (requestAuthExtra.userId !== userId) {
+				// Defense in depth: this handler is only ever looked up by
+				// `userId` in `handleMcpRequest` below, so this should be
+				// unreachable — but if it were ever reachable, silently serving
+				// it would be exactly the cross-user delivery bug this cache
+				// exists to prevent.
+				throw new Error('MCP request authenticated user does not match its routed handler.');
+			}
 
-		return createMcpServer({
-			userId: requestAuthExtra.userId,
-			user,
-			enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
-			enableConformanceMode: shouldEnableConformanceMode({
-				conformanceModeConfigured: environment.MCP_CONFORMANCE_MODE,
-				tunnelActive: environment.PROTOKIT_TUNNEL_ACTIVE,
-			}),
-			subscriptionBackend: resourceSubscriptionManager,
-		});
-	},
-	{
-		// Serve 2025-11-25 clients (Claude's current hosted-connector maximum)
-		// through the SDK's built-in stateless fallback rather than rejecting
-		// them — see the roadmap's compatibility contract.
-		legacy: 'stateless',
-		onerror: (error) => {
-			logger.error({ err: error }, 'MCP handler error');
+			const user = await fetchUserProfile(requestAuthExtra.userId);
+			if (!user) {
+				throw new Error(`MCP request authenticated as unknown user ${requestAuthExtra.userId}.`);
+			}
+
+			return createMcpServer({
+				userId: requestAuthExtra.userId,
+				user,
+				enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
+				enableConformanceMode: shouldEnableConformanceMode({
+					conformanceModeConfigured: environment.MCP_CONFORMANCE_MODE,
+					tunnelActive: environment.PROTOKIT_TUNNEL_ACTIVE,
+				}),
+				era: ctx.era,
+				publishResourceUpdate: async (uri) => {
+					handler.notify.resourceUpdated(uri);
+				},
+				scopes: requestAuthExtra.scopes,
+			});
 		},
-	},
-);
+		{
+			// Serve 2025-11-25 clients (Claude's current hosted-connector maximum)
+			// through the SDK's built-in stateless fallback rather than rejecting
+			// them — see the roadmap's compatibility contract.
+			legacy: 'stateless',
+			bus,
+			maxSubscriptions: mcpMaxSubscriptionsPerUserHandler,
+			onerror: (error) => {
+				logger.error({ err: error, userId }, 'MCP handler error');
+			},
+		},
+	);
+
+	return { handler, bus };
+}
+
+const userHandlers = new McpUserHandlerCache(createUserHandlerEntry);
+userHandlers.startSweep(mcpUserHandlerSweepIntervalMs, mcpUserHandlerIdleMs);
 
 /**
  * S-05: MCP request bodies were handed straight to the SDK, which buffers
@@ -116,10 +169,18 @@ export async function handleMcpRequest(request: Request, authInfo: AuthInfo): Pr
 		throw error;
 	}
 
-	return mcpHttpHandler.fetch(boundedRequest, options);
+	const requestAuthExtra = readMcpRequestAuthExtra(authInfo);
+	if (!requestAuthExtra) {
+		// `mcp-routes.ts` always authenticates before calling this function;
+		// a missing extra here means a caller bypassed that boundary.
+		throw new Error('MCP request reached the handler without verified auth context.');
+	}
+
+	const { handler } = userHandlers.get(requestAuthExtra.userId);
+	return handler.fetch(boundedRequest, options);
 }
 
 export async function shutdownMcpTransports(): Promise<void> {
-	await mcpHttpHandler.close();
+	await userHandlers.closeAll();
 	await disconnectRedisSubscriberClient().catch(() => {});
 }

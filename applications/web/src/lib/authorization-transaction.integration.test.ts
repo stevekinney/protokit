@@ -76,6 +76,7 @@ function baseTransactionInput(
 		state: 'state-xyz',
 		issuer: 'http://localhost:3000',
 		resource: 'http://localhost:3000/mcp',
+		scope: 'profile:read',
 		...overrides,
 	};
 }
@@ -99,6 +100,7 @@ describe('createAuthorizationTransaction / consumeAuthorizationTransaction (real
 			state: 'state-xyz',
 			issuer: 'http://localhost:3000',
 			resource: 'http://localhost:3000/mcp',
+			scope: 'profile:read',
 		});
 	});
 

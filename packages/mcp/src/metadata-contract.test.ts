@@ -7,6 +7,8 @@ import { allResources } from './resources/index.js';
 import { allPrompts } from './prompts/index.js';
 import { createMcpServer } from './server.js';
 import { createTestContext } from './testing/context.js';
+import { getSupportedScopes } from './supported-scopes.js';
+import { mcpScopes } from './scopes.js';
 import type { McpUserProfile } from './types/primitives.js';
 
 /**
@@ -74,6 +76,16 @@ describe('tool registry metadata contract', () => {
 		}
 	});
 
+	it('every tool declares a requiredScope from the supported vocabulary', () => {
+		for (const tool of allTools) {
+			expect(tool.requiredScope, `${tool.name} is missing a requiredScope`).toBeTruthy();
+			expect(
+				mcpScopes as readonly string[],
+				`${tool.name}.requiredScope ("${tool.requiredScope}") is not in the supported scope vocabulary`,
+			).toContain(tool.requiredScope);
+		}
+	});
+
 	it('every tool that declares an outputSchema returns structuredContent that validates against it', async () => {
 		const context = createTestContext();
 		for (const tool of allTools) {
@@ -113,6 +125,13 @@ describe('resource registry metadata contract', () => {
 			expect(resource.mimeType).toBeTruthy();
 		}
 	});
+
+	it('every resource declares a requiredScope from the supported vocabulary', () => {
+		for (const resource of allResources) {
+			expect(resource.requiredScope, `${resource.name} is missing a requiredScope`).toBeTruthy();
+			expect(mcpScopes as readonly string[]).toContain(resource.requiredScope);
+		}
+	});
 });
 
 describe('prompt registry metadata contract', () => {
@@ -122,6 +141,28 @@ describe('prompt registry metadata contract', () => {
 			expect(prompt.title, `${prompt.name} is missing a title`).toBeTruthy();
 			expect(prompt.description, `${prompt.name} is missing a description`).toBeTruthy();
 		}
+	});
+
+	it('every prompt declares a requiredScope from the supported vocabulary', () => {
+		for (const prompt of allPrompts) {
+			expect(prompt.requiredScope, `${prompt.name} is missing a requiredScope`).toBeTruthy();
+			expect(mcpScopes as readonly string[]).toContain(prompt.requiredScope);
+		}
+	});
+});
+
+describe('getSupportedScopes', () => {
+	it('is the sorted union of every production requiredScope, excluding conformance-only scopes', () => {
+		const expected = new Set<string>();
+		for (const tool of allTools) expected.add(tool.requiredScope);
+		for (const resource of allResources) expected.add(resource.requiredScope);
+		for (const prompt of allPrompts) expected.add(prompt.requiredScope);
+
+		expect(getSupportedScopes()).toEqual([...expected].sort());
+		// `list_audit_events` (`audit:read`) is a conformance-only fixture,
+		// never part of `allTools` — its scope must never be advertised to a
+		// real OAuth client.
+		expect(getSupportedScopes()).not.toContain('audit:read');
 	});
 });
 
@@ -144,6 +185,7 @@ describe('wire capabilities and list ordering', () => {
 				user: conformanceUser(userId),
 				enableUiExtension: false,
 				enableConformanceMode: false,
+				scopes: getSupportedScopes(),
 			});
 		},
 		{ legacy: 'stateless' },
@@ -179,8 +221,19 @@ describe('wire capabilities and list ordering', () => {
 		expect(capabilities?.resources?.listChanged).toBe(false);
 		expect(capabilities?.prompts?.listChanged).toBe(false);
 
-		// Subscribing records interest but nothing ever delivers an update
-		// (PROTO-002 owns building that delivery path) — not advertised.
+		// PROTO-002: `resources.subscribe` IS now genuinely implemented on
+		// the modern (`2026-07-28`) era, but only when a
+		// `publishResourceUpdate` function is wired in (production always
+		// does — see `applications/web/src/lib/mcp-handler.ts`'s per-user
+		// event bus, which is what makes delivery authorization-safe).
+		// `connectedClient()` above uses a default `Client` with no
+		// `versionNegotiation`, which negotiates the LEGACY era — legacy
+		// serving is stateless-per-request with no session to push a
+		// subscription stream to, so it stays unadvertised there
+		// regardless. `applications/web/src/lib/mcp-handler.test.ts`
+		// exercises the modern-era `resources.subscribe: true` case (and
+		// proves real, per-user-isolated delivery over it) directly against
+		// production wiring.
 		expect(capabilities?.resources?.subscribe).toBeUndefined();
 
 		await client.close();
@@ -230,6 +283,7 @@ describe('MCP Apps capability advertisement', () => {
 					// on the wire regardless of this flag.
 					enableUiExtension: true,
 					enableConformanceMode: false,
+					scopes: getSupportedScopes(),
 				});
 			},
 			{ legacy: 'stateless' },

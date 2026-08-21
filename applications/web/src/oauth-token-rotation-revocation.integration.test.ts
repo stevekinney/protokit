@@ -59,12 +59,8 @@ try {
 // `rate_limit:*` key before this file's Redis-backed tests run, exactly
 // like `oauth-mcp-resource-binding.integration.test.ts` does.
 if (redisAvailable) {
-	const { getRedisClient } = await import('@web/lib/redis-client');
-	const redisClient = await getRedisClient();
-	const staleRateLimitKeys = await redisClient.keys('rate_limit:*');
-	if (staleRateLimitKeys.length > 0) {
-		await redisClient.del(staleRateLimitKeys);
-	}
+	const { resetRateLimitState } = await import('@web/test-support/reset-rate-limit-state');
+	await resetRateLimitState();
 }
 
 const describeWithRedis = redisAvailable

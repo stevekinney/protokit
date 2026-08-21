@@ -27,7 +27,18 @@ type RateLimitRoute =
 	| 'session_creation';
 
 function buildRateLimitKey(route: RateLimitRoute, identifier: string): string {
-	return `rate_limit:${route}:${identifier}`;
+	// The namespace is empty in every real deployment, so the key shape is
+	// unchanged there. It exists because rate-limit state is keyed by network
+	// identity and lives in shared Redis: two test suites running at once are one
+	// identity (loopback) spending one budget, so they exhaust the limit between
+	// them and fail with a 429 that has nothing to do with what they assert.
+	// Giving each run its own namespace isolates the bucket while still
+	// exercising the real production limits — as opposed to raising the limit for
+	// tests, which would stop them testing the thing they exist to test.
+	const namespace = environment.RATE_LIMIT_KEY_NAMESPACE;
+	return namespace
+		? `rate_limit:${namespace}:${route}:${identifier}`
+		: `rate_limit:${route}:${identifier}`;
 }
 
 async function resolveAtomicStore(): Promise<AtomicSlidingWindowStore> {
