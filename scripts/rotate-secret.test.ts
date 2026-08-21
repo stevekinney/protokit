@@ -1,12 +1,13 @@
 import { createHash, createHmac } from 'node:crypto';
 import { describe, test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
 	generateSessionSigningSecret,
 	hashCredential,
+	rotateSessionSigningSecretCutoverLocally,
 	rotateSessionSigningSecretLocally,
 } from './rotate-secret.ts';
 import {
@@ -32,7 +33,7 @@ describe('rotateSessionSigningSecretLocally', () => {
 		if (directory) rmSync(directory, { recursive: true, force: true });
 	});
 
-	test('replaces an existing secret with a different value, and the old value is gone from the file', () => {
+	test('writes a fresh current secret and moves the outgoing value to SESSION_SIGNING_SECRET_PREVIOUS (DATA-001 overlap window)', () => {
 		directory = mkdtempSync(join(tmpdir(), 'protokit-rotate-test-'));
 		environmentFile = join(directory, '.env.local');
 
@@ -45,11 +46,32 @@ describe('rotateSessionSigningSecretLocally', () => {
 		expect(result.nextValue).not.toBe(oldSecret);
 		expect(result.nextValue).toMatch(/^[0-9a-f]{64}$/);
 
-		const rawContent = readFileSync(environmentFile, 'utf-8');
-		expect(rawContent).not.toContain(oldSecret);
-
 		const entries = readEnvironmentEntriesFromFile(environmentFile);
 		expect(entries['SESSION_SIGNING_SECRET']).toBe(result.nextValue);
+		// DATA-001 / S-18: unlike the previous instant-invalidation behavior,
+		// the outgoing secret is preserved as the overlap-window value, not
+		// discarded — a signature made under it keeps verifying until cutover.
+		expect(entries['SESSION_SIGNING_SECRET_PREVIOUS']).toBe(oldSecret);
+	});
+
+	test('rotateSessionSigningSecretCutoverLocally removes SESSION_SIGNING_SECRET_PREVIOUS, ending the overlap', () => {
+		directory = mkdtempSync(join(tmpdir(), 'protokit-rotate-test-'));
+		environmentFile = join(directory, '.env.local');
+
+		const oldSecret = 'a'.repeat(64);
+		appendEnvironmentEntryToFile(environmentFile, 'SESSION_SIGNING_SECRET', oldSecret);
+		const { nextValue } = rotateSessionSigningSecretLocally(environmentFile);
+		expect(readEnvironmentEntriesFromFile(environmentFile)['SESSION_SIGNING_SECRET_PREVIOUS']).toBe(
+			oldSecret,
+		);
+
+		rotateSessionSigningSecretCutoverLocally(environmentFile);
+
+		const entries = readEnvironmentEntriesFromFile(environmentFile);
+		expect(entries['SESSION_SIGNING_SECRET_PREVIOUS']).toBeUndefined();
+		// Cutover only removes the previous value — the current secret this
+		// rotation just wrote is untouched.
+		expect(entries['SESSION_SIGNING_SECRET']).toBe(nextValue);
 	});
 
 	test('writes a fresh secret when none existed before', () => {

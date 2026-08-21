@@ -1,6 +1,11 @@
 import { sql } from 'drizzle-orm';
 import { database } from '@template/database';
 import { environment } from '@web/env';
+import {
+	checkBearerCredential,
+	isPlaintextTransport,
+} from '@web/lib/bearer-credential-authentication';
+import { createCoalescedProbe } from '@web/lib/coalesced-probe-cache';
 import { jsonResponse } from '@web/lib/http-response';
 import { instanceIdentifier } from '@web/lib/instance-identifier';
 import { mcpSupportedProtocolVersions } from '@web/lib/mcp-protocol-constants';
@@ -8,6 +13,28 @@ import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceHealthProbeRateLimit } from '@web/lib/request-rate-limiter';
 import { isRedisConfigured, isRedisHealthy } from '@web/lib/redis-client';
+
+/**
+ * OPS-002 / S-15: `GET /health` — a public, unauthenticated liveness check.
+ * Deliberately does nothing but confirm the process is up and can produce a
+ * response: no database query, no Redis connection, no session lookup, no
+ * instance identifier, no dependency topology. A container orchestrator (or
+ * anyone else on the public internet) learns only that the server is alive.
+ * Dependency health lives at the authenticated `GET /health/ready` below —
+ * see this item's `.roadmap-progress/OPS-002.md` for why the split exists
+ * rather than one endpoint doing both jobs.
+ */
+export function handleHealthGet(): Response {
+	return jsonResponse({ status: 'ok' }, { status: 200 });
+}
+
+type DependencySnapshot = {
+	status: 'ok' | 'degraded';
+	dependencies: {
+		redis: 'ok' | 'unavailable' | 'not_configured';
+		database: 'ok' | 'unavailable';
+	};
+};
 
 async function isDatabaseHealthy(): Promise<boolean> {
 	try {
@@ -18,20 +45,14 @@ async function isDatabaseHealthy(): Promise<boolean> {
 	}
 }
 
-export async function handleHealthGet(context: RequestContext): Promise<Response> {
-	const rateLimitResult = await enforceHealthProbeRateLimit({
-		networkIdentity: context.networkIdentity,
-	});
-	if (!rateLimitResult.allowed) {
-		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds);
-	}
-
+async function probeDependencies(): Promise<DependencySnapshot> {
 	const redisConfigured = isRedisConfigured();
-	const redisHealthy = redisConfigured ? await isRedisHealthy() : false;
-	const databaseHealthy = await isDatabaseHealthy();
+	const [redisHealthy, databaseHealthy] = await Promise.all([
+		redisConfigured ? isRedisHealthy() : Promise.resolve(false),
+		isDatabaseHealthy(),
+	]);
 
-	const degradedDependencies = (redisConfigured && !redisHealthy) || !databaseHealthy;
-	const status = degradedDependencies ? 'degraded' : 'ok';
+	const degraded = (redisConfigured && !redisHealthy) || !databaseHealthy;
 
 	let redisStatus: 'ok' | 'unavailable' | 'not_configured';
 	if (!redisConfigured) {
@@ -40,19 +61,100 @@ export async function handleHealthGet(context: RequestContext): Promise<Response
 		redisStatus = redisHealthy ? 'ok' : 'unavailable';
 	}
 
+	return {
+		status: degraded ? 'degraded' : 'ok',
+		dependencies: {
+			redis: redisStatus,
+			database: databaseHealthy ? 'ok' : 'unavailable',
+		},
+	};
+}
+
+// OPS-002: one coalesced/cached probe per process. A burst of authenticated
+// readiness callers within the TTL window shares one real Postgres/Redis
+// round trip instead of each triggering its own — see
+// `coalesced-probe-cache.ts` for why this needs both coalescing and
+// caching, not just one of the two. Held in a mutable binding (rather than
+// a bare `const`) only so `resetHealthReadinessCacheForTests` can discard it
+// between test cases — nothing in production code ever reassigns it.
+let getCachedDependencySnapshot = createCoalescedProbe({
+	ttlMs: (environment.HEALTH_READINESS_CACHE_TTL_SECONDS ?? 2) * 1000,
+	probe: probeDependencies,
+});
+
+/** Test-only: discards the cached readiness snapshot so each test observes a fresh probe. */
+export function resetHealthReadinessCacheForTests(): void {
+	getCachedDependencySnapshot = createCoalescedProbe({
+		ttlMs: (environment.HEALTH_READINESS_CACHE_TTL_SECONDS ?? 2) * 1000,
+		probe: probeDependencies,
+	});
+}
+
+/**
+ * OPS-002 / S-15: `GET /health/ready` — the authenticated, detailed
+ * counterpart to `GET /health`. Reveals dependency status, the instance
+ * identifier, supported protocol versions, and enabled extensions only to a
+ * caller holding `HEALTH_READINESS_API_KEY`; an unauthenticated or
+ * unconfigured deployment gets no response body worth reading (404/401,
+ * matching `/metrics`'s fail-closed shape) rather than the topology this
+ * item's finding (`S-15`) named as an information leak.
+ */
+export async function handleHealthReadinessGet(context: RequestContext): Promise<Response> {
+	if (
+		isPlaintextTransport({
+			request: context.request,
+			isProduction: environment.NODE_ENV === 'production',
+		})
+	) {
+		return jsonResponse(
+			{ error: 'plaintext_transport_not_allowed', error_description: 'HTTPS is required' },
+			{ status: 400, headers: { 'Cache-Control': 'no-store' } },
+		);
+	}
+
+	const rateLimitResult = await enforceHealthProbeRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
+			'Cache-Control': 'no-store',
+		});
+	}
+
+	const credentialResult = checkBearerCredential({
+		configuredKey: environment.HEALTH_READINESS_API_KEY,
+		authorizationHeader: context.request.headers.get('authorization'),
+	});
+
+	if (credentialResult === 'not_configured') {
+		return jsonResponse(
+			{ error: 'not_found' },
+			{ status: 404, headers: { 'Cache-Control': 'no-store' } },
+		);
+	}
+
+	if (credentialResult === 'unauthorized') {
+		return jsonResponse(
+			{ error: 'unauthorized' },
+			{ status: 401, headers: { 'Cache-Control': 'no-store' } },
+		);
+	}
+
+	const snapshot = await getCachedDependencySnapshot();
+
 	return jsonResponse(
 		{
-			status,
+			status: snapshot.status,
 			instanceIdentifier,
 			protocolVersions: mcpSupportedProtocolVersions,
 			extensions: {
 				ui: environment.MCP_ENABLE_UI_EXTENSION,
 			},
-			dependencies: {
-				redis: redisStatus,
-				database: databaseHealthy ? 'ok' : 'unavailable',
-			},
+			dependencies: snapshot.dependencies,
 		},
-		{ status: status === 'ok' ? 200 : 503 },
+		{
+			status: snapshot.status === 'ok' ? 200 : 503,
+			headers: { 'Cache-Control': 'no-store' },
+		},
 	);
 }

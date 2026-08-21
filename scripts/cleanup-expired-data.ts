@@ -1,62 +1,24 @@
-import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
-import { lt, or, isNotNull } from 'drizzle-orm';
+import { runScheduledCleanup } from '@template/web/lib/scheduled-cleanup';
 
-const cleanupLogger = logger.child({ script: 'cleanup-expired-data' });
-
-async function cleanupExpiredData() {
-	const now = new Date();
-
-	// Delete expired or used OAuth authorization codes
-	const deletedCodes = await database
-		.delete(schema.oauthCodes)
-		.where(or(lt(schema.oauthCodes.expiresAt, now), isNotNull(schema.oauthCodes.usedAt)))
-		.returning();
-
-	cleanupLogger.info(
-		{ count: deletedCodes.length },
-		'Deleted expired/used OAuth authorization codes',
-	);
-
-	// Delete revoked or expired access tokens
-	const deletedTokens = await database
-		.delete(schema.oauthTokens)
-		.where(or(isNotNull(schema.oauthTokens.revokedAt), lt(schema.oauthTokens.expiresAt, now)))
-		.returning();
-
-	cleanupLogger.info({ count: deletedTokens.length }, 'Deleted revoked/expired access tokens');
-
-	// Delete revoked or expired refresh tokens
-	const deletedRefreshTokens = await database
-		.delete(schema.oauthRefreshTokens)
-		.where(
-			or(
-				isNotNull(schema.oauthRefreshTokens.revokedAt),
-				lt(schema.oauthRefreshTokens.expiresAt, now),
-			),
-		)
-		.returning();
-
-	cleanupLogger.info(
-		{ count: deletedRefreshTokens.length },
-		'Deleted revoked/expired refresh tokens',
-	);
-
-	// Delete revoked or expired user sessions
-	const deletedSessions = await database
-		.delete(schema.userSessions)
-		.where(or(isNotNull(schema.userSessions.revokedAt), lt(schema.userSessions.expiresAt, now)))
-		.returning();
-
-	cleanupLogger.info({ count: deletedSessions.length }, 'Deleted revoked/expired user sessions');
+/**
+ * DATA-001 / S-18: manual or externally-cron-scheduled entry point for the
+ * same bounded, batched sweep `server.ts` runs on an in-process interval
+ * (`SCHEDULED_CLEANUP_INTERVAL_SECONDS`). Useful for a deployment that runs
+ * cleanup as a one-shot job rather than keeping a long-lived process alive,
+ * or for an operator who wants to run a sweep on demand.
+ */
+async function main(): Promise<void> {
+	const cleanupLogger = logger.child({ script: 'cleanup-expired-data' });
+	const result = await runScheduledCleanup();
+	cleanupLogger.info({ result }, 'Manual cleanup sweep completed');
 }
 
-cleanupExpiredData()
-	.then(() => {
-		cleanupLogger.info('Cleanup completed');
-		process.exit(0);
-	})
-	.catch((error) => {
-		cleanupLogger.error({ err: error }, 'Cleanup failed');
-		process.exit(1);
-	});
+if (import.meta.main) {
+	main()
+		.then(() => process.exit(0))
+		.catch((error: unknown) => {
+			logger.error({ err: error }, 'Cleanup failed');
+			process.exit(1);
+		});
+}

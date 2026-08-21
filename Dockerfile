@@ -72,11 +72,19 @@ USER 65532:65532
 
 # Liveness probe: the protected-resource discovery endpoint is static
 # metadata that never touches Postgres or Redis (verified: it returns 200
-# even while the database is unreachable, see DEPLOY-001's evidence). A
-# `/health`-based check would couple container liveness to downstream
-# dependency health and can make orchestrators kill/restart a server that is
-# actually fine — that's a separate, deliberate decision for whichever item
-# owns dependency-health semantics (OPS-002), not this one.
+# even while the database is unreachable, see DEPLOY-001's evidence).
+#
+# OPS-002 split `GET /health` into this same dependency-free shape (public
+# liveness only; dependency status moved to the authenticated
+# `GET /health/ready`), so it would now be an equally valid choice here. Kept
+# on the well-known endpoint anyway rather than switching: it is the one
+# DEPLOY-001 already verified against this exact image, switching gains
+# nothing (both are equally cheap, dependency-free, unauthenticated 200s),
+# and this file cannot be exercised in this environment (no `docker build`),
+# so avoiding a same-behavior, unverified edit is the safer choice. A
+# `/health`-based check would still couple container liveness to downstream
+# dependency health if the wrong endpoint were picked here — that coupling
+# is exactly what `/health/ready` exists to keep separate from liveness.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 	CMD ["bun", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/.well-known/oauth-protected-resource/mcp').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
 

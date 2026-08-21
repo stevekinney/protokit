@@ -46,6 +46,60 @@ mock.module('drizzle-orm', () => ({
 
 const { handleMcpRequest, shouldEnableConformanceMode } = await import('@web/lib/mcp-handler');
 
+/**
+ * OBS-001 acceptance criterion 2: "a trace follows one connector action
+ * from HTTP entry through OAuth validation and tool completion." This
+ * exercises the real, unmocked path end to end — `buildAuthInfo`'s
+ * `requestId` (standing in for `application.tsx`'s HTTP-boundary
+ * `requestId`) through `readMcpRequestAuthExtra`, into
+ * `createMcpServer`'s context, into a real tool call — and asserts the
+ * SAME `requestId` shows up on the resulting structured log line, proving
+ * the plumbing rather than just its types.
+ */
+describe('requestId trace propagation (OBS-001)', () => {
+	it('carries the HTTP-boundary requestId into a tool-call log line', async () => {
+		const warnCalls: unknown[] = [];
+		const { logger } = await import('@template/mcp/logger');
+		const originalWarn = logger.warn.bind(logger);
+		logger.warn = ((...args: Parameters<typeof logger.warn>) => {
+			warnCalls.push(args[0]);
+			return originalWarn(...args);
+		}) as typeof logger.warn;
+
+		try {
+			const traceRequestId = 'trace-test-req-id-12345';
+			const client = new Client({ name: 'trace-test-client', version: '1.0.0' });
+			const transport = new StreamableHTTPClientTransport(new URL('http://localhost:3000/mcp'), {
+				fetch: async (input: string | URL, init?: RequestInit) =>
+					handleMcpRequest(
+						new Request(input, init),
+						// Deliberately under-scoped (missing `profile:read`, which
+						// `get_user_profile` requires) so the call reliably produces
+						// the `insufficient_scope` warn line this test reads.
+						buildAuthInfo({ scopes: ['audit:read'], requestId: traceRequestId }),
+					),
+			});
+			await client.connect(transport);
+
+			const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
+			expect(result.isError).toBe(true);
+
+			await client.close();
+
+			const matching = warnCalls.find(
+				(call) =>
+					typeof call === 'object' &&
+					call !== null &&
+					(call as Record<string, unknown>).requestId === traceRequestId,
+			);
+			expect(matching).toBeDefined();
+			expect((matching as Record<string, unknown>).outcome).toBe('insufficient_scope');
+		} finally {
+			logger.warn = originalWarn;
+		}
+	});
+});
+
 describe('shouldEnableConformanceMode', () => {
 	it('is false when conformance mode is not configured', () => {
 		expect(

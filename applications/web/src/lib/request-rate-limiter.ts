@@ -23,6 +23,7 @@ type RateLimitRoute =
 	| 'mcp_network'
 	| 'mcp_user'
 	| 'health_probe'
+	| 'metrics_probe'
 	| 'failed_authentication'
 	| 'session_creation';
 
@@ -191,6 +192,24 @@ export async function enforceHealthProbeRateLimit(input: {
 		identifier: input.networkIdentity,
 		maximumRequests: environment.RATE_LIMIT_HEALTH_MAX,
 		windowSeconds: environment.RATE_LIMIT_HEALTH_WINDOW_SECONDS,
+	});
+}
+
+/**
+ * OPS-002: gates both the readiness probe (`GET /health/ready`) and the
+ * metrics endpoint (`GET /metrics`), consumed on every request regardless of
+ * whether authentication succeeds — a caller with no credential still costs
+ * one slot, which is what actually bounds the abuse case (a bearer-token
+ * guess loop) rather than only rate-limiting after a failure.
+ */
+export async function enforceMetricsRateLimit(input: {
+	networkIdentity: string;
+}): Promise<SlidingWindowRateLimiterResult> {
+	return consumeRateLimit({
+		route: 'metrics_probe',
+		identifier: input.networkIdentity,
+		maximumRequests: environment.RATE_LIMIT_METRICS_MAX,
+		windowSeconds: environment.RATE_LIMIT_METRICS_WINDOW_SECONDS,
 	});
 }
 

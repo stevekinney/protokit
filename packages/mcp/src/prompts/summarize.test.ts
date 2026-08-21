@@ -38,3 +38,39 @@ describe('summarizePrompt', () => {
 		expect(result.messages[0].content.text).toContain('custom-user-id');
 	});
 });
+
+/**
+ * OBS-001 / S-14: by default (no `LOG_CONTENT_DIAGNOSTICS_UNTIL`
+ * configured, the real state of this test run's environment), the raw
+ * topic must never reach the logger — only its length.
+ */
+describe('summarizePrompt logging (OBS-001, diagnostics off)', () => {
+	it('logs topicLength instead of the raw topic', async () => {
+		const { logger } = await import('../logger.js');
+		const infoCalls: unknown[] = [];
+		const originalInfo = logger.info.bind(logger);
+		logger.info = ((...args: Parameters<typeof logger.info>) => {
+			infoCalls.push(args[0]);
+			return originalInfo(...args);
+		}) as typeof logger.info;
+
+		try {
+			const context = createTestContext();
+			await summarizePrompt.handler({ topic: 'a secret internal project codename' }, context);
+
+			const promptRequestedCall = infoCalls.find(
+				(call) => typeof call === 'object' && call !== null && 'topicLength' in (call as object),
+			) as Record<string, unknown> | undefined;
+			expect(promptRequestedCall).toBeDefined();
+			expect(promptRequestedCall?.topicLength).toBe('a secret internal project codename'.length);
+			expect(promptRequestedCall?.topic).toBeUndefined();
+
+			for (const call of infoCalls) {
+				const serialized = JSON.stringify(call);
+				expect(serialized).not.toContain('a secret internal project codename');
+			}
+		} finally {
+			logger.info = originalInfo;
+		}
+	});
+});

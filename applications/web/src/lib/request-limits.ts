@@ -39,6 +39,9 @@ export const mcpRequestMaxBodyBytes = 1 * 1024 * 1024;
 /** `POST /auth/sign-out` (SEC-005) — form-urlencoded CSRF token only. */
 export const signOutMaxBodyBytes = 1 * 1024;
 
+/** `POST /account/connections/revoke` and `/account/connections/revoke-all` (DATA-001) — form-urlencoded CSRF token plus, for the per-client route, a client identifier. */
+export const accountConnectionsMaxBodyBytes = 1 * 1024;
+
 // -- OAuth field-length limits ------------------------------------------------
 
 export const oauthMaxClientNameLength = 200;

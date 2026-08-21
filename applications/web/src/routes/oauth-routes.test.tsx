@@ -1,4 +1,5 @@
 import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import { hashCredential } from '@web/lib/hash-credential';
 
 const mockEnvironment: Record<string, unknown> = {};
 let mockOauthClients: unknown[] = [];
@@ -414,6 +415,15 @@ describe('client registration', () => {
 		// carrying it must never be cacheable.
 		expect(response.headers.get('Cache-Control')).toBe('no-store, private');
 		expect(response.headers.get('Vary')).toBe('Cookie');
+		// DATA-001 / S-18: "client secrets never expire" no longer holds -- a
+		// real, future, non-zero epoch-seconds expiry is now returned instead
+		// of RFC 7591's "0 means never expires" sentinel.
+		expect(typeof body.client_secret_expires_at).toBe('number');
+		expect(body.client_secret_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+		expect(mockInsertedValues).toHaveLength(1);
+		expect(
+			(mockInsertedValues[0] as { clientSecretExpiresAt: Date }).clientSecretExpiresAt,
+		).toBeInstanceOf(Date);
 	});
 
 	it('rejects client_credentials in grant_types and creates no rows', async () => {
@@ -735,6 +745,68 @@ describe('token revocation', () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/revoke',
 			body: 'token=unknown-token&client_id=c1',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+	});
+
+	it('DATA-001 / S-18: accepts a confidential client whose secret has not yet expired', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: [],
+				tokenEndpointAuthMethod: 'client_secret_post',
+				clientSecret: hashCredential('correct-secret'),
+				clientSecretExpiresAt: new Date(Date.now() + 60_000),
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1&client_secret=correct-secret',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+	});
+
+	it('DATA-001 / S-18: rejects a confidential client whose secret is correct but past clientSecretExpiresAt', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: [],
+				tokenEndpointAuthMethod: 'client_secret_post',
+				clientSecret: hashCredential('correct-secret'),
+				clientSecretExpiresAt: new Date(Date.now() - 1000),
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1&client_secret=correct-secret',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(401);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_client');
+	});
+
+	it('DATA-001 / S-18: a client with no recorded clientSecretExpiresAt (legacy row) is not treated as expired', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: [],
+				tokenEndpointAuthMethod: 'client_secret_post',
+				clientSecret: hashCredential('correct-secret'),
+				clientSecretExpiresAt: null,
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1&client_secret=correct-secret',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});
 		const response = await handleOauthRevokePost(context);

@@ -217,6 +217,12 @@ async function main(): Promise<void> {
 
 	console.log('[smoke] starting the application container');
 	const sessionSigningSecret = randomBytes(32).toString('hex');
+	// OPS-002: `GET /health` is now a dependency-free liveness check — see
+	// `applications/web/src/routes/health-routes.ts`. Dependency status
+	// (asserted below) moved to the authenticated `GET /health/ready`, so
+	// this run needs a readiness credential to reach it, the same as any
+	// real deployment's operator would.
+	const healthReadinessApiKey = randomBytes(32).toString('hex');
 	// CONFIG-001: `NODE_ENV=production` now refuses to start without an
 	// encrypted, certificate-verified `REDIS_URL`/`DATABASE_URL` (no local
 	// host, no placeholder credentials) — see `startup-invariants.ts`. This
@@ -260,6 +266,8 @@ async function main(): Promise<void> {
 		// structurally unable to answer the driver's protocol.
 		'-e',
 		'DATABASE_LOCAL_PROXY_URL=http://neon-proxy:4444/sql',
+		'-e',
+		`HEALTH_READINESS_API_KEY=${healthReadinessApiKey}`,
 		imageTag,
 	];
 	await $`docker ${appRunArguments}`;
@@ -277,22 +285,42 @@ async function main(): Promise<void> {
 		}
 	});
 
-	console.log('[smoke] checking /health');
+	console.log('[smoke] checking /health (public liveness, no dependency detail)');
 	const healthResponse = await fetch(`${appBaseUrl}/health`);
 	assert(
 		healthResponse.status === 200,
-		`expected /health to report every dependency healthy, got status ${healthResponse.status}`,
+		`expected /health to report liveness, got status ${healthResponse.status}`,
 	);
-	const health = (await healthResponse.json()) as {
+	const health = (await healthResponse.json()) as Record<string, unknown>;
+	assert(
+		Object.keys(health).length === 1 && health.status === 'ok',
+		`expected /health to reveal nothing but { status: "ok" }, got ${JSON.stringify(health)}`,
+	);
+
+	console.log('[smoke] checking /health/ready (authenticated readiness, dependency detail)');
+	const unauthenticatedReadinessResponse = await fetch(`${appBaseUrl}/health/ready`);
+	assert(
+		unauthenticatedReadinessResponse.status === 401,
+		`expected /health/ready with no credential to be rejected, got status ${unauthenticatedReadinessResponse.status}`,
+	);
+
+	const readinessResponse = await fetch(`${appBaseUrl}/health/ready`, {
+		headers: { Authorization: `Bearer ${healthReadinessApiKey}` },
+	});
+	assert(
+		readinessResponse.status === 200,
+		`expected /health/ready to report every dependency healthy, got status ${readinessResponse.status}`,
+	);
+	const readiness = (await readinessResponse.json()) as {
 		dependencies: { redis: string; database: string };
 	};
 	assert(
-		health.dependencies.redis === 'ok',
-		`expected Redis dependency healthy, got ${health.dependencies.redis}`,
+		readiness.dependencies.redis === 'ok',
+		`expected Redis dependency healthy, got ${readiness.dependencies.redis}`,
 	);
 	assert(
-		health.dependencies.database === 'ok',
-		`expected database dependency healthy through the Neon HTTP proxy, got ${health.dependencies.database}`,
+		readiness.dependencies.database === 'ok',
+		`expected database dependency healthy through the Neon HTTP proxy, got ${readiness.dependencies.database}`,
 	);
 
 	console.log('[smoke] checking OAuth discovery endpoints');

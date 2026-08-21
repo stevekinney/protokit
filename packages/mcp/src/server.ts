@@ -18,6 +18,7 @@ import { EXTENSION_ID, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps
 import { registerConformanceFixtures } from './conformance-fixture-registration.js';
 import { environment } from './env.js';
 import { metricsCollector } from './metrics.js';
+import { logger } from './logger.js';
 import type {
 	McpPromptDefinition,
 	McpResourceDefinition,
@@ -107,6 +108,14 @@ function hasRequiredScope(grantedScopes: readonly string[], requiredScope: McpSc
 export function createMcpServer(context: {
 	userId: string;
 	user: McpUserProfile;
+	/**
+	 * OBS-001: the HTTP-boundary request identifier, threaded through to
+	 * every tool/resource/prompt handler via `McpContext.requestId` so one
+	 * connector action can be traced end to end through logs. Undefined for
+	 * callers that build a server outside a real HTTP request (the
+	 * standalone conformance server, tests).
+	 */
+	requestId?: string;
 	enableUiExtension: boolean;
 	enableConformanceMode?: boolean;
 	/**
@@ -184,7 +193,23 @@ export function createMcpServer(context: {
 			},
 			async (input, ctx) => {
 				if (!hasRequiredScope(context.scopes, tool.requiredScope)) {
+					// OBS-001: "insufficient scope" — one of the eight outcomes the
+					// roadmap requires operators to be able to distinguish. Logs
+					// the required scope, never the caller's actual (insufficient)
+					// scope set or token.
+					logger.warn(
+						{
+							event: 'mcp_tool_call',
+							outcome: 'insufficient_scope',
+							tool: tool.name,
+							requiredScope: tool.requiredScope,
+							userId: context.userId,
+							requestId: context.requestId,
+						},
+						'MCP tool call rejected: insufficient scope',
+					);
 					metricsCollector.recordToolInvocation(tool.name, 0, true);
+					metricsCollector.recordEvent('mcp_method', 'insufficient_scope');
 					return {
 						content: [
 							{
@@ -206,11 +231,27 @@ export function createMcpServer(context: {
 					...context,
 					signal: ctx.mcpReq.signal,
 				});
-				metricsCollector.recordToolInvocation(
-					tool.name,
-					Date.now() - start,
-					'isError' in result && result.isError === true,
-				);
+				const isError = 'isError' in result && result.isError === true;
+				metricsCollector.recordToolInvocation(tool.name, Date.now() - start, isError);
+				if (isError) {
+					// OBS-001: "tool failure" — distinct from `insufficient_scope`
+					// above (an authorization decision made before the handler ever
+					// ran) and from `mcp_transport` in `mcp-handler.ts` (a failure
+					// the SDK's own transport layer catches, not a structured tool
+					// result). Never logs tool input/output — both can carry
+					// caller-supplied or generated content.
+					logger.warn(
+						{
+							event: 'mcp_tool_call',
+							outcome: 'tool_failure',
+							tool: tool.name,
+							userId: context.userId,
+							requestId: context.requestId,
+						},
+						'MCP tool call returned an error result',
+					);
+					metricsCollector.recordEvent('mcp_method', 'tool_failure');
+				}
 				return result;
 			},
 		);

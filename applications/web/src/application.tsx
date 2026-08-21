@@ -16,7 +16,7 @@ import {
 	handleGoogleSignInStart,
 	handleSignOut,
 } from '@web/routes/google-authentication-routes';
-import { handleHealthGet } from '@web/routes/health-routes';
+import { handleHealthGet, handleHealthReadinessGet } from '@web/routes/health-routes';
 import { handleMetricsGet } from '@web/routes/metrics-routes';
 import { handleMcpRequestWithAuthentication } from '@web/routes/mcp-routes';
 import {
@@ -31,6 +31,11 @@ import {
 	handleOauthTokenPost,
 } from '@web/routes/oauth-routes';
 import { getRequestClientIdentifier } from '@web/lib/request-client-identifier';
+import { listUserConnections } from '@web/lib/consent-inventory';
+import {
+	handleAccountConnectionRevokePost,
+	handleAccountConnectionsRevokeAllPost,
+} from '@web/routes/account-connections-routes';
 import { HomePage } from '@web/components/home-page';
 
 function isHtmlResponse(response: Response): boolean {
@@ -130,10 +135,26 @@ async function renderHomePage(context: RequestContext): Promise<Response> {
 	// actually exists — the sign-out form has nothing to protect otherwise.
 	const signOutCsrfToken =
 		context.user && context.sessionToken ? deriveSessionCsrfToken(context.sessionToken) : undefined;
+	// DATA-001 / S-18: the same session-bound CSRF token protects the
+	// connections revoke forms — one token, reused, exactly like sign-out.
+	const connectionsCsrfToken = signOutCsrfToken;
+	const connections = context.user ? await listUserConnections(context.user.id) : [];
 
 	return createStreamingHtmlResponse({
 		metadata: { title: 'MCP OAuth Server' },
-		body: <HomePage user={context.user} baseUrl={baseUrl} signOutCsrfToken={signOutCsrfToken} />,
+		body: (
+			<HomePage
+				user={context.user}
+				baseUrl={baseUrl}
+				signOutCsrfToken={signOutCsrfToken}
+				connections={connections.map((connection) => ({
+					clientId: connection.clientId,
+					clientName: connection.clientName,
+					earliestExpiresAt: connection.earliestExpiresAt.toISOString(),
+				}))}
+				connectionsCsrfToken={connectionsCsrfToken}
+			/>
+		),
 		serverData: {
 			page: 'home',
 			user: context.user
@@ -141,6 +162,12 @@ async function renderHomePage(context: RequestContext): Promise<Response> {
 				: null,
 			baseUrl,
 			signOutCsrfToken,
+			connections: connections.map((connection) => ({
+				clientId: connection.clientId,
+				clientName: connection.clientName,
+				earliestExpiresAt: connection.earliestExpiresAt.toISOString(),
+			})),
+			connectionsCsrfToken,
 		},
 	});
 }
@@ -186,6 +213,14 @@ async function dispatch(context: RequestContext): Promise<Response> {
 		return handleSignOut(context);
 	}
 
+	if (requestUrl.pathname === '/account/connections/revoke' && request.method === 'POST') {
+		return handleAccountConnectionRevokePost(context);
+	}
+
+	if (requestUrl.pathname === '/account/connections/revoke-all' && request.method === 'POST') {
+		return handleAccountConnectionsRevokeAllPost(context);
+	}
+
 	if (requestUrl.pathname === '/oauth/authorize' && request.method === 'GET') {
 		return handleOauthAuthorizeGet(context);
 	}
@@ -222,6 +257,42 @@ async function dispatch(context: RequestContext): Promise<Response> {
 		return handleOauthRevokePost(context);
 	}
 
+	// /.well-known/* metadata, /health, /health/ready, and /metrics are
+	// dispatched by `dispatchWithoutSession` before this function ever runs
+	// (see its doc comment) — none of them are reachable here.
+
+	if (requestUrl.pathname === '/mcp') {
+		return handleMcpRequestWithAuthentication(context);
+	}
+
+	return jsonResponse({ error: 'not_found' }, { status: 404 });
+}
+
+/**
+ * OPS-002 / S-15: routes that never read `context.user` or
+ * `context.sessionToken` — public liveness, the authenticated readiness and
+ * metrics endpoints (each carries its own bearer-credential check, not a
+ * browser session), and the static OAuth discovery documents. Dispatched
+ * before `hydrateSession` runs so none of them ever queries session
+ * storage, even when sent with a cookie. Returns `null` (rather than a 404)
+ * for anything else, so `handleApplicationRequest` falls through to the
+ * ordinary session-hydrating `dispatch` above.
+ */
+function dispatchWithoutSession(context: RequestContext): Response | Promise<Response> | null {
+	const { request, requestUrl } = context;
+
+	if (requestUrl.pathname === '/health' && request.method === 'GET') {
+		return handleHealthGet();
+	}
+
+	if (requestUrl.pathname === '/health/ready' && request.method === 'GET') {
+		return handleHealthReadinessGet(context);
+	}
+
+	if (requestUrl.pathname === '/metrics' && request.method === 'GET') {
+		return handleMetricsGet(context);
+	}
+
 	if (
 		requestUrl.pathname === '/.well-known/oauth-authorization-server' &&
 		(request.method === 'GET' || request.method === 'OPTIONS')
@@ -252,19 +323,7 @@ async function dispatch(context: RequestContext): Promise<Response> {
 		return handleOauthProtectedResourceMcpMetadataGet(context);
 	}
 
-	if (requestUrl.pathname === '/health' && request.method === 'GET') {
-		return handleHealthGet(context);
-	}
-
-	if (requestUrl.pathname === '/metrics' && request.method === 'GET') {
-		return handleMetricsGet(request);
-	}
-
-	if (requestUrl.pathname === '/mcp') {
-		return handleMcpRequestWithAuthentication(context);
-	}
-
-	return jsonResponse({ error: 'not_found' }, { status: 404 });
+	return null;
 }
 
 export async function handleApplicationRequest(
@@ -280,24 +339,35 @@ export async function handleApplicationRequest(
 		return withSecurityHeaders(staticFileResponse, requestUrl.pathname);
 	}
 
-	const session = await hydrateSession(request);
 	const networkIdentity = getRequestClientIdentifier({
 		request,
 		socketAddress: input?.clientAddress,
 	});
-	const context: RequestContext = {
+
+	// OPS-002 / S-15: try the session-free routes first. `hydrateSession`
+	// (a session-store lookup) only ever runs below this point, for
+	// requests that actually need `context.user` — see
+	// `dispatchWithoutSession`'s doc comment.
+	let context: RequestContext = {
 		request,
 		requestUrl,
 		requestId,
 		clientAddress: input?.clientAddress,
 		networkIdentity,
-		user: session.user,
-		sessionToken: session.sessionToken,
+		user: null,
+		sessionToken: null,
 	};
 
 	let response: Response;
 	try {
-		response = await dispatch(context);
+		const preSessionResponse = await dispatchWithoutSession(context);
+		if (preSessionResponse) {
+			response = preSessionResponse;
+		} else {
+			const session = await hydrateSession(request);
+			context = { ...context, user: session.user, sessionToken: session.sessionToken };
+			response = await dispatch(context);
+		}
 	} catch (error) {
 		logger.error(
 			{ err: error, requestId, method: request.method, path: requestUrl.pathname },
@@ -310,7 +380,8 @@ export async function handleApplicationRequest(
 	}
 
 	const durationMs = Date.now() - startTime;
-	const isHealthCheck = requestUrl.pathname === '/health';
+	const isHealthCheck =
+		requestUrl.pathname === '/health' || requestUrl.pathname === '/health/ready';
 	if (!isHealthCheck) {
 		logger.info(
 			{

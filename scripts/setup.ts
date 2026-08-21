@@ -361,7 +361,7 @@ async function runFullSetup() {
 	console.log('  1. bun turbo dev             — Start development server');
 	console.log('  2. bun scripts/develop.ts --tunnel');
 	console.log('                               — Start dev server + a public tunnel for claude.ai');
-	console.log('  3. bunx @modelcontextprotocol/inspector');
+	console.log('  3. bunx @modelcontextprotocol/inspector@2.3.0');
 	console.log('                               — Debug MCP locally');
 	console.log('');
 }

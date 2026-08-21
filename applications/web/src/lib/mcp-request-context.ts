@@ -37,6 +37,12 @@ export type McpRequestAuthExtra = {
 	resource: string;
 	/** Best-effort caller network identity for logging/observability. */
 	networkIdentity?: string;
+	/**
+	 * OBS-001: the same `requestId` `application.tsx` generated for this
+	 * HTTP request, carried through to the MCP server factory so tool,
+	 * resource, and prompt handlers can log under it — see `McpContext`.
+	 */
+	requestId?: string;
 };
 
 export function buildMcpAuthInfo(input: {

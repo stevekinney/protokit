@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
-import { sessionSigningSecret } from '@web/lib/session-signing-secret';
+import { sessionSigningSecret, sessionSigningSecrets } from '@web/lib/session-signing-secret';
 
 /**
  * A stateless, session-bound CSRF token for routes that have no dedicated
@@ -17,19 +17,35 @@ import { sessionSigningSecret } from '@web/lib/session-signing-secret';
  * (`HttpOnly`) cannot reproduce it, so a cross-site form submission cannot
  * supply a valid value.
  */
-export function deriveSessionCsrfToken(sessionToken: string): string {
-	return createHmac('sha256', sessionSigningSecret).update(sessionToken).digest('hex');
+export function deriveSessionCsrfTokenWithSecret(sessionToken: string, secret: string): string {
+	return createHmac('sha256', secret).update(sessionToken).digest('hex');
 }
 
+export function deriveSessionCsrfToken(sessionToken: string): string {
+	return deriveSessionCsrfTokenWithSecret(sessionToken, sessionSigningSecret);
+}
+
+/**
+ * DATA-001 / S-18: accepts a token derived under the current signing secret
+ * OR any secret still inside its rotation overlap window
+ * (`sessionSigningSecrets`), so a session-signing-secret rotation does not
+ * instantly invalidate every open tab's already-rendered CSRF token. Once a
+ * rotation's cutover clears the overlap set, a token derived only under the
+ * retired secret stops matching here — that is acceptance criterion 5's
+ * "rejects retired keys after the cutover."
+ */
 export function isValidSessionCsrfToken(
 	sessionToken: string,
 	submittedToken: string | null | undefined,
+	signingSecrets: readonly string[] = sessionSigningSecrets,
 ): boolean {
 	if (!submittedToken) {
 		return false;
 	}
 
-	return constantTimeEquals(deriveSessionCsrfToken(sessionToken), submittedToken);
+	return signingSecrets.some((secret) =>
+		constantTimeEquals(deriveSessionCsrfTokenWithSecret(sessionToken, secret), submittedToken),
+	);
 }
 
 /**

@@ -6,6 +6,7 @@ import { loadAssetManifest } from '@web/lib/asset-manifest';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 import { mcpRequestMaxBodyBytes } from '@web/lib/request-limits';
+import { startScheduledCleanup, stopScheduledCleanup } from '@web/lib/scheduled-cleanup';
 import { describeBindAddress, resolveBindAddress } from '@web/lib/resolve-bind-address';
 import { assertProductionStartupInvariants } from '@web/lib/startup-invariants';
 import { resolvePublicFile } from '@web/resolve-public-file';
@@ -87,6 +88,13 @@ const server = Bun.serve({
 
 logger.info({ port, listenHostname: describeBindAddress(hostname) }, 'Web server started');
 
+// DATA-001 / S-18: cleanup is now a scheduled, in-process sweep instead of
+// an unscheduled script nothing ever invokes. `scripts/cleanup-expired-data.ts`
+// still exists for a manual or externally-cron-scheduled run against a
+// deployment that does not keep this process alive (e.g. a one-shot job),
+// calling the same `runScheduledCleanup` this interval does.
+startScheduledCleanup(environment.SCHEDULED_CLEANUP_INTERVAL_SECONDS * 1000);
+
 let isShuttingDown = false;
 
 async function gracefulShutdown(signal: string): Promise<void> {
@@ -95,6 +103,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
 	logger.info({ signal }, 'Graceful shutdown initiated');
 
+	stopScheduledCleanup();
 	server.stop(false);
 
 	const shutdownTimeout = setTimeout(() => {

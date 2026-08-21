@@ -16,13 +16,32 @@ mock.module('@template/mcp/metrics', () => ({
 	},
 }));
 
+mock.module('@web/lib/request-rate-limiter', () => ({
+	enforceMetricsRateLimit: async () => ({
+		allowed: true,
+		retryAfterSeconds: 0,
+		remainingRequests: 10,
+	}),
+}));
+
 const { handleMetricsGet } = await import('@web/routes/metrics-routes');
+
+function buildContext(request: Request) {
+	return {
+		request,
+		requestUrl: new URL(request.url),
+		requestId: 'req-1',
+		networkIdentity: '203.0.113.1',
+		user: null,
+		sessionToken: null,
+	};
+}
 
 function setEnvironment(overrides: Record<string, unknown>) {
 	for (const key of Object.keys(mockEnvironment)) {
 		delete mockEnvironment[key];
 	}
-	Object.assign(mockEnvironment, overrides);
+	Object.assign(mockEnvironment, { NODE_ENV: 'test', ...overrides });
 }
 
 describe('handleMetricsGet', () => {
@@ -32,36 +51,109 @@ describe('handleMetricsGet', () => {
 
 	it('returns 404 when no API key is configured', async () => {
 		setEnvironment({ METRICS_API_KEY: undefined });
-		const request = new Request('http://localhost/metrics');
-		const response = await handleMetricsGet(request);
+		const response = await handleMetricsGet(
+			buildContext(new Request('https://app.example.com/metrics')),
+		);
 		expect(response.status).toBe(404);
 	});
 
 	it('returns 401 when authorization header is missing', async () => {
 		setEnvironment({ METRICS_API_KEY: 'secret-key' });
-		const request = new Request('http://localhost/metrics');
-		const response = await handleMetricsGet(request);
+		const response = await handleMetricsGet(
+			buildContext(new Request('https://app.example.com/metrics')),
+		);
 		expect(response.status).toBe(401);
 	});
 
 	it('returns 401 when bearer token does not match', async () => {
 		setEnvironment({ METRICS_API_KEY: 'secret-key' });
-		const request = new Request('http://localhost/metrics', {
-			headers: { authorization: 'Bearer wrong-key' },
-		});
-		const response = await handleMetricsGet(request);
+		const response = await handleMetricsGet(
+			buildContext(
+				new Request('https://app.example.com/metrics', {
+					headers: { authorization: 'Bearer wrong-key' },
+				}),
+			),
+		);
 		expect(response.status).toBe(401);
 	});
 
 	it('returns 200 with metrics snapshot when bearer token matches', async () => {
 		setEnvironment({ METRICS_API_KEY: 'secret-key' });
-		const request = new Request('http://localhost/metrics', {
-			headers: { authorization: 'Bearer secret-key' },
-		});
-		const response = await handleMetricsGet(request);
+		const response = await handleMetricsGet(
+			buildContext(
+				new Request('https://app.example.com/metrics', {
+					headers: { authorization: 'Bearer secret-key' },
+				}),
+			),
+		);
 		expect(response.status).toBe(200);
 		const body = await response.json();
 		expect(body.tools).toEqual({});
 		expect(typeof body.uptimeSeconds).toBe('number');
+	});
+
+	it('sets Cache-Control: no-store on every response shape', async () => {
+		setEnvironment({ METRICS_API_KEY: undefined });
+		const notConfigured = await handleMetricsGet(
+			buildContext(new Request('https://app.example.com/metrics')),
+		);
+		expect(notConfigured.headers.get('Cache-Control')).toBe('no-store');
+
+		setEnvironment({ METRICS_API_KEY: 'secret-key' });
+		const unauthorized = await handleMetricsGet(
+			buildContext(new Request('https://app.example.com/metrics')),
+		);
+		expect(unauthorized.headers.get('Cache-Control')).toBe('no-store');
+
+		const authorized = await handleMetricsGet(
+			buildContext(
+				new Request('https://app.example.com/metrics', {
+					headers: { authorization: 'Bearer secret-key' },
+				}),
+			),
+		);
+		expect(authorized.headers.get('Cache-Control')).toBe('no-store');
+	});
+
+	it('rejects a plaintext request in production even with a valid key', async () => {
+		setEnvironment({ METRICS_API_KEY: 'secret-key', NODE_ENV: 'production' });
+		const response = await handleMetricsGet(
+			buildContext(
+				new Request('http://app.example.com/metrics', {
+					headers: { authorization: 'Bearer secret-key' },
+				}),
+			),
+		);
+		expect(response.status).toBe(400);
+	});
+
+	it('returns 429 with Retry-After and no-store when rate limited', async () => {
+		setEnvironment({ METRICS_API_KEY: 'secret-key' });
+		mock.module('@web/lib/request-rate-limiter', () => ({
+			enforceMetricsRateLimit: async () => ({
+				allowed: false,
+				retryAfterSeconds: 30,
+				remainingRequests: 0,
+			}),
+		}));
+
+		const response = await handleMetricsGet(
+			buildContext(
+				new Request('https://app.example.com/metrics', {
+					headers: { authorization: 'Bearer secret-key' },
+				}),
+			),
+		);
+		expect(response.status).toBe(429);
+		expect(response.headers.get('Retry-After')).toBe('30');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+
+		mock.module('@web/lib/request-rate-limiter', () => ({
+			enforceMetricsRateLimit: async () => ({
+				allowed: true,
+				retryAfterSeconds: 0,
+				remainingRequests: 10,
+			}),
+		}));
 	});
 });

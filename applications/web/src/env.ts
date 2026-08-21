@@ -18,6 +18,7 @@ export const environment = createEnv({
 	runtimeEnv: {
 		BASE_URL: process.env.BASE_URL,
 		SESSION_SIGNING_SECRET: process.env.SESSION_SIGNING_SECRET,
+		SESSION_SIGNING_SECRET_PREVIOUS: process.env.SESSION_SIGNING_SECRET_PREVIOUS,
 		GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
 		GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
 		SESSION_COOKIE_NAME: process.env.SESSION_COOKIE_NAME,
@@ -56,6 +57,10 @@ export const environment = createEnv({
 			'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip' | undefined,
 		TRUSTED_PROXY_HOP_COUNT: process.env.TRUSTED_PROXY_HOP_COUNT,
 		METRICS_API_KEY: process.env.METRICS_API_KEY,
+		RATE_LIMIT_METRICS_MAX: process.env.RATE_LIMIT_METRICS_MAX,
+		RATE_LIMIT_METRICS_WINDOW_SECONDS: process.env.RATE_LIMIT_METRICS_WINDOW_SECONDS,
+		HEALTH_READINESS_API_KEY: process.env.HEALTH_READINESS_API_KEY,
+		HEALTH_READINESS_CACHE_TTL_SECONDS: process.env.HEALTH_READINESS_CACHE_TTL_SECONDS,
 		PORT: process.env.PORT,
 		SERVER_BIND_ADDRESS: process.env.SERVER_BIND_ADDRESS,
 		// Read via a bracket literal, never `process.env.NODE_ENV`. Bun's bundler
@@ -65,6 +70,7 @@ export const environment = createEnv({
 		// invariants were unable to fire. `build.ts` asserts this stays true.
 		NODE_ENV: process.env['NODE_ENV'] as 'development' | 'production' | 'test' | undefined,
 		PROTOKIT_TUNNEL_ACTIVE: process.env.PROTOKIT_TUNNEL_ACTIVE,
+		SCHEDULED_CLEANUP_INTERVAL_SECONDS: process.env.SCHEDULED_CLEANUP_INTERVAL_SECONDS,
 		NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
 	},
 	emptyStringAsUndefined: true,

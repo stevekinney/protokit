@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { database, schema } from '@template/database';
 import { getSupportedScopes, isMcpScope, mcpScopeDescriptions } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
+import { metricsCollector } from '@template/mcp/metrics';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
@@ -19,6 +20,7 @@ import {
 	isClientIdMetadataDocumentUrl,
 } from '@web/lib/client-metadata-documents';
 import { isTrustedRequestOrigin } from '@web/lib/csrf-protection';
+import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@web/lib/credential-lifecycle-policy';
 import { hashCredential } from '@web/lib/hash-credential';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
@@ -768,6 +770,14 @@ export async function handleOauthAuthorizeDeny(context: RequestContext): Promise
 	// see the identical comment on the approve handler above.
 	redirectUrl.searchParams.set('iss', transaction.issuer);
 
+	// OBS-001: distinguishable from every other authorization outcome —
+	// `clientId` is public identifier, never a secret.
+	logger.info(
+		{ event: 'oauth_authorization', outcome: 'user_denied', clientId: transaction.clientId },
+		'User denied authorization request',
+	);
+	metricsCollector.recordEvent('authorization', 'user_denied');
+
 	return redirectResponse(redirectUrl.toString(), 302);
 }
 
@@ -836,10 +846,18 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 	const isPublicClient = token_endpoint_auth_method === 'none';
 	const clientId = randomUUID();
 	const clientSecret = isPublicClient ? null : randomBytes(32).toString('hex');
+	// DATA-001 / S-18: "client secrets never expire" — every confidential
+	// client's secret now gets a real expiry at issuance, enforced by
+	// `authenticateOauthClient` below. Null for a public client, which never
+	// has a secret to expire.
+	const clientSecretExpiresAt = clientSecret
+		? new Date(Date.now() + OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS)
+		: null;
 
 	await database.insert(schema.oauthClients).values({
 		clientId,
 		clientSecret: clientSecret ? hashCredential(clientSecret) : null,
+		clientSecretExpiresAt,
 		clientName: client_name,
 		clientType: isPublicClient ? 'public' : 'confidential',
 		tokenEndpointAuthMethod: token_endpoint_auth_method,
@@ -849,12 +867,29 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 		responseTypes: response_types,
 	});
 
+	// OBS-001: "registration" is one of the eight outcomes the roadmap
+	// requires operators to be able to distinguish without inspecting
+	// secrets — `clientId` is an opaque identifier, never the issued secret.
+	logger.info(
+		{ event: 'oauth_client_registration', outcome: 'success', clientId, isPublicClient },
+		'OAuth client registered',
+	);
+	metricsCollector.recordEvent('registration', 'success');
+
 	return jsonResponse(
 		{
 			client_id: clientId,
 			// RFC 7591 §3.2.1: `client_secret`/`client_secret_expires_at` are
-			// only present when a secret was actually issued.
-			...(clientSecret ? { client_secret: clientSecret, client_secret_expires_at: 0 } : {}),
+			// only present when a secret was actually issued. DATA-001 / S-18:
+			// `client_secret_expires_at` now reports the real epoch-seconds
+			// expiry instead of the RFC's "0 means never expires" sentinel —
+			// this server always sets a real expiry for a confidential client.
+			...(clientSecret && clientSecretExpiresAt
+				? {
+						client_secret: clientSecret,
+						client_secret_expires_at: Math.floor(clientSecretExpiresAt.getTime() / 1000),
+					}
+				: {}),
 			client_name,
 			redirect_uris,
 			grant_types,
@@ -885,10 +920,23 @@ async function authenticateOauthClient(
 	clientSecret: string | undefined,
 	responseHeaders: HeadersInit,
 ): Promise<OauthClientAuthenticationResult> {
-	const invalidClient = (): OauthClientAuthenticationResult => ({
-		ok: false,
-		response: jsonResponse({ error: 'invalid_client' }, { status: 401, headers: responseHeaders }),
-	});
+	const invalidClient = (): OauthClientAuthenticationResult => {
+		// OBS-001: distinguishable from every other outcome; `clientId` is the
+		// caller-presented public identifier, never the secret it failed to
+		// authenticate with.
+		logger.warn(
+			{ event: 'oauth_client_authentication', outcome: 'invalid_client', clientId },
+			'OAuth client authentication failed',
+		);
+		metricsCollector.recordEvent('client_authentication', 'invalid_client');
+		return {
+			ok: false,
+			response: jsonResponse(
+				{ error: 'invalid_client' },
+				{ status: 401, headers: responseHeaders },
+			),
+		};
+	};
 
 	const [client] = await database
 		.select()
@@ -907,6 +955,16 @@ async function authenticateOauthClient(
 			return invalidClient();
 		}
 		if (!constantTimeEquals(client.clientSecret, hashCredential(clientSecret))) {
+			return invalidClient();
+		}
+		// DATA-001 / S-18 acceptance criterion 5: a secret past its own
+		// `clientSecretExpiresAt` is rejected outright, even if the value
+		// still matches the stored hash. `null` means no expiry was ever
+		// recorded for this row (a pre-existing client from before this
+		// column existed) — not an exemption from expiring, but nothing to
+		// compare against, so it is treated as "not yet expired" rather than
+		// silently locking out every legacy client.
+		if (client.clientSecretExpiresAt && client.clientSecretExpiresAt.getTime() <= Date.now()) {
 			return invalidClient();
 		}
 	}
@@ -992,6 +1050,17 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	// for. Checked before any client or code lookup, so a request for the
 	// wrong resource never reaches the database at all.
 	if (resource !== getMcpResourceUrl(request)) {
+		// OBS-001: distinguishable from every other token-exchange outcome;
+		// `resource` is a caller-supplied URL, never a credential.
+		logger.warn(
+			{
+				event: 'oauth_token_exchange',
+				outcome: 'invalid_resource',
+				grantType: 'authorization_code',
+			},
+			'Token request named an unsupported resource',
+		);
+		metricsCollector.recordEvent('token_exchange', 'invalid_resource');
 		return jsonResponse(
 			{
 				error: 'invalid_target',
@@ -1067,6 +1136,15 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	// resource — relevant if configuration ever changes between the
 	// authorize and token requests — before any token is minted.
 	if (authorizationCode.resource !== resource) {
+		logger.warn(
+			{
+				event: 'oauth_token_exchange',
+				outcome: 'invalid_resource',
+				grantType: 'authorization_code',
+			},
+			'Authorization code resource mismatch',
+		);
+		metricsCollector.recordEvent('token_exchange', 'invalid_resource');
 		return jsonResponse(
 			{
 				error: 'invalid_target',
@@ -1119,6 +1197,8 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		familyId: randomUUID(),
 		expiresAt: tokens.refreshTokenExpiresAt,
 	});
+
+	metricsCollector.recordEvent('token_exchange', 'success');
 
 	return jsonResponse(
 		{
@@ -1178,6 +1258,11 @@ async function handleOauthTokenRefreshGrant(
 	// the same single canonical MCP resource as every other token this
 	// server issues. Checked before any database work.
 	if (resource !== getMcpResourceUrl(request)) {
+		logger.warn(
+			{ event: 'oauth_token_exchange', outcome: 'invalid_resource', grantType: 'refresh_token' },
+			'Refresh request named an unsupported resource',
+		);
+		metricsCollector.recordEvent('refresh', 'invalid_resource');
 		return jsonResponse(
 			{
 				error: 'invalid_target',
@@ -1279,10 +1364,17 @@ async function handleOauthTokenRefreshGrant(
 
 		if (existingByHash?.revokedAt) {
 			await revokeOauthRefreshTokenFamily(existingByHash.familyId);
+			// OBS-001: this is the source event for the roadmap's "refresh
+			// replay" alert — see RUNBOOK.md.
 			logger.warn(
-				{ familyId: existingByHash.familyId },
+				{
+					event: 'oauth_token_exchange',
+					outcome: 'refresh_replay',
+					familyId: existingByHash.familyId,
+				},
 				'refresh token reuse detected; revoked token family',
 			);
+			metricsCollector.recordEvent('refresh', 'replay_detected');
 		}
 
 		return jsonResponse(
@@ -1356,6 +1448,8 @@ async function handleOauthTokenRefreshGrant(
 		familyId: revokedRefreshToken.familyId,
 		expiresAt: tokens.refreshTokenExpiresAt,
 	});
+
+	metricsCollector.recordEvent('refresh', 'success');
 
 	return jsonResponse(
 		{
@@ -1455,6 +1549,7 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 			.returning();
 
 		if (revokedAccessToken) {
+			metricsCollector.recordEvent('revocation', 'access_token_revoked');
 			return new Response(null, { status: 200, headers: revocationResponseHeaders });
 		}
 	}
@@ -1483,6 +1578,7 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 					),
 				);
 
+			metricsCollector.recordEvent('revocation', 'refresh_token_revoked');
 			return new Response(null, { status: 200, headers: revocationResponseHeaders });
 		}
 	}
@@ -1490,7 +1586,10 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 	// RFC 7009 §2.2: return 200 even if the token was not found, was already
 	// revoked, or belongs to a different client than the one authenticated
 	// above -- deliberately indistinguishable from each other so a response
-	// never reveals whether a token exists or who owns it.
+	// never reveals whether a token exists or who owns it. The metric label
+	// is safe to be more specific than the wire response: it never reaches
+	// the caller.
+	metricsCollector.recordEvent('revocation', 'not_found_or_already_revoked');
 	return new Response(null, { status: 200, headers: revocationResponseHeaders });
 }
 

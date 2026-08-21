@@ -4,11 +4,25 @@ export type ToolMetricEntry = {
 	durations: number[];
 };
 
+/**
+ * OBS-001: outcome counters for the OAuth and MCP surfaces the roadmap
+ * names — discovery, authorization, token exchange, refresh, revocation,
+ * registration, MCP method dispatch, stream disconnects, version
+ * negotiation, and conformance failures. Deliberately a flat
+ * `category -> outcome -> count` map rather than one field per category:
+ * every category has the same shape (a set of named, mutually exclusive
+ * outcomes), and this lets a new outcome or category be added at a call
+ * site with no change here. `tools` above stays its own typed field
+ * because it also carries latency percentiles, which events do not.
+ */
+export type EventOutcomeCounts = Record<string, Record<string, number>>;
+
 export type MetricsSnapshot = {
 	tools: Record<
 		string,
 		{ invocations: number; errors: number; p50: number; p95: number; p99: number }
 	>;
+	events: EventOutcomeCounts;
 	uptimeSeconds: number;
 	collectedAt: string;
 };
@@ -23,6 +37,7 @@ function percentile(sorted: number[], p: number): number {
 
 class MetricsCollector {
 	private tools = new Map<string, ToolMetricEntry>();
+	private events = new Map<string, Map<string, number>>();
 	private startedAt = Date.now();
 
 	recordToolInvocation(name: string, durationMs: number, isError: boolean): void {
@@ -39,6 +54,24 @@ class MetricsCollector {
 		}
 	}
 
+	/**
+	 * OBS-001: increments the counter for one `(category, outcome)` pair —
+	 * e.g. `recordEvent('registration', 'success')`,
+	 * `recordEvent('token_exchange', 'invalid_client')`,
+	 * `recordEvent('authorization', 'user_denied')`. Never pass a secret,
+	 * token, or user-identifying value as `outcome` — this is a metric
+	 * label, not a log field, and stays in memory for the life of the
+	 * process.
+	 */
+	recordEvent(category: string, outcome: string): void {
+		let outcomes = this.events.get(category);
+		if (!outcomes) {
+			outcomes = new Map();
+			this.events.set(category, outcomes);
+		}
+		outcomes.set(outcome, (outcomes.get(outcome) ?? 0) + 1);
+	}
+
 	snapshot(): MetricsSnapshot {
 		const tools: MetricsSnapshot['tools'] = {};
 		for (const [name, entry] of this.tools) {
@@ -52,8 +85,13 @@ class MetricsCollector {
 			};
 			entry.durations = [];
 		}
+		const events: EventOutcomeCounts = {};
+		for (const [category, outcomes] of this.events) {
+			events[category] = Object.fromEntries(outcomes);
+		}
 		return {
 			tools,
+			events,
 			uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
 			collectedAt: new Date().toISOString(),
 		};
@@ -61,6 +99,7 @@ class MetricsCollector {
 
 	reset(): void {
 		this.tools.clear();
+		this.events.clear();
 		this.startedAt = Date.now();
 	}
 }

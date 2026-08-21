@@ -85,7 +85,8 @@ mock.module('@template/mcp', () => ({
 
 let mockTokenResult: unknown[] = [];
 
-const { handleMcpRequestWithAuthentication } = await import('@web/routes/mcp-routes');
+const { handleMcpRequestWithAuthentication, isDnsRebindingProtectionActive } =
+	await import('@web/routes/mcp-routes');
 
 function createContext(
 	overrides: Partial<{
@@ -189,5 +190,31 @@ describe('handleMcpRequestWithAuthentication', () => {
 		const response = await handleMcpRequestWithAuthentication(context);
 		expect(response.status).toBe(401);
 		expect(response.headers.get('www-authenticate')).toContain('scope="profile:read prompts:read"');
+	});
+});
+
+describe('isDnsRebindingProtectionActive (SEC-002)', () => {
+	it('is active by default (not conformance mode, no tunnel)', () => {
+		expect(
+			isDnsRebindingProtectionActive({ conformanceModeConfigured: false, tunnelActive: false }),
+		).toBe(true);
+	});
+
+	it('is inactive while conformance mode is configured', () => {
+		expect(
+			isDnsRebindingProtectionActive({ conformanceModeConfigured: true, tunnelActive: false }),
+		).toBe(false);
+	});
+
+	it('is inactive while a tunnel is active', () => {
+		expect(
+			isDnsRebindingProtectionActive({ conformanceModeConfigured: false, tunnelActive: true }),
+		).toBe(false);
+	});
+
+	it('is inactive when both conformance mode and a tunnel are active', () => {
+		expect(
+			isDnsRebindingProtectionActive({ conformanceModeConfigured: true, tunnelActive: true }),
+		).toBe(false);
 	});
 });

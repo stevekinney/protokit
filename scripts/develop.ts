@@ -47,6 +47,7 @@ export const exposedRoutes: readonly string[] = [
 	'/.well-known/oauth-protected-resource',
 	'/.well-known/oauth-protected-resource/mcp',
 	'/health',
+	'/health/ready',
 	'/metrics',
 	'/mcp',
 ];

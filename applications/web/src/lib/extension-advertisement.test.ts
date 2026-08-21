@@ -75,7 +75,7 @@ const testContext = {
 
 describe('extension advertisement', () => {
 	it('/health never mentions enterprise authorization', async () => {
-		const response = await handleHealthGet(testContext);
+		const response = handleHealthGet();
 		const bodyText = await response.text();
 		expect(bodyText.toLowerCase()).not.toContain('enterprise');
 	});

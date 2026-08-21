@@ -5,7 +5,9 @@
 	"type": "module",
 	"exports": {
 		"./environment-schema": "./src/environment-schema.ts",
-		"./lib/production-startup-requirements": "./src/lib/production-startup-requirements.ts"
+		"./lib/production-startup-requirements": "./src/lib/production-startup-requirements.ts",
+		"./lib/credential-lifecycle-policy": "./src/lib/credential-lifecycle-policy.ts",
+		"./lib/scheduled-cleanup": "./src/lib/scheduled-cleanup.ts"
 	},
 	"scripts": {
 		"dev": "NODE_ENV=development bun run src/development.ts",

@@ -23,6 +23,20 @@ export const environment = createEnv({
 		// artifact could never observe the runtime value and CONFIG-001's fail-closed
 		// invariants were unable to fire. `build.ts` asserts this stays true.
 		NODE_ENV: process.env['NODE_ENV'],
+		LOG_CONTENT_DIAGNOSTICS_UNTIL: process.env.LOG_CONTENT_DIAGNOSTICS_UNTIL,
 	},
 	emptyStringAsUndefined: true,
 });
+
+// OBS-001: the same fail-closed shape as the `SKIP_ENV_VALIDATION` check
+// above — a schema `.refine()` cannot see NODE_ENV here (this schema shape
+// is shared, side-effect-free, and intentionally has no cross-field
+// checks), so this is enforced imperatively, once, right after validation.
+// A diagnostic timestamp value is otherwise legitimate in development/test;
+// only production refuses it outright, regardless of how far in the future
+// it is set.
+if (environment.NODE_ENV === 'production' && environment.LOG_CONTENT_DIAGNOSTICS_UNTIL) {
+	throw new Error(
+		'LOG_CONTENT_DIAGNOSTICS_UNTIL is not supported in production. Raw prompt content logging cannot run in production.',
+	);
+}

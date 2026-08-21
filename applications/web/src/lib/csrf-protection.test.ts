@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
 	deriveSessionCsrfToken,
+	deriveSessionCsrfTokenWithSecret,
 	isTrustedRequestOrigin,
 	isValidSessionCsrfToken,
 } from '@web/lib/csrf-protection';
@@ -42,6 +43,45 @@ describe('isValidSessionCsrfToken', () => {
 	it('rejects a tampered token of a different length', () => {
 		const token = deriveSessionCsrfToken('session-token-abc');
 		expect(isValidSessionCsrfToken('session-token-abc', `${token}extra`)).toBe(false);
+	});
+});
+
+/**
+ * DATA-001 / S-18: proves the signing-key overlap/cutover state machine
+ * `test:signing-key-rotation` names in the roadmap's verification block,
+ * exercised through this module's own injectable `signingSecrets`
+ * parameter rather than mutating `@web/env` (which several other test
+ * files already mock at module scope — see `session-signing-secret.ts`'s
+ * own doc comment for why).
+ */
+describe('isValidSessionCsrfToken rotation overlap', () => {
+	const currentSecret = 'current-secret-aaaaaaaaaaaaaaaa';
+	const previousSecret = 'previous-secret-bbbbbbbbbbbbbbb';
+	const retiredSecret = 'retired-secret-ccccccccccccccc';
+	const sessionToken = 'session-token-abc';
+
+	it('accepts a token derived under the current secret when an overlap set is configured', () => {
+		const token = deriveSessionCsrfTokenWithSecret(sessionToken, currentSecret);
+		expect(isValidSessionCsrfToken(sessionToken, token, [currentSecret, previousSecret])).toBe(
+			true,
+		);
+	});
+
+	it('accepts a token derived under the previous secret during the overlap window (rotation)', () => {
+		const token = deriveSessionCsrfTokenWithSecret(sessionToken, previousSecret);
+		expect(isValidSessionCsrfToken(sessionToken, token, [currentSecret, previousSecret])).toBe(
+			true,
+		);
+	});
+
+	it('rejects a token derived under a retired secret once the overlap set no longer includes it (cutover)', () => {
+		const token = deriveSessionCsrfTokenWithSecret(sessionToken, retiredSecret);
+		expect(isValidSessionCsrfToken(sessionToken, token, [currentSecret, previousSecret])).toBe(
+			false,
+		);
+		// Before the cutover, the same token was accepted -- proving this is a
+		// state transition, not a token that was simply always invalid.
+		expect(isValidSessionCsrfToken(sessionToken, token, [currentSecret, retiredSecret])).toBe(true);
 	});
 });
 

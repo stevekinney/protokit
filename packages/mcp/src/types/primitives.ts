@@ -18,6 +18,16 @@ export type McpContext = {
 	userId: string;
 	user: McpUserProfile;
 	/**
+	 * OBS-001: the same request identifier `application.tsx` generated at
+	 * the HTTP boundary (`X-Request-Id`), carried through OAuth token
+	 * validation (`McpRequestAuthExtra.requestId`) into every tool,
+	 * resource, and prompt handler. Lets one connector action be traced end
+	 * to end through logs without correlating on anything secret (a bearer
+	 * token, a session cookie). Optional because standalone test contexts
+	 * (`createTestContext`) have no real HTTP request to derive one from.
+	 */
+	requestId?: string;
+	/**
 	 * PROTO-002: the SDK's own per-request `AbortSignal`
 	 * (`ctx.mcpReq.signal`), threaded through so a handler that awaits a
 	 * cancellable operation (e.g. `runWithStandardizedTimeout` from

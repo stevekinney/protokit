@@ -30,8 +30,30 @@
 #   -the-loop elicitation would also trigger. Root-causing that distinction
 #   needs deeper SDK-internals investigation than this item's scope covers --
 #   flagged explicitly rather than guessed at or silently patched.
+#
+# - `server-sse-multiple-streams`: this CI job's own workflow (added in the
+#   same commit as this file, alongside the modern-era job) had never
+#   actually been executed until `INTEROP-001` ran it locally for the first
+#   time -- and it exits nonzero as written, which would have been a first
+#   real-run CI failure. Root cause, confirmed against a real, unmodified
+#   `conformance-server.ts` (`--scenario server-sse-multiple-streams
+#   --verbose`): the scenario's own result is a WARNING with 0 passed / 0
+#   failed assertions ("Server did not provide session ID - multiple
+#   streams test may not work correctly", referencing SEP-1699) -- not an
+#   assertion failure. `PROTO-001` deliberately configures this legacy
+#   (`2025-11-25`) server as `{ legacy: 'stateless' }` (see
+#   `conformance-server.ts`), so it never issues an `Mcp-Session-Id`, which
+#   this scenario checks for. The pinned CLI's "unexpected failures" bucket
+#   flags any non-PASS status regardless of assertion count, so a WARNING
+#   surfaces as a hard CI failure unless listed here. Confirmed this is
+#   spec-version-specific, not a general defect: the same scenario against
+#   the same server's modern (`2026-07-28`) era passes cleanly (1 passed,
+#   0 failed) -- `2026-07-28` removes session identifiers from the protocol
+#   entirely, so nothing there expects one. Re-verify against a stable
+#   (non-alpha) conformance release before removing this entry.
 server:
   - tools-call-sampling
   - tools-call-elicitation
   - elicitation-sep1034-defaults
   - elicitation-sep1330-enums
+  - server-sse-multiple-streams

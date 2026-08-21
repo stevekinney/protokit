@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { database as DatabaseInstance, schema } from '@template/database';
+import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@template/web/lib/credential-lifecycle-policy';
 
 import {
 	commandExists,
@@ -11,6 +12,7 @@ import {
 import {
 	appendEnvironmentEntryToFile,
 	readEnvironmentEntriesFromFile,
+	removeEnvironmentEntryFromFile,
 } from './environment-file.ts';
 
 /**
@@ -31,21 +33,42 @@ export interface RotationResult {
 }
 
 /**
- * Rotates `SESSION_SIGNING_SECRET` in `.env.local`: generates a fresh 32-byte hex value and
- * overwrites the existing entry. The previous value is never returned or logged — once
- * overwritten, it exists only in whatever session cookies were already signed with it, which is
- * exactly the intended effect: every session signed under the old secret stops verifying the
- * instant this secret changes (see `applications/web/src/lib/session-signing-secret.ts` and
- * `csrf-protection.ts`, both keyed directly off this value). That is an intentional, immediate
- * invalidation of every existing session — not a bug — so it should run during a maintenance
- * window, never silently as part of an unrelated deploy.
+ * Rotates `SESSION_SIGNING_SECRET` in `.env.local`: generates a fresh 32-byte hex value,
+ * writes it as the new current secret, and moves the outgoing value into
+ * `SESSION_SIGNING_SECRET_PREVIOUS` instead of discarding it (DATA-001 / S-18: "no signing-key
+ * version or rotation procedure exists" — this is that procedure's overlap window). Every
+ * session cookie and CSRF token signed under the outgoing secret keeps verifying — new signing
+ * always uses the current secret, but verification checks the current secret first, then any
+ * `SESSION_SIGNING_SECRET_PREVIOUS` value — until `rotateSessionSigningSecretCutoverLocally`
+ * clears `SESSION_SIGNING_SECRET_PREVIOUS`, which rejects the retired key outright (see
+ * `applications/web/src/lib/session-signing-secret.ts`'s `resolveSessionSigningSecrets`). The
+ * previous value is never returned or logged by this function — it only ever exists inside the
+ * `.env.local` file (mode `0600`) between these two steps.
  */
 export function rotateSessionSigningSecretLocally(environmentFilePath: string): RotationResult {
 	const previousValue =
 		readEnvironmentEntriesFromFile(environmentFilePath)['SESSION_SIGNING_SECRET'];
 	const nextValue = generateSessionSigningSecret();
 	appendEnvironmentEntryToFile(environmentFilePath, 'SESSION_SIGNING_SECRET', nextValue);
+	if (previousValue) {
+		appendEnvironmentEntryToFile(
+			environmentFilePath,
+			'SESSION_SIGNING_SECRET_PREVIOUS',
+			previousValue,
+		);
+	}
 	return { previousValuePresent: Boolean(previousValue), rotated: true, nextValue };
+}
+
+/**
+ * Ends a rotation's overlap window: removes `SESSION_SIGNING_SECRET_PREVIOUS` from
+ * `.env.local` so the retired secret is rejected outright (DATA-001 acceptance criterion 5,
+ * "Key rotation ... rejects retired keys after the cutover"). Run once every client that could
+ * still be holding a session or CSRF token signed under the old secret has had time to either
+ * use it (refreshing it under the current secret) or expire.
+ */
+export function rotateSessionSigningSecretCutoverLocally(environmentFilePath: string): void {
+	removeEnvironmentEntryFromFile(environmentFilePath, 'SESSION_SIGNING_SECRET_PREVIOUS');
 }
 
 export function hashCredential(value: string): string {
@@ -55,25 +78,27 @@ export function hashCredential(value: string): string {
 /**
  * Rotates a stored OAuth client secret: generates a new secret, hashes it the same way
  * `packages/database`'s `schema.oauthClients.clientSecret` column stores it (SHA-256, matching
- * `scripts/seed.ts`'s `hashCredential`), and updates the row. Returns the plaintext once, for
- * one-time delivery to whoever owns that client — never persisted or logged by this function.
- * The previous secret's hash is overwritten, so any token request presenting it fails the
- * `client_secret_post` comparison the moment this returns; there is no dual-secret grace period,
- * because this codebase compares a single stored hash (documented rollout: rotate during a
- * maintenance window, coordinate a synchronized handoff with the client rather than relying on a
- * grace period that does not exist).
+ * `scripts/seed.ts`'s `hashCredential`), and updates the row with a fresh
+ * `clientSecretExpiresAt`. Returns the plaintext once, for one-time delivery to whoever owns
+ * that client — never persisted or logged by this function. The previous secret's hash is
+ * overwritten, so any token request presenting it fails the `client_secret_post` comparison the
+ * moment this returns; there is no dual-secret grace period for OAuth client secrets the way
+ * there now is for the session-signing secret, because this codebase compares a single stored
+ * hash (documented rollout: rotate during a maintenance window, coordinate a synchronized
+ * handoff with the client rather than relying on a grace period that does not exist).
  */
 export async function rotateOauthClientSecret(
 	database: Pick<typeof DatabaseInstance, 'update'>,
 	oauthClientsTable: typeof schema.oauthClients,
 	clientId: string,
-): Promise<{ newSecret: string }> {
+): Promise<{ newSecret: string; expiresAt: Date }> {
 	const newSecret = randomBytes(32).toString('hex');
+	const expiresAt = new Date(Date.now() + OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS);
 	await database
 		.update(oauthClientsTable)
-		.set({ clientSecret: hashCredential(newSecret) })
+		.set({ clientSecret: hashCredential(newSecret), clientSecretExpiresAt: expiresAt })
 		.where(eq(oauthClientsTable.clientId, clientId));
-	return { newSecret };
+	return { newSecret, expiresAt };
 }
 
 async function rotateSessionSigningSecretCommand(): Promise<void> {
@@ -81,13 +106,19 @@ async function rotateSessionSigningSecretCommand(): Promise<void> {
 	const result = rotateSessionSigningSecretLocally(ENVIRONMENT_FILE_PATH);
 	console.log(
 		result.previousValuePresent
-			? 'Replaced the existing SESSION_SIGNING_SECRET in .env.local (value not printed).'
+			? 'Wrote a new SESSION_SIGNING_SECRET and moved the outgoing value to SESSION_SIGNING_SECRET_PREVIOUS (values not printed).'
 			: 'No previous SESSION_SIGNING_SECRET found — wrote a new one to .env.local (value not printed).',
 	);
-	console.log(
-		'Every existing session and CSRF token is now invalid. Restart the server and expect every',
-	);
-	console.log('signed-in user to be signed out.');
+	if (result.previousValuePresent) {
+		console.log(
+			'Sessions and CSRF tokens signed under the outgoing secret keep verifying during this',
+		);
+		console.log(
+			'overlap window. Run `bun scripts/rotate-secret.ts session-cutover` once every client has',
+		);
+		console.log('had time to refresh, to reject the retired key outright (DATA-001).');
+	}
+	console.log('Restart the server for the new SESSION_SIGNING_SECRET to take effect.');
 
 	if (commandExists('gh') && MANAGED_GITHUB_SECRETS.includes('SESSION_SIGNING_SECRET')) {
 		try {
@@ -100,6 +131,15 @@ async function rotateSessionSigningSecretCommand(): Promise<void> {
 			);
 		}
 	}
+}
+
+async function rotateSessionSigningSecretCutoverCommand(): Promise<void> {
+	console.log('\n--- Ending SESSION_SIGNING_SECRET rotation overlap ---\n');
+	rotateSessionSigningSecretCutoverLocally(ENVIRONMENT_FILE_PATH);
+	console.log(
+		'Removed SESSION_SIGNING_SECRET_PREVIOUS from .env.local. Any session or CSRF token still',
+	);
+	console.log('signed under the retired secret is now rejected. Restart the server to apply.');
 }
 
 async function revokeManagedGithubSecretCommand(name: string): Promise<void> {
@@ -126,12 +166,17 @@ const subcommand = process.argv[2];
 if (import.meta.main) {
 	if (subcommand === 'session') {
 		await rotateSessionSigningSecretCommand();
+	} else if (subcommand === 'session-cutover') {
+		await rotateSessionSigningSecretCutoverCommand();
 	} else if (subcommand === 'revoke-github' && process.argv[3]) {
 		await revokeManagedGithubSecretCommand(process.argv[3]);
 	} else {
 		console.error('Usage:');
 		console.error(
-			'  bun scripts/rotate-secret.ts session          — rotate SESSION_SIGNING_SECRET',
+			'  bun scripts/rotate-secret.ts session          — rotate SESSION_SIGNING_SECRET (starts overlap)',
+		);
+		console.error(
+			'  bun scripts/rotate-secret.ts session-cutover  — end the overlap, reject the retired key',
 		);
 		console.error(
 			'  bun scripts/rotate-secret.ts revoke-github <NAME> — revoke a managed GitHub secret',

@@ -19,6 +19,7 @@ declare module 'bun:test' {
 		toHaveProperty: (property: string, value?: unknown) => void;
 		toHaveLength: (expected: number) => void;
 		toThrow: (expected?: unknown) => void;
+		toBeInstanceOf: (expected: new (...arguments_: unknown[]) => unknown) => void;
 		rejects: AsyncExpectation;
 		not: {
 			toBe: (expected: unknown) => void;
@@ -31,7 +32,11 @@ declare module 'bun:test' {
 	};
 
 	export const describe: (name: string, fn: () => void | Promise<void>) => void;
-	export const it: (name: string, fn: () => void | Promise<void>) => void;
+	export const it: (
+		name: string,
+		fn: () => void | Promise<void>,
+		timeoutMilliseconds?: number,
+	) => void;
 	export const expect: (value: unknown) => Expectation;
 	export const beforeEach: (fn: () => void | Promise<void>) => void;
 	export const afterEach: (fn: () => void | Promise<void>) => void;
@@ -46,6 +51,12 @@ declare namespace Bun {
 	type SpawnedProcess = {
 		exited: Promise<number>;
 		kill: () => void;
+		// INTEROP-001: added for `connector-smoke-support.ts`'s bounded CLI
+		// runner, which pipes and reads a spawned child's output. Present
+		// (as `ReadableStream<Uint8Array> | null`) whenever `stdout`/`stderr`
+		// is `'pipe'`, matching real Bun.Subprocess.
+		stdout: ReadableStream<Uint8Array>;
+		stderr: ReadableStream<Uint8Array>;
 	};
 
 	type SpawnSyncResult = {

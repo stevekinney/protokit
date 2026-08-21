@@ -2,6 +2,12 @@ import type { JSX } from 'react';
 import type { ApplicationUser } from '@web/types/user';
 import { CopyButton } from '@web/components/copy-button';
 
+export type ConnectionSummaryView = {
+	clientId: string;
+	clientName: string;
+	earliestExpiresAt: string;
+};
+
 type HomePageProps = {
 	user: ApplicationUser | null;
 	baseUrl: string;
@@ -12,6 +18,14 @@ type HomePageProps = {
 	 * otherwise.
 	 */
 	signOutCsrfToken?: string;
+	/**
+	 * DATA-001 / S-18: the connector/consent inventory — every OAuth client
+	 * currently holding at least one live access or refresh token for this
+	 * user. Empty when signed out or when nothing is connected.
+	 */
+	connections?: ConnectionSummaryView[];
+	/** Same session-bound CSRF token as `signOutCsrfToken`, reused for the revoke and revoke-all forms below. */
+	connectionsCsrfToken?: string;
 };
 
 export function HomePage(props: HomePageProps): JSX.Element {
@@ -61,6 +75,47 @@ export function HomePage(props: HomePageProps): JSX.Element {
 						</a>
 					</section>
 				)}
+
+				{props.user && props.connections && props.connections.length > 0 ? (
+					<section className="mt-8 rounded-2xl border border-slate-200 p-6">
+						<div className="flex items-center justify-between">
+							<p className="font-semibold text-slate-900">Connected Applications</p>
+							<form method="POST" action="/account/connections/revoke-all">
+								{props.connectionsCsrfToken && (
+									<input type="hidden" name="csrf_token" value={props.connectionsCsrfToken} />
+								)}
+								<button
+									type="submit"
+									className="text-sm font-semibold text-rose-600 hover:text-rose-500"
+								>
+									Revoke All
+								</button>
+							</form>
+						</div>
+						<ul className="mt-4 divide-y divide-slate-200">
+							{props.connections.map((connection) => (
+								<li
+									key={connection.clientId}
+									className="flex items-center justify-between gap-4 py-3"
+								>
+									<span className="text-sm text-slate-700">{connection.clientName}</span>
+									<form method="POST" action="/account/connections/revoke">
+										{props.connectionsCsrfToken && (
+											<input type="hidden" name="csrf_token" value={props.connectionsCsrfToken} />
+										)}
+										<input type="hidden" name="client_id" value={connection.clientId} />
+										<button
+											type="submit"
+											className="text-sm font-medium text-slate-500 hover:text-rose-600"
+										>
+											Revoke
+										</button>
+									</form>
+								</li>
+							))}
+						</ul>
+					</section>
+				) : null}
 
 				<section className="mt-8 grid gap-4 rounded-2xl border border-slate-200 p-6 text-sm text-slate-600 md:grid-cols-2">
 					<div>

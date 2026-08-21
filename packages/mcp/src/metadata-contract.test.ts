@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { allTools } from './tools/index.js';
+import { allTools, conformanceOnlyTools } from './tools/index.js';
 import { allResources } from './resources/index.js';
 import { allPrompts } from './prompts/index.js';
 import { createMcpServer } from './server.js';
@@ -72,6 +72,31 @@ describe('tool registry metadata contract', () => {
 					typeof tool.annotations[hint],
 					`${tool.name}.annotations.${hint} must be a boolean`,
 				).toBe('boolean');
+			}
+		}
+	});
+
+	/**
+	 * SEC-002: "Write or destructive tools require host-visible approval and
+	 * accurate annotations." The host (Claude, Codex, ChatGPT) is what
+	 * actually gates a destructive call behind human approval -- that half
+	 * is outside this repository, see `THREAT-MODEL.md` -- and this
+	 * server's whole contribution is making sure the annotations a host
+	 * reads to decide that are never wrong. Two things regress otherwise:
+	 * a tool that mutates data but is marked `readOnlyHint: true` (a host
+	 * would never prompt for it), or one marked `destructiveHint: true`
+	 * while also `readOnlyHint: true` (a self-contradictory pair no host
+	 * can act on consistently). `allTools` currently has no write or
+	 * destructive tool at all -- this test is the guard that makes adding
+	 * one honestly is enforced, not merely documented.
+	 */
+	it('a destructive tool is never also marked read-only, across every registry', () => {
+		for (const tool of [...allTools, ...conformanceOnlyTools]) {
+			if (tool.annotations.destructiveHint) {
+				expect(
+					tool.annotations.readOnlyHint,
+					`${tool.name} is marked both destructiveHint and readOnlyHint -- a host cannot act on that consistently`,
+				).toBe(false);
 			}
 		}
 	});

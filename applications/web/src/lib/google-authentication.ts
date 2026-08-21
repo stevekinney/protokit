@@ -20,7 +20,7 @@ import {
 	googleUserInfoFetchTimeoutMs,
 	googleUserInfoMaxResponseBytes,
 } from '@web/lib/request-limits';
-import { sessionSigningSecret } from '@web/lib/session-signing-secret';
+import { sessionSigningSecret, sessionSigningSecrets } from '@web/lib/session-signing-secret';
 
 /**
  * FEDAUTH-001 / S-16: hardens the upstream Google sign-in flow. Each
@@ -92,8 +92,21 @@ function googleOauthStateCookieName(state: string): string {
 	return `${GOOGLE_OAUTH_STATE_COOKIE_PREFIX}${state.slice(0, 16)}`;
 }
 
-function createSignature(payload: string): string {
-	return createHmac('sha256', sessionSigningSecret).update(payload).digest('base64url');
+function createSignature(payload: string, secret: string = sessionSigningSecret): string {
+	return createHmac('sha256', secret).update(payload).digest('base64url');
+}
+
+/**
+ * DATA-001 / S-18: checks the payload's signature against every secret still
+ * inside the session-signing-secret's rotation overlap window
+ * (`sessionSigningSecrets`), not only the current one — a Google sign-in
+ * attempt started just before a rotation must still be able to complete
+ * during this state cookie's short (10-minute) lifetime.
+ */
+function isValidSignature(payloadBase64: string, signature: string): boolean {
+	return sessionSigningSecrets.some((secret) =>
+		constantTimeEquals(createSignature(payloadBase64, secret), signature),
+	);
 }
 
 function encodeGoogleStatePayload(payload: GoogleOauthCookiePayload): string {
@@ -111,9 +124,8 @@ function decodeGoogleStatePayload(value: string): GoogleOauthCookiePayload | nul
 
 	const payloadBase64 = value.slice(0, separatorIndex);
 	const signature = value.slice(separatorIndex + 1);
-	const expectedSignature = createSignature(payloadBase64);
 
-	if (!constantTimeEquals(signature, expectedSignature)) {
+	if (!isValidSignature(payloadBase64, signature)) {
 		return null;
 	}
 

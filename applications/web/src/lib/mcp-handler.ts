@@ -7,6 +7,7 @@ import type {
 import { createMcpServer } from '@template/mcp';
 import type { McpUserProfile } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
+import { metricsCollector } from '@template/mcp/metrics';
 import { database, schema } from '@template/database';
 import { eq } from 'drizzle-orm';
 import { environment } from '@web/env';
@@ -108,6 +109,7 @@ function createUserHandlerEntry(userId: string): {
 			return createMcpServer({
 				userId: requestAuthExtra.userId,
 				user,
+				requestId: requestAuthExtra.requestId,
 				enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
 				enableConformanceMode: shouldEnableConformanceMode({
 					conformanceModeConfigured: environment.MCP_CONFORMANCE_MODE,
@@ -128,7 +130,15 @@ function createUserHandlerEntry(userId: string): {
 			bus,
 			maxSubscriptions: mcpMaxSubscriptionsPerUserHandler,
 			onerror: (error) => {
-				logger.error({ err: error, userId }, 'MCP handler error');
+				// OBS-001: "transport failure" — one of the eight outcomes the
+				// roadmap requires operators to be able to distinguish. This is
+				// the SDK's own catch-all for a request the transport itself
+				// could not serve (malformed JSON-RPC, a stream that closed
+				// mid-response, etc.), as opposed to a tool returning a
+				// structured error result (see `mcp_tool_failure` in
+				// `server.ts`, which is a different outcome).
+				logger.error({ err: error, userId, event: 'mcp_transport' }, 'MCP handler error');
+				metricsCollector.recordEvent('mcp_method', 'transport_failure');
 			},
 		},
 	);

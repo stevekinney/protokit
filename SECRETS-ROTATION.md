@@ -52,7 +52,18 @@ random value (`openssl rand -hex 32` or `bun scripts/rotate-secret.ts session`'s
 pattern), setting it in the scraper/monitoring system's configuration, updating
 `METRICS_API_KEY` in the server's environment, and redeploying. There is a brief window where the
 scraper's old credential is rejected until its own configuration is updated — acceptable because
-metrics scraping tolerates a short gap, unlike session invalidation.
+metrics scraping tolerates a short gap, unlike session invalidation. Compared in constant time
+(`applications/web/src/lib/bearer-credential-authentication.ts`); requires HTTPS in production.
+
+## Readiness credential (`HEALTH_READINESS_API_KEY`)
+
+Gates the dependency-detail readiness probe, `GET /health/ready`
+(`applications/web/src/routes/health-routes.ts`) — `OPS-002`'s split from the public,
+dependency-free `GET /health` liveness endpoint. Rotate the same way as `METRICS_API_KEY`:
+generate a new random value, update whichever orchestrator or operator tooling calls the
+endpoint, set `HEALTH_READINESS_API_KEY` in the server's environment, and redeploy. Same brief,
+acceptable gap as the metrics credential; compared in constant time; requires HTTPS in
+production.
 
 ## Database credentials (`DATABASE_URL`, `DATABASE_URL_UNPOOLED`)
 
@@ -62,7 +73,9 @@ credential class in this list that _can_ roll out without an outage. Create a ne
 `DATABASE_URL`/`DATABASE_URL_UNPOOLED` in `.env.local` and every deployment target (GitHub
 Actions secrets via `bun scripts/setup.ts github`, Railway via `bun scripts/setup.ts railway`,
 or `bun scripts/rotate-secret.ts revoke-github DATABASE_URL` followed by re-running the GitHub
-phase), redeploy, confirm the new role is in use (`doctor` or `/health`), then revoke the old
+phase), redeploy, confirm the new role is in use (`doctor` or the authenticated
+`GET /health/ready` — `OPS-002` moved dependency status off the public `/health` liveness
+endpoint), then revoke the old
 role with `neonctl roles delete`. Never delete the old role before every consumer has picked up
 the new connection string — deleting it first is an outage, not a rotation.
 
