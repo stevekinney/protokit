@@ -20,24 +20,6 @@ try {
 	redisAvailable = false;
 }
 
-// OPEN-3: this file's Redis-backed tests key rate-limit state by network
-// identity (loopback, in this suite), and that state persists in Redis
-// across process runs. Without a reset, a rejection test that asserts a
-// specific 400 can instead observe a stale 429 left over from an earlier
-// run against the same Redis instance. Flush every `rate_limit:*` key
-// before this file's Redis-backed tests run, rather than enumerating the
-// specific buckets this file happens to exercise today, so a future bucket
-// added to `request-rate-limiter.ts` doesn't reintroduce the same
-// order-dependence silently.
-if (redisAvailable) {
-	const { getRedisClient } = await import('@web/lib/redis-client');
-	const redisClient = await getRedisClient();
-	const staleRateLimitKeys = await redisClient.keys('rate_limit:*');
-	if (staleRateLimitKeys.length > 0) {
-		await redisClient.del(staleRateLimitKeys);
-	}
-}
-
 const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;

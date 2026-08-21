@@ -20,22 +20,6 @@ try {
 	redisAvailable = false;
 }
 
-// OPEN-3: rate-limit state (register/token/revoke/google-auth/mcp/health)
-// is keyed by network identity, which is the loopback address for every
-// test in this file, and that state persists in Redis across process
-// runs. Flush every `rate_limit:*` key before this file's Redis-backed
-// tests run so a prior run's accumulated counts can never flip a test that
-// expects success into a stale 429. See `oauth-routes.integration.test.tsx`
-// for the sibling copy of this reset.
-if (redisAvailable) {
-	const { getRedisClient } = await import('@web/lib/redis-client');
-	const redisClient = await getRedisClient();
-	const staleRateLimitKeys = await redisClient.keys('rate_limit:*');
-	if (staleRateLimitKeys.length > 0) {
-		await redisClient.del(staleRateLimitKeys);
-	}
-}
-
 const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
