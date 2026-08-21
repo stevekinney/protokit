@@ -92,6 +92,34 @@ export const oauthTokens = pgTable('oauth_tokens', {
 	createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+/**
+ * A short-lived, single-use server-side record of one browser authorization
+ * consent screen (SEC-005 / S-09). Created when `/oauth/authorize` renders
+ * the consent page and consumed atomically by approve/deny — the browser
+ * form only ever carries the opaque `transactionId` and a one-time
+ * `csrfToken`; every authoritative value (client, redirect URI, PKCE
+ * challenge, state, issuer) is reloaded from this row, never from the form.
+ */
+export const oauthAuthorizationTransactions = pgTable('oauth_authorization_transactions', {
+	transactionId: text('transaction_id').primaryKey(),
+	csrfTokenHash: text('csrf_token_hash').notNull(),
+	userId: uuid('user_id')
+		.notNull()
+		.references(() => users.id),
+	sessionTokenHash: text('session_token_hash').notNull(),
+	clientId: text('client_id')
+		.notNull()
+		.references(() => oauthClients.clientId),
+	redirectUri: text('redirect_uri').notNull(),
+	codeChallenge: text('code_challenge').notNull(),
+	codeChallengeMethod: text('code_challenge_method').notNull().default('S256'),
+	state: text('state'),
+	issuer: text('issuer').notNull(),
+	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+	consumedAt: timestamp('consumed_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const oauthRefreshTokens = pgTable('oauth_refresh_tokens', {
 	refreshToken: text('refresh_token').primaryKey(),
 	clientId: text('client_id')

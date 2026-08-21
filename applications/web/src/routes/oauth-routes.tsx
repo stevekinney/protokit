@@ -7,6 +7,12 @@ import { getBaseUrl } from '@web/lib/base-url';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
 import { oauthCorsHeaders } from '@web/lib/cors';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
+import {
+	consumeAuthorizationTransaction,
+	createAuthorizationTransaction,
+} from '@web/lib/authorization-transaction';
+import { isValidClientName } from '@web/lib/client-name-validation';
+import { isTrustedRequestOrigin } from '@web/lib/csrf-protection';
 import { hashCredential } from '@web/lib/hash-credential';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
@@ -38,6 +44,7 @@ import { findDuplicateParameterName } from '@web/lib/reject-duplicate-parameters
 import {
 	oauthAuthorizeApproveMaxBodyBytes,
 	oauthAuthorizeDenyMaxBodyBytes,
+	oauthCsrfTokenLength,
 	oauthMaxClientIdLength,
 	oauthMaxClientNameLength,
 	oauthMaxGrantTypeCount,
@@ -49,14 +56,38 @@ import {
 	oauthRegisterMaxBodyBytes,
 	oauthRevokeMaxBodyBytes,
 	oauthTokenMaxBodyBytes,
+	oauthTransactionIdLength,
 } from '@web/lib/request-limits';
+
+/**
+ * Headers applied to every authenticated or credential-bearing HTML/JSON
+ * response this file returns directly (SEC-005 / S-10): the consent page,
+ * OAuth error pages, and the DCR registration response. Token/revoke
+ * responses already carry their own `no-store` headers (RFC 6749 §5.1
+ * predates this item); this constant exists for the responses that did
+ * not. `Vary: Cookie` ensures a shared or CDN cache in front of this
+ * server can never key a cached response across two different sessions.
+ */
+const oauthNoStoreHeaders: Record<string, string> = {
+	'Cache-Control': 'no-store, private',
+	Pragma: 'no-cache',
+	Vary: 'Cookie',
+};
 
 const supportedGrantTypes = ['authorization_code', 'refresh_token'] as const;
 const supportedResponseTypes = ['code'] as const;
 const supportedTokenEndpointAuthenticationMethods = ['client_secret_post', 'none'] as const;
 
 const oauthRegistrationSchema = z.object({
-	client_name: z.string().min(1).max(oauthMaxClientNameLength).default('Unknown Client'),
+	client_name: z
+		.string()
+		.min(1)
+		.max(oauthMaxClientNameLength)
+		.refine(
+			isValidClientName,
+			'client_name must not contain control, bidirectional-override, or zero-width characters',
+		)
+		.default('Unknown Client'),
 	redirect_uris: z
 		.array(z.string().url().max(oauthMaxRedirectUriLength))
 		.min(1, 'At least one redirect URI is required')
@@ -212,28 +243,6 @@ function issueTokens() {
 	};
 }
 
-async function validateClientRedirectUri(clientId: string, redirectUri: string): Promise<boolean> {
-	if (!isValidRedirectUri(redirectUri)) {
-		return false;
-	}
-
-	const [client] = await database
-		.select()
-		.from(schema.oauthClients)
-		.where(eq(schema.oauthClients.clientId, clientId))
-		.limit(1);
-
-	if (!client) {
-		return false;
-	}
-
-	if (client.redirectUris.length === 0) {
-		return false;
-	}
-
-	return client.redirectUris.includes(redirectUri);
-}
-
 export async function handleOauthAuthorizeGet(context: RequestContext): Promise<Response> {
 	const rateLimitResult = await enforceOauthAuthorizeRateLimit({
 		networkIdentity: context.networkIdentity,
@@ -343,34 +352,56 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
+	// S-09: consumed once, atomically, by approve/deny — every authoritative
+	// value below is reloaded from this row, never trusted from the form.
+	const transaction = await createAuthorizationTransaction({
+		userId: context.user.id,
+		sessionToken: context.sessionToken!,
+		clientId,
+		redirectUri,
+		codeChallenge,
+		codeChallengeMethod: codeChallengeMethod || 'S256',
+		state: state || null,
+		issuer: getBaseUrl(context.request),
+	});
+
+	// Defense in depth against a client name registered before this check
+	// existed (or a defect in the registration-time check): never render a
+	// name containing control, bidirectional-override, or zero-width
+	// characters, even if it somehow made it into the database.
+	const displayClientName = isValidClientName(client.clientName)
+		? client.clientName
+		: 'the requesting application';
+
 	return createStaticHtmlResponse({
 		metadata: { title: 'OAuth Authorize' },
 		body: (
 			<OauthAuthorizePage
 				mode="form"
-				clientName={client.clientName}
-				clientId={clientId}
+				clientName={displayClientName}
 				redirectUri={redirectUri}
-				codeChallenge={codeChallenge}
-				codeChallengeMethod={codeChallengeMethod || 'S256'}
-				state={state}
+				transactionId={transaction.transactionId}
+				csrfToken={transaction.csrfToken}
 				user={context.user}
 			/>
 		),
 	});
 }
 
-const authorizeFormParameterNames = [
-	'client_id',
-	'redirect_uri',
-	'code_challenge',
-	'code_challenge_method',
-	'state',
-] as const;
+const authorizeFormParameterNames = ['transaction_id', 'csrf_token'] as const;
 
 export async function handleOauthAuthorizeApprove(context: RequestContext): Promise<Response> {
-	if (!context.user) {
+	if (!context.user || !context.sessionToken) {
 		return jsonResponse({ error: 'unauthorized' }, { status: 401 });
+	}
+
+	if (!isTrustedRequestOrigin(context.request, getBaseUrl(context.request))) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Cross-site request rejected.' },
+			{
+				status: 403,
+			},
+		);
 	}
 
 	if (
@@ -412,52 +443,35 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 		);
 	}
 
-	const clientId = getSearchParamString(formParameters, 'client_id');
-	const redirectUri = getSearchParamString(formParameters, 'redirect_uri');
-	const codeChallenge = getSearchParamString(formParameters, 'code_challenge');
-	const codeChallengeMethod =
-		getSearchParamString(formParameters, 'code_challenge_method') || 'S256';
-	const state = getSearchParamString(formParameters, 'state');
+	const transactionId = getSearchParamString(formParameters, 'transaction_id');
+	const csrfToken = getSearchParamString(formParameters, 'csrf_token');
 
-	if (!clientId || !redirectUri || !codeChallenge) {
+	if (!transactionId || !csrfToken) {
 		return jsonResponse(
-			{ error: 'invalid_request', message: 'Missing required fields.' },
+			{ error: 'invalid_request', message: 'Missing transaction_id or csrf_token.' },
 			{ status: 400 },
 		);
 	}
 
-	if (
-		clientId.length > oauthMaxClientIdLength ||
-		redirectUri.length > oauthMaxRedirectUriLength ||
-		(state && state.length > oauthMaxStateLength)
-	) {
+	if (transactionId.length > oauthTransactionIdLength || csrfToken.length > oauthCsrfTokenLength) {
 		return jsonResponse(
 			{ error: 'invalid_request', message: 'A parameter exceeded its maximum length.' },
 			{ status: 400 },
 		);
 	}
 
-	if (codeChallengeMethod !== 'S256') {
+	const transaction = await consumeAuthorizationTransaction({
+		transactionId,
+		csrfToken,
+		userId: context.user.id,
+		sessionToken: context.sessionToken,
+	});
+	if (!transaction) {
 		return jsonResponse(
 			{
 				error: 'invalid_request',
-				message: 'Only S256 code challenge method is supported.',
+				message: 'Authorization transaction not found, already used, expired, or invalid.',
 			},
-			{ status: 400 },
-		);
-	}
-
-	if (!isValidPkceCodeChallenge(codeChallenge)) {
-		return jsonResponse(
-			{ error: 'invalid_request', message: 'Malformed code_challenge.' },
-			{ status: 400 },
-		);
-	}
-
-	const validRedirectUri = await validateClientRedirectUri(clientId, redirectUri);
-	if (!validRedirectUri) {
-		return jsonResponse(
-			{ error: 'invalid_request', message: 'Invalid redirect URI for this client.' },
 			{ status: 400 },
 		);
 	}
@@ -465,27 +479,36 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 	const code = randomBytes(32).toString('hex');
 	await database.insert(schema.oauthCodes).values({
 		code: hashCredential(code),
-		clientId,
+		clientId: transaction.clientId,
 		userId: context.user.id,
-		redirectUri,
-		codeChallenge,
-		codeChallengeMethod,
-		state,
+		redirectUri: transaction.redirectUri,
+		codeChallenge: transaction.codeChallenge,
+		codeChallengeMethod: transaction.codeChallengeMethod,
+		state: transaction.state,
 		expiresAt: new Date(Date.now() + 10 * 60 * 1000),
 	});
 
-	const redirectUrl = new URL(redirectUri);
+	const redirectUrl = new URL(transaction.redirectUri);
 	redirectUrl.searchParams.set('code', code);
-	if (state) {
-		redirectUrl.searchParams.set('state', state);
+	if (transaction.state) {
+		redirectUrl.searchParams.set('state', transaction.state);
 	}
 
 	return redirectResponse(redirectUrl.toString(), 302);
 }
 
 export async function handleOauthAuthorizeDeny(context: RequestContext): Promise<Response> {
-	if (!context.user) {
+	if (!context.user || !context.sessionToken) {
 		return jsonResponse({ error: 'unauthorized' }, { status: 401 });
+	}
+
+	if (!isTrustedRequestOrigin(context.request, getBaseUrl(context.request))) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Cross-site request rejected.' },
+			{
+				status: 403,
+			},
+		);
 	}
 
 	if (
@@ -516,11 +539,10 @@ export async function handleOauthAuthorizeDeny(context: RequestContext): Promise
 		);
 	}
 
-	const duplicateParameterName = findDuplicateParameterName(formParameters, [
-		'client_id',
-		'redirect_uri',
-		'state',
-	]);
+	const duplicateParameterName = findDuplicateParameterName(
+		formParameters,
+		authorizeFormParameterNames,
+	);
 	if (duplicateParameterName) {
 		return jsonResponse(
 			{ error: 'invalid_request', message: `Duplicate parameter: ${duplicateParameterName}.` },
@@ -528,37 +550,44 @@ export async function handleOauthAuthorizeDeny(context: RequestContext): Promise
 		);
 	}
 
-	const clientId = getSearchParamString(formParameters, 'client_id');
-	const redirectUri = getSearchParamString(formParameters, 'redirect_uri');
-	const state = getSearchParamString(formParameters, 'state');
+	const transactionId = getSearchParamString(formParameters, 'transaction_id');
+	const csrfToken = getSearchParamString(formParameters, 'csrf_token');
 
-	if (!clientId || !redirectUri) {
+	if (!transactionId || !csrfToken) {
 		return jsonResponse(
-			{ error: 'invalid_request', message: 'Missing redirect URI.' },
+			{ error: 'invalid_request', message: 'Missing transaction_id or csrf_token.' },
 			{ status: 400 },
 		);
 	}
 
-	if (clientId.length > oauthMaxClientIdLength || redirectUri.length > oauthMaxRedirectUriLength) {
+	if (transactionId.length > oauthTransactionIdLength || csrfToken.length > oauthCsrfTokenLength) {
 		return jsonResponse(
 			{ error: 'invalid_request', message: 'A parameter exceeded its maximum length.' },
 			{ status: 400 },
 		);
 	}
 
-	const validRedirectUri = await validateClientRedirectUri(clientId, redirectUri);
-	if (!validRedirectUri) {
+	const transaction = await consumeAuthorizationTransaction({
+		transactionId,
+		csrfToken,
+		userId: context.user.id,
+		sessionToken: context.sessionToken,
+	});
+	if (!transaction) {
 		return jsonResponse(
-			{ error: 'invalid_request', message: 'Invalid redirect URI for this client.' },
+			{
+				error: 'invalid_request',
+				message: 'Authorization transaction not found, already used, expired, or invalid.',
+			},
 			{ status: 400 },
 		);
 	}
 
-	const redirectUrl = new URL(redirectUri);
+	const redirectUrl = new URL(transaction.redirectUri);
 	redirectUrl.searchParams.set('error', 'access_denied');
 	redirectUrl.searchParams.set('error_description', 'The user denied the authorization request.');
-	if (state) {
-		redirectUrl.searchParams.set('state', state);
+	if (transaction.state) {
+		redirectUrl.searchParams.set('state', transaction.state);
 	}
 
 	return redirectResponse(redirectUrl.toString(), 302);
@@ -569,7 +598,10 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 		networkIdentity: context.networkIdentity,
 	});
 	if (!rateLimitResult.allowed) {
-		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, oauthCorsHeaders);
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
+			...oauthCorsHeaders,
+			...oauthNoStoreHeaders,
+		});
 	}
 
 	if (!isExactContentType(context.request.headers.get('content-type'), 'application/json')) {
@@ -578,7 +610,7 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 				error: 'invalid_client_metadata',
 				error_description: 'Content-Type must be application/json',
 			},
-			{ status: 400, headers: oauthCorsHeaders },
+			{ status: 400, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
 		);
 	}
 
@@ -589,12 +621,12 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 		if (error instanceof PayloadTooLargeError) {
 			return jsonResponse(
 				{ error: 'invalid_client_metadata', error_description: 'Request body too large' },
-				{ status: 413, headers: oauthCorsHeaders },
+				{ status: 413, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
 			);
 		}
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Invalid JSON body' },
-			{ status: 400, headers: oauthCorsHeaders },
+			{ status: 400, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
 		);
 	}
 
@@ -605,7 +637,7 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 				error: 'invalid_client_metadata',
 				error_description: parsedBody.error.issues.map((issue) => issue.message).join('; '),
 			},
-			{ status: 400, headers: oauthCorsHeaders },
+			{ status: 400, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
 		);
 	}
 
@@ -618,7 +650,7 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 				error: 'invalid_client_metadata',
 				error_description: 'refresh_token requires token_endpoint_auth_method=client_secret_post.',
 			},
-			{ status: 400, headers: oauthCorsHeaders },
+			{ status: 400, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
 		);
 	}
 
@@ -648,7 +680,7 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 			client_id_issued_at: Math.floor(Date.now() / 1000),
 			client_secret_expires_at: 0,
 		},
-		{ status: 201, headers: oauthCorsHeaders },
+		{ status: 201, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
 	);
 }
 

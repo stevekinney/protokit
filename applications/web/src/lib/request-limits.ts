@@ -36,6 +36,9 @@ export const oauthAuthorizeDenyMaxBodyBytes = 4 * 1024;
  */
 export const mcpRequestMaxBodyBytes = 1 * 1024 * 1024;
 
+/** `POST /auth/sign-out` (SEC-005) — form-urlencoded CSRF token only. */
+export const signOutMaxBodyBytes = 1 * 1024;
+
 // -- OAuth field-length limits ------------------------------------------------
 
 export const oauthMaxClientNameLength = 200;
@@ -47,6 +50,20 @@ export const oauthMaxStateLength = 512;
 export const oauthMaxAuthorizationCodeLength = 512;
 export const oauthMaxTokenLength = 512;
 export const oauthMaxClientIdLength = 128;
+
+/**
+ * `POST /oauth/authorize/approve` and `/oauth/authorize/deny` (SEC-005):
+ * the form carries only an opaque transaction identifier and a one-time
+ * CSRF value, both `randomBytes(32).toString('hex')` (64 hex characters).
+ */
+export const oauthTransactionIdLength = 64;
+export const oauthCsrfTokenLength = 64;
+
+/**
+ * `POST /auth/sign-out` (SEC-005): `deriveSessionCsrfToken` returns a
+ * SHA-256 HMAC hex digest (64 hex characters).
+ */
+export const sessionCsrfTokenMaxLength = 64;
 
 /** RFC 7636 §4.1: `code_verifier` is 43-128 characters of the unreserved set. */
 export const pkceMinCodeVerifierLength = 43;

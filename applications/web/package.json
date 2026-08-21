@@ -14,7 +14,7 @@
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"test": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test",
+		"test": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test --isolate",
 		"test:end-to-end": "bunx playwright test"
 	},
 	"dependencies": {

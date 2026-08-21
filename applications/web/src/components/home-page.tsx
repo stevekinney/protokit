@@ -5,6 +5,13 @@ import { CopyButton } from '@web/components/copy-button';
 type HomePageProps = {
 	user: ApplicationUser | null;
 	baseUrl: string;
+	/**
+	 * SEC-005: a session-bound, one-time-per-session CSRF value for the
+	 * sign-out form (`csrf-protection.ts`'s `deriveSessionCsrfToken`). Only
+	 * present when `user` is, since there is no session to protect
+	 * otherwise.
+	 */
+	signOutCsrfToken?: string;
 };
 
 export function HomePage(props: HomePageProps): JSX.Element {
@@ -31,6 +38,9 @@ export function HomePage(props: HomePageProps): JSX.Element {
 								Review OAuth Request
 							</a>
 							<form method="POST" action="/auth/sign-out">
+								{props.signOutCsrfToken && (
+									<input type="hidden" name="csrf_token" value={props.signOutCsrfToken} />
+								)}
 								<button
 									type="submit"
 									className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100"

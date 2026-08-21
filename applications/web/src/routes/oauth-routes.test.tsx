@@ -123,6 +123,44 @@ mock.module('@web/lib/cors', () => ({
 	oauthCorsHeaders: { 'Access-Control-Allow-Origin': '*' },
 }));
 
+// Not mocked: isValidClientName is a small pure function, real-tested by
+// client-name-validation.test.ts; using the real implementation here lets
+// this suite prove the DCR schema actually enforces it end to end.
+
+// Not mocked: isTrustedRequestOrigin is covered directly by
+// csrf-protection.test.ts. bun's mock.module patches the shared module
+// registry for the whole test process (not just this file), so mocking it
+// here would leak into every other test file that imports the real
+// module -- tests below instead set a real `sec-fetch-site` header.
+
+// `createAuthorizationTransaction`/`consumeAuthorizationTransaction` have
+// their own real-database coverage via `test:authorization-transaction`;
+// mocked here so the route-level suite can drive every accept/reject path
+// (missing, mismatched, expired, replayed, cross-session, cross-user)
+// without standing up Postgres.
+const mockAuthorizationTransactionState: {
+	created: { transactionId: string; csrfToken: string };
+	consumeResult: {
+		clientId: string;
+		redirectUri: string;
+		codeChallenge: string;
+		codeChallengeMethod: string;
+		state: string | null;
+		issuer: string;
+	} | null;
+} = {
+	created: { transactionId: 'transaction-id', csrfToken: 'csrf-token' },
+	consumeResult: null,
+};
+const consumeAuthorizationTransactionCalls: unknown[] = [];
+mock.module('@web/lib/authorization-transaction', () => ({
+	createAuthorizationTransaction: async () => mockAuthorizationTransactionState.created,
+	consumeAuthorizationTransaction: async (input: unknown) => {
+		consumeAuthorizationTransactionCalls.push(input);
+		return mockAuthorizationTransactionState.consumeResult;
+	},
+}));
+
 const {
 	handleOauthAuthorizationMetadataGet,
 	handleOauthProtectedResourceMetadataGet,
@@ -156,12 +194,19 @@ function createContext(
 		headers: Record<string, string>;
 		body: string;
 		user: RequestContext['user'];
+		sessionToken: string | null;
 	}> = {},
 ): RequestContext {
 	const url = overrides.url ?? 'http://localhost:3000/oauth/register';
 	const request = new Request(url, {
 		method: overrides.method ?? 'POST',
-		headers: overrides.headers ?? { 'content-type': 'application/json' },
+		// `sec-fetch-site: same-origin` by default so every existing test stays
+		// same-origin for `isTrustedRequestOrigin` (approve/deny/CSRF checks);
+		// a test proving the cross-site-rejection path overrides it explicitly.
+		headers: {
+			'sec-fetch-site': 'same-origin',
+			...(overrides.headers ?? { 'content-type': 'application/json' }),
+		},
 		body: overrides.body,
 	});
 	return {
@@ -170,7 +215,7 @@ function createContext(
 		requestId: 'req-1',
 		networkIdentity: '203.0.113.1',
 		user: overrides.user ?? null,
-		sessionToken: null,
+		sessionToken: overrides.sessionToken ?? (overrides.user ? 'session-token' : null),
 	};
 }
 
@@ -282,6 +327,10 @@ describe('client registration', () => {
 		expect(body.client_name).toBe('My App');
 		expect(typeof body.client_id).toBe('string');
 		expect(typeof body.client_secret).toBe('string');
+		// SEC-005 / S-10: a client secret is a credential; the response
+		// carrying it must never be cacheable.
+		expect(response.headers.get('Cache-Control')).toBe('no-store, private');
+		expect(response.headers.get('Vary')).toBe('Cookie');
 	});
 
 	it('rejects client_credentials in grant_types and creates no rows', async () => {
@@ -601,6 +650,10 @@ describe('authorization GET', () => {
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
+		mockAuthorizationTransactionState.created = {
+			transactionId: 'transaction-id',
+			csrfToken: 'csrf-token',
+		};
 	});
 
 	it('redirects to sign-in when user is not authenticated', async () => {
@@ -635,7 +688,7 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('renders consent page when client is valid', async () => {
+	it('renders consent page with an opaque transaction id and csrf token, never the raw client/redirect/PKCE values', async () => {
 		mockOauthClients = [
 			{
 				clientId: 'c1',
@@ -643,6 +696,10 @@ describe('authorization GET', () => {
 				redirectUris: ['https://example.com/cb'],
 			},
 		];
+		mockAuthorizationTransactionState.created = {
+			transactionId: 'created-transaction-id',
+			csrfToken: 'created-csrf-token',
+		};
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
 			method: 'GET',
@@ -652,6 +709,10 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(200);
 		const body = await response.text();
 		expect(body).toContain('Test App');
+		expect(body).toContain('created-transaction-id');
+		expect(body).toContain('created-csrf-token');
+		expect(body).not.toContain('name="client_id"');
+		expect(body).not.toContain('name="code_challenge"');
 	});
 
 	it('returns 400 for unsupported code_challenge_method', async () => {
@@ -721,23 +782,29 @@ describe('authorization GET', () => {
 });
 
 describe('authorization approve', () => {
+	const validTransaction = {
+		clientId: 'c1',
+		redirectUri: 'https://example.com/cb',
+		codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+		codeChallengeMethod: 'S256',
+		state: 'state-xyz',
+		issuer: 'http://localhost:3000',
+	};
+
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
 		mockInsertedValues = [];
+		mockAuthorizationTransactionState.consumeResult = validTransaction;
+		consumeAuthorizationTransactionCalls.length = 0;
 	});
 
 	it('returns 401 when user is not authenticated', async () => {
-		const formData = new FormData();
-		formData.set('client_id', 'c1');
-		formData.set('redirect_uri', 'https://example.com/cb');
-		formData.set('code_challenge', 'abc');
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
-				code_challenge: 'abc',
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: null,
@@ -746,10 +813,28 @@ describe('authorization approve', () => {
 		expect(response.status).toBe(401);
 	});
 
+	it('returns 403 for a cross-site request even with valid fields', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'cross-site',
+			},
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(403);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
 	it('returns 400 when required fields are missing', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
-			body: new URLSearchParams({ client_id: 'c1' }).toString(),
+			body: new URLSearchParams({ transaction_id: 'transaction-id' }).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -757,30 +842,50 @@ describe('authorization approve', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('returns 400 for unsupported code_challenge_method', async () => {
+	it('returns 400 and performs no database write when the transaction cannot be consumed (missing, mismatched, expired, replayed, cross-session, or cross-user)', async () => {
+		mockAuthorizationTransactionState.consumeResult = null;
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
-				code_challenge: 'abc',
-				code_challenge_method: 'plain',
+				transaction_id: 'transaction-id',
+				csrf_token: 'wrong-csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeApprove(context);
 		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('passes the session token and user id to the atomic consume call', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+			sessionToken: 'the-session-token',
+		});
+		await handleOauthAuthorizeApprove(context);
+		expect(consumeAuthorizationTransactionCalls).toEqual([
+			{
+				transactionId: 'transaction-id',
+				csrfToken: 'csrf-token',
+				userId: 'u1',
+				sessionToken: 'the-session-token',
+			},
+		]);
 	});
 
 	it('returns 413 and performs no database write for a body over the byte limit', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
-			// The approve endpoint byte limit is 4KB.
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
-				code_challenge: 'x'.repeat(8 * 1024),
+				transaction_id: 'x'.repeat(8 * 1024),
+				csrf_token: 'csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
@@ -793,7 +898,7 @@ describe('authorization approve', () => {
 	it('rejects a duplicate parameter and performs no database write', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
-			body: 'client_id=c1&client_id=c2&redirect_uri=https://example.com/cb&code_challenge=abc',
+			body: 'transaction_id=t1&transaction_id=t2&csrf_token=csrf-token',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -802,13 +907,12 @@ describe('authorization approve', () => {
 		expect(mockInsertedValues).toEqual([]);
 	});
 
-	it('rejects a malformed code_challenge and performs no database write', async () => {
+	it('rejects a transaction_id over the maximum length and performs no database write', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
-				code_challenge: 'too-short',
+				transaction_id: 'x'.repeat(1024),
+				csrf_token: 'csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
@@ -817,20 +921,46 @@ describe('authorization approve', () => {
 		expect(response.status).toBe(400);
 		expect(mockInsertedValues).toEqual([]);
 	});
+
+	it('issues a code and redirects using only the transaction record, ignoring any other posted field', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'transaction_id=transaction-id&csrf_token=csrf-token&redirect_uri=https://evil.example.com/steal',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(302);
+		const location = response.headers.get('Location')!;
+		expect(location.startsWith('https://example.com/cb?')).toBe(true);
+		expect(location).toContain('code=');
+		expect(location).toContain('state=state-xyz');
+		expect(mockInsertedValues).toHaveLength(1);
+	});
 });
 
 describe('authorization deny', () => {
+	const validTransaction = {
+		clientId: 'c1',
+		redirectUri: 'https://example.com/cb',
+		codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+		codeChallengeMethod: 'S256',
+		state: 'state-xyz',
+		issuer: 'http://localhost:3000',
+	};
+
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
+		mockAuthorizationTransactionState.consumeResult = validTransaction;
 	});
 
 	it('returns 401 when user is not authenticated', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/deny',
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: null,
@@ -839,15 +969,66 @@ describe('authorization deny', () => {
 		expect(response.status).toBe(401);
 	});
 
-	it('returns 400 when redirect_uri is missing', async () => {
+	it('returns 403 for a cross-site request', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/deny',
-			body: new URLSearchParams({ client_id: 'c1' }).toString(),
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'cross-site',
+			},
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		expect(response.status).toBe(403);
+	});
+
+	it('returns 400 when required fields are missing', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({ transaction_id: 'transaction-id' }).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeDeny(context);
 		expect(response.status).toBe(400);
+	});
+
+	it('returns 400 when the transaction cannot be consumed', async () => {
+		mockAuthorizationTransactionState.consumeResult = null;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		expect(response.status).toBe(400);
+	});
+
+	it('redirects with access_denied using only the transaction record', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+				redirect_uri: 'https://evil.example.com/steal',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		expect(response.status).toBe(302);
+		const location = response.headers.get('Location')!;
+		expect(location.startsWith('https://example.com/cb?')).toBe(true);
+		expect(location).toContain('error=access_denied');
+		expect(location).toContain('state=state-xyz');
 	});
 });
 

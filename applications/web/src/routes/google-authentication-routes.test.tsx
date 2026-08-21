@@ -95,6 +95,7 @@ mock.module('drizzle-orm', () => ({
 
 const { handleGoogleSignInStart, handleGoogleSignInCallback, handleSignOut } =
 	await import('@web/routes/google-authentication-routes');
+const { deriveSessionCsrfToken } = await import('@web/lib/csrf-protection');
 
 import type { RequestContext } from '@web/lib/request-context';
 
@@ -102,11 +103,17 @@ function createContext(
 	overrides: Partial<{
 		url: string;
 		method: string;
+		headers: Record<string, string>;
+		body: string;
 		sessionToken: string | null;
 	}> = {},
 ): RequestContext {
 	const url = overrides.url ?? 'http://localhost:3000/auth/google/start';
-	const request = new Request(url, { method: overrides.method ?? 'GET' });
+	const request = new Request(url, {
+		method: overrides.method ?? 'GET',
+		headers: overrides.headers,
+		body: overrides.body,
+	});
 	return {
 		request,
 		requestUrl: new URL(url),
@@ -152,23 +159,70 @@ describe('handleGoogleSignInCallback', () => {
 });
 
 describe('handleSignOut', () => {
-	it('returns a 303 redirect to /', async () => {
-		const context = createContext({
+	function createSignOutContext(): RequestContext {
+		const csrfToken = deriveSessionCsrfToken('mock-token');
+		return createContext({
 			url: 'http://localhost:3000/auth/sign-out',
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'same-origin',
+			},
+			body: new URLSearchParams({ csrf_token: csrfToken }).toString(),
 			sessionToken: 'mock-token',
 		});
-		const response = await handleSignOut(context);
+	}
+
+	it('returns a 303 redirect to /', async () => {
+		const response = await handleSignOut(createSignOutContext());
 		expect(response.status).toBe(303);
 		expect(response.headers.get('Location')).toBe('/');
 	});
 
 	it('sets an expired session cookie', async () => {
+		const response = await handleSignOut(createSignOutContext());
+		const cookies = response.headers.getSetCookie();
+		expect(cookies.some((c: string) => c.includes('Max-Age=0'))).toBe(true);
+	});
+
+	it('rejects a cross-site sign-out request without revoking the session', async () => {
+		const csrfToken = deriveSessionCsrfToken('mock-token');
 		const context = createContext({
 			url: 'http://localhost:3000/auth/sign-out',
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'cross-site',
+			},
+			body: new URLSearchParams({ csrf_token: csrfToken }).toString(),
 			sessionToken: 'mock-token',
 		});
 		const response = await handleSignOut(context);
-		const cookies = response.headers.getSetCookie();
-		expect(cookies.some((c: string) => c.includes('Max-Age=0'))).toBe(true);
+		expect(response.status).toBe(403);
+	});
+
+	it('rejects a missing or invalid CSRF token', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/auth/sign-out',
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'same-origin',
+			},
+			body: new URLSearchParams({ csrf_token: 'wrong-token' }).toString(),
+			sessionToken: 'mock-token',
+		});
+		const response = await handleSignOut(context);
+		expect(response.status).toBe(403);
+	});
+
+	it('redirects without requiring CSRF checks when there is no session to protect', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/auth/sign-out',
+			method: 'POST',
+			sessionToken: null,
+		});
+		const response = await handleSignOut(context);
+		expect(response.status).toBe(303);
 	});
 });

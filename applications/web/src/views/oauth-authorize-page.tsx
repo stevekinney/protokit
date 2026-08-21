@@ -9,11 +9,9 @@ type OAuthAuthorizePageInput =
 	| {
 			mode: 'form';
 			clientName: string;
-			clientId: string;
 			redirectUri: string;
-			codeChallenge: string;
-			codeChallengeMethod: string;
-			state: string;
+			transactionId: string;
+			csrfToken: string;
 			user: ApplicationUser;
 	  };
 
@@ -32,6 +30,14 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 		);
 	}
 
+	const redirectHost = (() => {
+		try {
+			return new URL(input.redirectUri).host;
+		} catch {
+			return input.redirectUri;
+		}
+	})();
+
 	return (
 		<main className="mx-auto mt-12 w-full max-w-3xl px-6">
 			<div className="rounded-3xl border border-slate-200 bg-white p-10 shadow-lg shadow-slate-200/40">
@@ -43,14 +49,15 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 					{input.clientName} is requesting access as{' '}
 					<strong className="text-slate-900">{input.user.email}</strong>.
 				</p>
+				<p className="mt-2 text-sm text-slate-500">
+					You will be redirected to <strong className="text-slate-700">{redirectHost}</strong> after
+					you decide.
+				</p>
 
 				<div className="mt-8 flex flex-wrap items-center gap-4">
 					<form method="POST" action="/oauth/authorize/approve" className="inline">
-						<input type="hidden" name="client_id" value={input.clientId} />
-						<input type="hidden" name="redirect_uri" value={input.redirectUri} />
-						<input type="hidden" name="code_challenge" value={input.codeChallenge} />
-						<input type="hidden" name="code_challenge_method" value={input.codeChallengeMethod} />
-						<input type="hidden" name="state" value={input.state} />
+						<input type="hidden" name="transaction_id" value={input.transactionId} />
+						<input type="hidden" name="csrf_token" value={input.csrfToken} />
 						<button
 							type="submit"
 							className="rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-500"
@@ -60,9 +67,8 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 					</form>
 
 					<form method="POST" action="/oauth/authorize/deny" className="inline">
-						<input type="hidden" name="client_id" value={input.clientId} />
-						<input type="hidden" name="redirect_uri" value={input.redirectUri} />
-						<input type="hidden" name="state" value={input.state} />
+						<input type="hidden" name="transaction_id" value={input.transactionId} />
+						<input type="hidden" name="csrf_token" value={input.csrfToken} />
 						<button
 							type="submit"
 							className="rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100"

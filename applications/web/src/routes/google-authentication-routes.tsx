@@ -3,6 +3,10 @@ import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
+import { PayloadTooLargeError, readBoundedFormUrlEncoded } from '@web/lib/bounded-request-body';
+import { getBaseUrl } from '@web/lib/base-url';
+import { isTrustedRequestOrigin, isValidSessionCsrfToken } from '@web/lib/csrf-protection';
+import { isExactContentType } from '@web/lib/exact-content-type';
 import {
 	clearGoogleStateCookie,
 	createGoogleSignInRedirectResponse,
@@ -11,7 +15,7 @@ import {
 	validateGoogleCallbackState,
 } from '@web/lib/google-authentication';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
-import { redirectResponse } from '@web/lib/http-response';
+import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import type { RequestContext } from '@web/lib/request-context';
 import {
@@ -19,6 +23,7 @@ import {
 	enforceSessionCreationRateLimit,
 	recordFailedAuthentication,
 } from '@web/lib/request-rate-limiter';
+import { sessionCsrfTokenMaxLength, signOutMaxBodyBytes } from '@web/lib/request-limits';
 import {
 	createExpiredSessionCookie,
 	createSession,
@@ -206,6 +211,60 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 }
 
 export async function handleSignOut(context: RequestContext): Promise<Response> {
+	// No active session: nothing state-changing to protect, and CSRF checks
+	// on a no-op sign-out would only reject a legitimate double-click.
+	if (!context.sessionToken) {
+		const response = redirectResponse('/', 303);
+		response.headers.append('Set-Cookie', createExpiredSessionCookie(context.request));
+		return response;
+	}
+
+	// SEC-005 / S-09: sign-out is a cookie-authenticated, state-changing POST
+	// — it needs the same CSRF defenses as OAuth consent, checked before any
+	// database work.
+	if (!isTrustedRequestOrigin(context.request, getBaseUrl(context.request))) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Cross-site request rejected.' },
+			{ status: 403 },
+		);
+	}
+
+	if (
+		!isExactContentType(
+			context.request.headers.get('content-type'),
+			'application/x-www-form-urlencoded',
+		)
+	) {
+		return jsonResponse({ error: 'unsupported_content_type' }, { status: 400 });
+	}
+
+	let formParameters: URLSearchParams;
+	try {
+		formParameters = await readBoundedFormUrlEncoded(context.request, signOutMaxBodyBytes);
+	} catch (error) {
+		if (error instanceof PayloadTooLargeError) {
+			return jsonResponse(
+				{ error: 'invalid_request', message: 'Request body too large.' },
+				{ status: 413 },
+			);
+		}
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Request body is not valid UTF-8.' },
+			{ status: 400 },
+		);
+	}
+
+	const csrfToken = formParameters.get('csrf_token');
+	if (
+		(csrfToken && csrfToken.length > sessionCsrfTokenMaxLength) ||
+		!isValidSessionCsrfToken(context.sessionToken, csrfToken)
+	) {
+		return jsonResponse(
+			{ error: 'invalid_request', message: 'Missing or invalid CSRF token.' },
+			{ status: 403 },
+		);
+	}
+
 	await revokeSession(context.sessionToken);
 	const response = redirectResponse('/', 303);
 	response.headers.append('Set-Cookie', createExpiredSessionCookie(context.request));

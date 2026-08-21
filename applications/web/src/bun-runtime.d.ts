@@ -12,11 +12,13 @@ declare module 'bun:test' {
 		toBeGreaterThanOrEqual: (expected: number) => void;
 		toBeNull: () => void;
 		toBeUndefined: () => void;
+		toBeDefined: () => void;
 		toHaveProperty: (property: string, value?: unknown) => void;
 		toHaveLength: (expected: number) => void;
 		toThrow: (expected?: unknown) => void;
 		rejects: AsyncExpectation;
 		not: {
+			toBe: (expected: unknown) => void;
 			toBeNull: () => void;
 			toHaveProperty: (property: string, value?: unknown) => void;
 			toThrow: (expected?: unknown) => void;

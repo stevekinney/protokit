@@ -90,9 +90,9 @@ If a POST arrives without an `mcp-session-id` header and is not an initializatio
 
 1. The client redirects the user to `GET /oauth/authorize` with `client_id`, `redirect_uri`, `response_type=code`, `code_challenge`, and `code_challenge_method=S256`.
 2. If the user is not signed in, they are redirected to Google sign-in first.
-3. The consent page (server-rendered React) shows the client name and an approve/deny form.
-4. On approval, a 32-byte authorization code is generated, hashed, and stored in `oauth_codes` with a 10-minute expiration.
-5. The user is redirected back to the client's `redirect_uri` with the plaintext code and state.
+3. After validating the client and redirect URI, the server creates a short-lived, single-use authorization transaction (`oauth_authorization_transactions`) binding the authenticated session, user, client, redirect URI, PKCE challenge, and state server-side, and returns only an opaque `transaction_id` and one-time `csrf_token` to the browser. The consent page (server-rendered React, no client-side JavaScript) shows the client name and an approve/deny form whose hidden fields carry only those two opaque values — never the client, redirect, or PKCE data itself, so editing them client-side cannot change what was reviewed.
+4. On approval, `POST /oauth/authorize/approve` validates the request's `Sec-Fetch-Site`/`Origin` header, then atomically consumes the transaction in one `UPDATE ... WHERE ... RETURNING` (rejecting a missing, mismatched, expired, already-consumed, cross-session, or cross-user transaction with no code issued). A 32-byte authorization code is then generated, hashed, and stored in `oauth_codes` with a 10-minute expiration, using only the transaction's stored values.
+5. The user is redirected back to the client's `redirect_uri` (from the transaction, not the form) with the plaintext code and state.
 6. The client exchanges the code at `POST /oauth/token` with the `code_verifier`. The server verifies the PKCE challenge (`SHA-256(code_verifier) == stored code_challenge`) using constant-time comparison.
 7. On success, an access token (1 hour default) and refresh token (30 days default) are issued.
 
