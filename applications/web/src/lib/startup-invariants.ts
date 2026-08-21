@@ -3,6 +3,48 @@ import { environment } from '@web/env';
 import { collectProductionStartupFailures } from '@web/lib/production-startup-requirements';
 import { isRedisConfigured } from '@web/lib/redis-client';
 
+/** Strips the `readonly` `@t3-oss/env-core` puts on every field so tests can build a plain, mutable fixture object instead of satisfying — or globally mocking — the full environment schema. */
+type Writable<T> = { -readonly [K in keyof T]: T[K] };
+
+/**
+ * The slice of `@web/env`'s `environment` this module actually reads.
+ * Deliberately narrow (a `Pick`, not `typeof environment`) so tests can
+ * inject a plain object covering only these fields.
+ */
+type StartupWebEnvironment = Writable<
+	Pick<
+		typeof environment,
+		| 'NODE_ENV'
+		| 'BASE_URL'
+		| 'REDIS_URL'
+		| 'GOOGLE_CLIENT_ID'
+		| 'GOOGLE_CLIENT_SECRET'
+		| 'TRUSTED_PROXY_CIDRS'
+		| 'TRUSTED_PROXY_HEADER'
+		| 'NODE_TLS_REJECT_UNAUTHORIZED'
+	>
+>;
+
+/** The slice of `@template/database/env`'s `environment` this module reads. */
+type StartupDatabaseEnvironment = Writable<
+	Pick<
+		typeof databaseEnvironment,
+		'DATABASE_URL' | 'DATABASE_URL_UNPOOLED' | 'DATABASE_LOCAL_PROXY_URL'
+	>
+>;
+
+export interface ProductionStartupInvariantSource {
+	environment: StartupWebEnvironment;
+	databaseEnvironment: StartupDatabaseEnvironment;
+	isRedisConfigured: () => boolean;
+}
+
+const liveProductionStartupInvariantSource: ProductionStartupInvariantSource = {
+	environment,
+	databaseEnvironment,
+	isRedisConfigured,
+};
+
 /**
  * Fail-closed production startup checks. Called once from `server.ts`
  * before `Bun.serve` accepts any traffic. Originally introduced narrowly by
@@ -19,26 +61,35 @@ import { isRedisConfigured } from '@web/lib/redis-client';
  * function's only job is gathering the live, already-validated environment
  * into that shape and deciding whether to throw.
  *
+ * `source` defaults to the real, module-level singletons — `server.ts`
+ * calls this with no arguments. Tests supply a fake `source` instead of
+ * `mock.module`-ing `@web/env`/`@template/database/env`/`@web/lib/redis-client`,
+ * which would otherwise leak into every test file that runs afterward in
+ * the same process (OPEN-5).
+ *
  * This function does not attempt a live network probe of Redis or
  * Postgres — that is what `/health` and the request-time paths already do.
  * It validates the *shape* of the configuration a production process was
  * handed, which is checkable instantly and without a live dependency.
  */
-export function assertProductionStartupInvariants(): void {
-	if (environment.NODE_ENV !== 'production') return;
+export function assertProductionStartupInvariants(
+	source: ProductionStartupInvariantSource = liveProductionStartupInvariantSource,
+): void {
+	if (source.environment.NODE_ENV !== 'production') return;
 
 	const failures = collectProductionStartupFailures({
-		nodeEnvironment: environment.NODE_ENV,
-		baseUrl: environment.BASE_URL,
-		redisUrl: environment.REDIS_URL,
-		isRedisConfigured: isRedisConfigured(),
-		databaseUrl: databaseEnvironment.DATABASE_URL,
-		databaseUrlUnpooled: databaseEnvironment.DATABASE_URL_UNPOOLED,
-		databaseLocalProxyUrl: databaseEnvironment.DATABASE_LOCAL_PROXY_URL,
-		googleClientId: environment.GOOGLE_CLIENT_ID,
-		googleClientSecret: environment.GOOGLE_CLIENT_SECRET,
-		trustedProxyCidrs: environment.TRUSTED_PROXY_CIDRS,
-		trustedProxyHeader: environment.TRUSTED_PROXY_HEADER,
+		nodeEnvironment: source.environment.NODE_ENV,
+		baseUrl: source.environment.BASE_URL,
+		redisUrl: source.environment.REDIS_URL,
+		isRedisConfigured: source.isRedisConfigured(),
+		databaseUrl: source.databaseEnvironment.DATABASE_URL,
+		databaseUrlUnpooled: source.databaseEnvironment.DATABASE_URL_UNPOOLED,
+		databaseLocalProxyUrl: source.databaseEnvironment.DATABASE_LOCAL_PROXY_URL,
+		googleClientId: source.environment.GOOGLE_CLIENT_ID,
+		googleClientSecret: source.environment.GOOGLE_CLIENT_SECRET,
+		trustedProxyCidrs: source.environment.TRUSTED_PROXY_CIDRS,
+		trustedProxyHeader: source.environment.TRUSTED_PROXY_HEADER,
+		nodeTlsRejectUnauthorized: source.environment.NODE_TLS_REJECT_UNAUTHORIZED,
 	});
 
 	if (failures.length > 0) {

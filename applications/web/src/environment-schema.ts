@@ -72,4 +72,11 @@ export const webServerEnvironmentSchema = {
 	// issue a session even though `NODE_ENV === 'development'`, because a
 	// tunnel makes that route reachable from the public internet.
 	PROTOKIT_TUNNEL_ACTIVE: z.coerce.boolean().optional().default(false),
+	// OPEN-2: not a variable this application sets — Node/Bun read it
+	// directly to disable TLS certificate validation process-wide. Read only
+	// so `production-startup-requirements.ts` can detect and refuse it; see
+	// its `nodeTlsRejectUnauthorized` doc comment for why this is the one
+	// lever that can silently defeat the sslmode=verify-full and rediss://
+	// certificate-validation checks.
+	NODE_TLS_REJECT_UNAUTHORIZED: z.string().optional(),
 };

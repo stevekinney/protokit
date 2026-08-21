@@ -1,32 +1,47 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 
+import {
+	assertProductionStartupInvariants,
+	type ProductionStartupInvariantSource,
+} from '@web/lib/startup-invariants';
 import {
 	collectProductionStartupFailures,
 	type ProductionStartupConfiguration,
 } from '@web/lib/production-startup-requirements';
 
-const mockEnvironment: Record<string, unknown> = { NODE_ENV: 'development' };
-const mockDatabaseEnvironment: Record<string, unknown> = {
+// OPEN-5: these tests used to drive `assertProductionStartupInvariants()`
+// through `mock.module('@web/env', ...)` / `mock.module('@template/database/env',
+// ...)` / `mock.module('@web/lib/redis-client', ...)`. Bun's `mock.module` is
+// global and is never restored at file boundaries, so those mocks leaked into
+// whatever ran after this file in the same test process. `assertProductionStartupInvariants`
+// now takes an injectable `source` (see `startup-invariants.ts`) instead, so
+// these tests build a plain object and pass it directly — no global mocking,
+// nothing to leak.
+const mockEnvironment: ProductionStartupInvariantSource['environment'] = {
+	NODE_ENV: 'development',
+	BASE_URL: undefined,
+	REDIS_URL: undefined,
+	GOOGLE_CLIENT_ID: undefined,
+	GOOGLE_CLIENT_SECRET: undefined,
+	TRUSTED_PROXY_CIDRS: undefined,
+	TRUSTED_PROXY_HEADER: undefined,
+	NODE_TLS_REJECT_UNAUTHORIZED: undefined,
+};
+const mockDatabaseEnvironment: ProductionStartupInvariantSource['databaseEnvironment'] = {
 	DATABASE_URL:
-		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require',
+		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full',
 	DATABASE_URL_UNPOOLED: undefined,
 	DATABASE_LOCAL_PROXY_URL: undefined,
 };
 let redisConfigured = false;
 
-mock.module('@web/env', () => ({
-	environment: mockEnvironment,
-}));
-
-mock.module('@template/database/env', () => ({
-	environment: mockDatabaseEnvironment,
-}));
-
-mock.module('@web/lib/redis-client', () => ({
-	isRedisConfigured: () => redisConfigured,
-}));
-
-const { assertProductionStartupInvariants } = await import('@web/lib/startup-invariants');
+function invoke(): void {
+	assertProductionStartupInvariants({
+		environment: mockEnvironment,
+		databaseEnvironment: mockDatabaseEnvironment,
+		isRedisConfigured: () => redisConfigured,
+	});
+}
 
 /** A fully valid production configuration. Tests mutate one field away from this. */
 function resetToValidProductionConfiguration(): void {
@@ -37,9 +52,10 @@ function resetToValidProductionConfiguration(): void {
 	mockEnvironment.GOOGLE_CLIENT_SECRET = 'client-secret';
 	mockEnvironment.TRUSTED_PROXY_CIDRS = '10.0.0.0/8';
 	mockEnvironment.TRUSTED_PROXY_HEADER = 'x-forwarded-for';
+	mockEnvironment.NODE_TLS_REJECT_UNAUTHORIZED = undefined;
 	redisConfigured = true;
 	mockDatabaseEnvironment.DATABASE_URL =
-		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require';
+		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full';
 	mockDatabaseEnvironment.DATABASE_URL_UNPOOLED = undefined;
 	mockDatabaseEnvironment.DATABASE_LOCAL_PROXY_URL = undefined;
 }
@@ -49,111 +65,127 @@ describe('assertProductionStartupInvariants', () => {
 		mockEnvironment.NODE_ENV = 'development';
 		mockEnvironment.BASE_URL = undefined;
 		redisConfigured = false;
-		expect(() => assertProductionStartupInvariants()).not.toThrow();
+		expect(() => invoke()).not.toThrow();
 	});
 
 	it('does nothing in test, even with a fully invalid configuration', () => {
 		mockEnvironment.NODE_ENV = 'test';
 		mockEnvironment.BASE_URL = undefined;
 		redisConfigured = false;
-		expect(() => assertProductionStartupInvariants()).not.toThrow();
+		expect(() => invoke()).not.toThrow();
 	});
 
 	it('does not throw in production when every setting is valid', () => {
 		resetToValidProductionConfiguration();
-		expect(() => assertProductionStartupInvariants()).not.toThrow();
+		expect(() => invoke()).not.toThrow();
 	});
 
 	it('throws in production when Redis is not configured', () => {
 		resetToValidProductionConfiguration();
 		redisConfigured = false;
-		expect(() => assertProductionStartupInvariants()).toThrow(/REDIS_URL is not set/);
+		expect(() => invoke()).toThrow(/REDIS_URL is not set/);
 	});
 
 	it('throws in production when REDIS_URL is not the encrypted rediss:// scheme', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.REDIS_URL = 'redis://production-redis.example.com:6379';
-		expect(() => assertProductionStartupInvariants()).toThrow(/rediss:\/\//);
+		expect(() => invoke()).toThrow(/rediss:\/\//);
 	});
 
 	it('throws in production when REDIS_URL points at a loopback host', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.REDIS_URL = 'rediss://localhost:6380';
-		expect(() => assertProductionStartupInvariants()).toThrow(/local host/);
+		expect(() => invoke()).toThrow(/local host/);
 	});
 
 	it('throws in production when REDIS_URL uses placeholder credentials', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.REDIS_URL = 'rediss://test:test@production-redis.example.com:6380';
-		expect(() => assertProductionStartupInvariants()).toThrow(/placeholder credentials/);
+		expect(() => invoke()).toThrow(/placeholder credentials/);
 	});
 
 	it('throws in production when BASE_URL is not set', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.BASE_URL = undefined;
-		expect(() => assertProductionStartupInvariants()).toThrow(/BASE_URL is not set/);
+		expect(() => invoke()).toThrow(/BASE_URL is not set/);
 	});
 
 	it('throws in production when BASE_URL is not https', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.BASE_URL = 'http://app.example.com';
-		expect(() => assertProductionStartupInvariants()).toThrow(/must use https/);
+		expect(() => invoke()).toThrow(/must use https/);
 	});
 
 	it('throws in production when DATABASE_URL has no encrypted, verified transport', () => {
 		resetToValidProductionConfiguration();
 		mockDatabaseEnvironment.DATABASE_URL =
 			'postgresql://produser:realsecret@production-host.example.com:5432/app';
-		expect(() => assertProductionStartupInvariants()).toThrow(/encrypted, certificate-verified/);
+		expect(() => invoke()).toThrow(/sslmode=verify-full/);
+	});
+
+	it('throws in production when DATABASE_URL only encrypts (sslmode=require) without verifying the certificate', () => {
+		resetToValidProductionConfiguration();
+		mockDatabaseEnvironment.DATABASE_URL =
+			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require';
+		expect(() => invoke()).toThrow(/sslmode=verify-full/);
+	});
+
+	it('throws in production when DATABASE_URL verifies the CA but not the hostname (sslmode=verify-ca)', () => {
+		resetToValidProductionConfiguration();
+		mockDatabaseEnvironment.DATABASE_URL =
+			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-ca';
+		expect(() => invoke()).toThrow(/sslmode=verify-full/);
+	});
+
+	it('throws in production when NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate validation process-wide', () => {
+		resetToValidProductionConfiguration();
+		mockEnvironment.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+		expect(() => invoke()).toThrow(/NODE_TLS_REJECT_UNAUTHORIZED=0/);
 	});
 
 	it('throws in production when DATABASE_URL points at a local host', () => {
 		resetToValidProductionConfiguration();
 		mockDatabaseEnvironment.DATABASE_URL =
-			'postgresql://produser:realsecret@localhost:5432/app?sslmode=require';
-		expect(() => assertProductionStartupInvariants()).toThrow(/local host/);
+			'postgresql://produser:realsecret@localhost:5432/app?sslmode=verify-full';
+		expect(() => invoke()).toThrow(/local host/);
 	});
 
 	it('throws in production when DATABASE_URL uses placeholder credentials', () => {
 		resetToValidProductionConfiguration();
 		mockDatabaseEnvironment.DATABASE_URL =
-			'postgresql://user:password@production-host.example.com:5432/app?sslmode=require';
-		expect(() => assertProductionStartupInvariants()).toThrow(/placeholder credentials/);
+			'postgresql://user:password@production-host.example.com:5432/app?sslmode=verify-full';
+		expect(() => invoke()).toThrow(/placeholder credentials/);
 	});
 
 	it('throws in production when DATABASE_LOCAL_PROXY_URL is set', () => {
 		resetToValidProductionConfiguration();
 		mockDatabaseEnvironment.DATABASE_LOCAL_PROXY_URL = 'http://db.localtest.me:4444/sql';
-		expect(() => assertProductionStartupInvariants()).toThrow(/DATABASE_LOCAL_PROXY_URL is set/);
+		expect(() => invoke()).toThrow(/DATABASE_LOCAL_PROXY_URL is set/);
 	});
 
 	it('throws in production when TRUSTED_PROXY_CIDRS is not set', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.TRUSTED_PROXY_CIDRS = undefined;
-		expect(() => assertProductionStartupInvariants()).toThrow(
-			/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/,
-		);
+		expect(() => invoke()).toThrow(/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/);
 	});
 
 	it('throws in production when TRUSTED_PROXY_HEADER is not set', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.TRUSTED_PROXY_HEADER = undefined;
-		expect(() => assertProductionStartupInvariants()).toThrow(
-			/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/,
-		);
+		expect(() => invoke()).toThrow(/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/);
 	});
 
 	it('throws in production when Google credentials are partially configured', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.GOOGLE_CLIENT_SECRET = undefined;
-		expect(() => assertProductionStartupInvariants()).toThrow(/must both be set or both be absent/);
+		expect(() => invoke()).toThrow(/must both be set or both be absent/);
 	});
 
 	it('does not throw in production when Google credentials are both absent', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.GOOGLE_CLIENT_ID = undefined;
 		mockEnvironment.GOOGLE_CLIENT_SECRET = undefined;
-		expect(() => assertProductionStartupInvariants()).not.toThrow();
+		expect(() => invoke()).not.toThrow();
 	});
 
 	it('reports every failing setting in one error, not just the first', () => {
@@ -161,13 +193,22 @@ describe('assertProductionStartupInvariants', () => {
 		redisConfigured = false;
 		mockEnvironment.BASE_URL = undefined;
 		try {
-			assertProductionStartupInvariants();
+			invoke();
 			throw new Error('expected assertProductionStartupInvariants to throw');
 		} catch (error) {
 			const message = (error as Error).message;
 			expect(message).toContain('REDIS_URL is not set');
 			expect(message).toContain('BASE_URL is not set');
 		}
+	});
+
+	it('uses the live environment singletons when called with no source', () => {
+		// The default parameter wires the real `@web/env` / `@template/database/env`
+		// / `@web/lib/redis-client` modules — this test runs under `NODE_ENV=test`
+		// (see the package `test` script), so this only proves the zero-argument
+		// call path exercises real modules and returns without throwing, matching
+		// server.ts's own zero-argument call.
+		expect(() => assertProductionStartupInvariants()).not.toThrow();
 	});
 });
 
@@ -179,7 +220,7 @@ function validConfiguration(): ProductionStartupConfiguration {
 		redisUrl: 'rediss://production-redis.example.com:6380',
 		isRedisConfigured: true,
 		databaseUrl:
-			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require',
+			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full',
 		databaseUrlUnpooled: undefined,
 		databaseLocalProxyUrl: undefined,
 		googleClientId: 'client-id',
@@ -210,7 +251,8 @@ describe('collectProductionStartupFailures', () => {
 		const failures = collectProductionStartupFailures({
 			...validConfiguration(),
 			redisUrl: 'rediss://admin:admin@production-redis.example.com:6380',
-			databaseUrl: 'postgresql://root:root@production-host.example.com:5432/app?sslmode=require',
+			databaseUrl:
+				'postgresql://root:root@production-host.example.com:5432/app?sslmode=verify-full',
 		});
 		const joined = failures.join('\n');
 		expect(joined).not.toContain('admin:admin');

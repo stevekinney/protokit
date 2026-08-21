@@ -17,7 +17,7 @@ function validVariables(): CandidateVariables {
 	return {
 		NODE_ENV: 'production',
 		DATABASE_URL:
-			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require',
+			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full',
 		BASE_URL: 'https://app.example.com',
 		REDIS_URL: 'rediss://production-redis.example.com:6380',
 		TRUSTED_PROXY_CIDRS: '10.0.0.0/8',
@@ -173,11 +173,28 @@ describe('evaluateProductionReadiness', () => {
 		const variables = validVariables();
 		variables.REDIS_URL = 'rediss://admin:admin@production-redis.example.com:6380';
 		variables.DATABASE_URL =
-			'postgresql://root:root@production-host.example.com:5432/app?sslmode=require';
+			'postgresql://root:root@production-host.example.com:5432/app?sslmode=verify-full';
 		const results = evaluateProductionReadiness('production', variables);
 		const joined = results.map((entry) => entry.detail).join('\n');
 		expect(joined).not.toContain('admin:admin');
 		expect(joined).not.toContain('root:root');
+	});
+
+	it('fails when DATABASE_URL only encrypts (sslmode=require) without verifying the certificate', () => {
+		const variables = validVariables();
+		variables.DATABASE_URL =
+			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require';
+		const results = evaluateProductionReadiness('production', variables);
+		expect(results.some((entry) => entry.detail.includes('sslmode=verify-full'))).toBe(true);
+	});
+
+	it('fails when NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate validation process-wide', () => {
+		const variables = validVariables();
+		variables.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+		const results = evaluateProductionReadiness('production', variables);
+		expect(results.some((entry) => entry.detail.includes('NODE_TLS_REJECT_UNAUTHORIZED=0'))).toBe(
+			true,
+		);
 	});
 
 	it('passes with no failures for a fully valid production configuration', () => {

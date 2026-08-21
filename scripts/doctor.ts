@@ -153,6 +153,7 @@ export function evaluateProductionReadiness(
 		googleClientSecret: variables.GOOGLE_CLIENT_SECRET,
 		trustedProxyCidrs: variables.TRUSTED_PROXY_CIDRS,
 		trustedProxyHeader: variables.TRUSTED_PROXY_HEADER,
+		nodeTlsRejectUnauthorized: variables.NODE_TLS_REJECT_UNAUTHORIZED,
 	});
 
 	if (failureMessages.length === 0) {

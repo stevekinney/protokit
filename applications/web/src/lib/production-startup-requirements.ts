@@ -70,10 +70,33 @@ function databaseUrlFailures(label: string, rawUrl: string): string[] {
 		failures.push(`${label} uses placeholder credentials. Set real production credentials.`);
 	}
 
-	if (!/[?&]sslmode=(require|verify-ca|verify-full)\b/i.test(rawUrl)) {
+	// Only `verify-full` actually validates the server certificate: PostgreSQL's
+	// documented semantics for `require` are "encrypt, but do not verify" (no
+	// defense against an active MITM that presents any cert), and `verify-ca`
+	// checks the certificate chains to a trusted CA without checking the
+	// hostname on it — against the public trust store every managed provider
+	// uses (Neon included; Neon documents and recommends `verify-full` and
+	// chains to the public Let's Encrypt root), that means `verify-ca` accepts
+	// a valid cert for *any* host, not specifically this one. `verify-full` is
+	// therefore the only value that satisfies "certificate validation."
+	//
+	// This is the configuration-layer half of the guarantee: it makes the
+	// claim hold for every consumer of this same DATABASE_URL string, not only
+	// the runtime driver — `drizzle-kit`'s CLI and any future wire-protocol
+	// driver both parse and act on `sslmode`. The runtime driver actually in
+	// use (`@neondatabase/serverless`'s `neon()`, via `drizzle-orm/neon-http`)
+	// never reads `sslmode` at all — confirmed by inspecting the package: its
+	// HTTP tag function builds a literal `https://` URL and always goes
+	// through standard TLS-verified `fetch`. That transport-layer validation
+	// is real and unconditional, but it depends on nothing disabling Node/Bun's
+	// default certificate verification — see `nodeTlsRejectUnauthorized` below.
+	if (!/[?&]sslmode=verify-full\b/i.test(rawUrl)) {
 		failures.push(
-			`${label} must include an encrypted, certificate-verified connection ` +
-				'(sslmode=require or stronger) in production.',
+			`${label} must include sslmode=verify-full in production. sslmode=require only ` +
+				'encrypts the connection without verifying the server certificate, and ' +
+				'sslmode=verify-ca verifies the certificate chain but not the hostname — neither ' +
+				'defends against an active machine-in-the-middle presenting a different valid ' +
+				'certificate.',
 		);
 	}
 
@@ -121,6 +144,20 @@ export interface ProductionStartupConfiguration {
 	googleClientSecret: string | undefined;
 	trustedProxyCidrs: string | undefined;
 	trustedProxyHeader: string | undefined;
+	/**
+	 * The raw `NODE_TLS_REJECT_UNAUTHORIZED` value, unmodified. Setting it to
+	 * `"0"` disables TLS certificate validation process-wide — confirmed
+	 * directly against Bun's `fetch` (the Postgres transport, via
+	 * `@neondatabase/serverless`) and it is Node's documented `tls` module
+	 * default consulted by `node-redis`'s socket (the Redis transport). If
+	 * this is `"0"`, every `sslmode=verify-full` and `rediss://` check above
+	 * still passes syntactically while providing zero actual protection —
+	 * this is the one lever that can silently falsify this file's entire
+	 * certificate-validation claim, so it is checked independently of them.
+	 * Optional so existing call sites and fixtures need no update; treated as
+	 * "not disabling validation" when absent, matching Node's own default.
+	 */
+	nodeTlsRejectUnauthorized?: string | undefined;
 }
 
 /**
@@ -134,6 +171,22 @@ export function collectProductionStartupFailures(
 	configuration: ProductionStartupConfiguration,
 ): string[] {
 	const failures: string[] = [];
+
+	// Checked first and unconditionally: this disables TLS certificate
+	// validation process-wide (confirmed directly against Bun's `fetch`,
+	// which is the actual Postgres transport via `@neondatabase/serverless`,
+	// and it is Node's documented `tls` module default that `node-redis`'s
+	// socket also consults for `rediss://`). If this is set, every check
+	// below can pass syntactically while the transport genuinely validates
+	// nothing — see the field's doc comment on `ProductionStartupConfiguration`.
+	if (configuration.nodeTlsRejectUnauthorized === '0') {
+		failures.push(
+			'NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS certificate validation for every ' +
+				'HTTPS and TLS connection in this process, including the Postgres (HTTPS) and ' +
+				'Redis (rediss://) connections this file otherwise requires to be ' +
+				'certificate-verified. Unset it in production.',
+		);
+	}
 
 	if (configuration.nodeEnvironment !== 'production') {
 		failures.push(

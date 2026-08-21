@@ -64,6 +64,7 @@ export const environment = createEnv({
 		// invariants were unable to fire. `build.ts` asserts this stays true.
 		NODE_ENV: process.env['NODE_ENV'] as 'development' | 'production' | 'test' | undefined,
 		PROTOKIT_TUNNEL_ACTIVE: process.env.PROTOKIT_TUNNEL_ACTIVE,
+		NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
 	},
 	emptyStringAsUndefined: true,
 });
