@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 /**
  * SEC-002: proves, against a real dispatcher and a real (not mocked)
@@ -55,23 +57,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 const initializeBody = JSON.stringify({
@@ -88,8 +87,8 @@ const initializeBody = JSON.stringify({
 describeWithRedis('MCP boundary controls (requires Redis)', () => {
 	describe('cross-site request rejection', () => {
 		it('rejects an Origin not on the allow-list, before authentication is ever checked', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, '/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -106,8 +105,8 @@ describeWithRedis('MCP boundary controls (requires Redis)', () => {
 		});
 
 		it('rejects a sandboxed ("null") origin', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, '/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -120,8 +119,8 @@ describeWithRedis('MCP boundary controls (requires Redis)', () => {
 		});
 
 		it('allows an origin on the allow-list through to authentication (401, not 403)', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, '/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -134,8 +133,8 @@ describeWithRedis('MCP boundary controls (requires Redis)', () => {
 		});
 
 		it('allows a request with no Origin header at all (non-browser MCP clients)', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, '/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -155,8 +154,8 @@ describeWithRedis('MCP boundary controls (requires Redis)', () => {
 			// outside conformance mode, see `mcp-routes.ts`'s
 			// `isDnsRebindingProtectionActive`) is the one doing the rejecting,
 			// not the allow-list.
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, '/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -171,8 +170,8 @@ describeWithRedis('MCP boundary controls (requires Redis)', () => {
 		});
 
 		it('allows a same-loopback Host/Origin pair through to authentication (401, not 403)', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, '/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',

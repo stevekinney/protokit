@@ -17,6 +17,11 @@ import {
 	handleSignOut,
 } from '@web/routes/google-authentication-routes';
 import { handleHealthGet, handleHealthReadinessGet } from '@web/routes/health-routes';
+import {
+	handlePrivacyPolicyGet,
+	handleSupportGet,
+	handleTermsOfServiceGet,
+} from '@web/routes/legal-routes';
 import { handleMetricsGet } from '@web/routes/metrics-routes';
 import { handleMcpRequestWithAuthentication } from '@web/routes/mcp-routes';
 import {
@@ -272,7 +277,9 @@ async function dispatch(context: RequestContext): Promise<Response> {
  * OPS-002 / S-15: routes that never read `context.user` or
  * `context.sessionToken` — public liveness, the authenticated readiness and
  * metrics endpoints (each carries its own bearer-credential check, not a
- * browser session), and the static OAuth discovery documents. Dispatched
+ * browser session), the static OAuth discovery documents, and (`DOCS-001`)
+ * the privacy/terms/support pages, which are equally static and equally
+ * uninterested in whether the caller is signed in. Dispatched
  * before `hydrateSession` runs so none of them ever queries session
  * storage, even when sent with a cookie. Returns `null` (rather than a 404)
  * for anything else, so `handleApplicationRequest` falls through to the
@@ -291,6 +298,18 @@ function dispatchWithoutSession(context: RequestContext): Response | Promise<Res
 
 	if (requestUrl.pathname === '/metrics' && request.method === 'GET') {
 		return handleMetricsGet(context);
+	}
+
+	if (requestUrl.pathname === '/privacy' && request.method === 'GET') {
+		return handlePrivacyPolicyGet();
+	}
+
+	if (requestUrl.pathname === '/terms' && request.method === 'GET') {
+		return handleTermsOfServiceGet();
+	}
+
+	if (requestUrl.pathname === '/support' && request.method === 'GET') {
+		return handleSupportGet();
 	}
 
 	if (

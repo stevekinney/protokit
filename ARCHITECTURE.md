@@ -66,35 +66,84 @@ Bearer token authentication protects the `/mcp` endpoint for programmatic MCP cl
 
 ## MCP Transport
 
-The MCP server uses Streamable HTTP with SSE (Server-Sent Events), implemented via `WebStandardStreamableHTTPServerTransport` from `@modelcontextprotocol/sdk`.
+The MCP server is built on the official MCP TypeScript SDK v2 (`@modelcontextprotocol/core`,
+`@modelcontextprotocol/server`, `@modelcontextprotocol/client`, all pinned to `2.0.0`) — not the v1
+`@modelcontextprotocol/sdk` package, which tops out at protocol revision `2025-11-25`. `PROTO-001`
+replaced a hand-written, stateful Streamable HTTP transport (session IDs, an in-memory transport
+map, Redis-backed cross-instance session ownership) with `createMcpHandler` from
+`@modelcontextprotocol/server` (`applications/web/src/lib/mcp-handler.ts`), which owns Streamable
+HTTP entirely and speaks two protocol eras from one factory:
 
-- **POST /mcp** -- Sends JSON-RPC messages. The response is either a single JSON object or an SSE stream, depending on whether the request is a notification or expects a reply. The `Accept` header must include both `application/json` and `text/event-stream`.
-- **GET /mcp** -- Opens a persistent SSE stream for server-initiated messages (notifications, progress updates). Requires `Accept: text/event-stream`.
-- **DELETE /mcp** -- Closes the session and cleans up the transport.
+- **`2026-07-28`** (the current revision): stateless per-message dispatch — no `initialize`
+  handshake, no `mcp-session-id` header, no server-side session to lose on restart or to route to a
+  particular instance.
+- **`2025-11-25`** (Claude's hosted-connector maximum as of this writing — see the compatibility
+  contract in `ROADMAP.local.md`): served through the SDK's own built-in stateless fallback
+  (`legacy: 'stateless'`), not a second hand-rolled transport. When Anthropic documents `2026-07-28`
+  support for hosted connectors, this lane and its dedicated conformance tests
+  (`test:conformance:legacy`) are meant to be removed in one direct change, not kept indefinitely.
 
-Session initialization happens when a POST contains an `initialize` JSON-RPC message with no `mcp-session-id` header. The server creates a new `WebStandardStreamableHTTPServerTransport`, assigns a UUID session ID, registers it in Redis and the `mcp_sessions` database table, and returns the session ID in the response.
+`mcpSupportedProtocolVersions` (`applications/web/src/lib/mcp-protocol-constants.ts`) is the single
+source of truth for which revisions are actually served; a metadata document that claims a version
+this constant doesn't list would be exactly the kind of gap `META-001` exists to prevent.
 
-Subsequent requests include the `mcp-session-id` header. The server verifies the session exists in Redis, belongs to the requesting user, and is owned by this application instance before forwarding the request to the transport.
+- **POST /mcp** — every JSON-RPC message for both eras.
+- **GET /mcp** — a persistent stream for server-initiated messages under `2026-07-28`'s
+  `subscriptions/listen` mechanism (see "Resource update delivery" below); not meaningful for the
+  stateless legacy lane, which has no server-initiated push.
+- Every request is authenticated, origin-checked, and scope-checked before the SDK handler ever
+  sees it — see "OAuth 2.1 (MCP Clients)" below and `THREAT-MODEL.md`'s "Hosted connector callbacks"
+  section for the exact order of checks.
 
-### Stateless Fallback
+### Per-user handler instances and resource update delivery
 
-If a POST arrives without an `mcp-session-id` header and is not an initialization request, the server creates an ephemeral transport, processes the single request, and tears it down. This supports one-shot tool calls without establishing a persistent session.
+`PROTO-002` gives each authenticated user their own `McpHttpHandler` instance
+(`McpUserHandlerCache`, idle-evicted after a bounded interval), not one shared handler for the
+whole process. This is what makes `subscriptions/listen` — the `2026-07-28` push-notification
+mechanism — safe to serve at all: the SDK's `ServerEventBus` filters purely by resource URI with no
+notion of caller identity, so a shared handler would let user A's `user://profile` update reach user
+B's open listen stream the moment B names the same literal (fixed, "my own profile") URI. Giving
+each user their own handler and Redis-backed event bus (`mcp-user-event-bus.ts`) confines a
+published update to that user's own channel structurally, not via a runtime filter that could be
+gotten wrong.
 
 ## OAuth 2.1 Flow
 
-### Dynamic Client Registration
+### Client Identity: Dynamic Registration or Client ID Metadata Documents
 
-`POST /oauth/register` accepts a JSON body with `client_name`, `redirect_uris`, `grant_types`, `response_types`, and `token_endpoint_auth_method`. The server generates a `client_id` (UUID) and `client_secret` (random 32 bytes, hex-encoded). The secret is SHA-256 hashed before storage. Only `authorization_code` and `refresh_token` are supported grant types; the server rejects any other grant type at registration. Public clients use `token_endpoint_auth_method: "none"` and are restricted from the `refresh_token` grant.
+`POST /oauth/register` (RFC 7591 dynamic client registration, DCR) accepts a JSON body with
+`client_name`, `redirect_uris`, `grant_types`, `response_types`, `token_endpoint_auth_method`, and
+optionally `application_type` (SEP-837 -- never defaulted; a client that declares `web` is held to an
+HTTPS-only redirect URI, one that omits it keeps the pre-existing loopback-friendly behavior every
+current connector relies on). Only `authorization_code` and `refresh_token` are supported grant
+types. Confidential clients (`token_endpoint_auth_method: "client_secret_post"`) get a `client_id`
+(UUID) and a `client_secret` (random 32 bytes, hex-encoded, SHA-256 hashed before storage, with an
+expiration timestamp `DATA-001` added). Public clients (`token_endpoint_auth_method: "none"`) get no
+secret at all -- the response omits `client_secret` entirely rather than returning one -- and, unlike
+an earlier version of this server, are **not** restricted from the `refresh_token` grant; a public
+client rotates refresh tokens the same way a confidential one does.
+
+The authorization server also advertises `client_id_metadata_document_supported: true`
+(`OAUTH-002`): a client may instead use an HTTPS URL it controls directly as its `client_id`. On
+each authorization request naming such a URL, the server fetches, validates (SSRF-guarded --
+loopback/RFC 1918/link-local/cloud-metadata address ranges blocked for both literal-IP and
+DNS-rebinding cases, `redirect: 'error'`, bounded size and timeout), and upserts the document into
+`oauth_clients`. A Client ID Metadata Document is restricted to `token_endpoint_auth_method: "none"`
+only -- there is no verified mechanism here for a shared secret or `private_key_jwt` against a
+document anyone can read.
 
 ### Authorization Code + PKCE
 
-1. The client redirects the user to `GET /oauth/authorize` with `client_id`, `redirect_uri`, `response_type=code`, `code_challenge`, and `code_challenge_method=S256`.
+1. The client redirects the user to `GET /oauth/authorize` with `client_id`, `redirect_uri`,
+   `response_type=code`, `code_challenge`, `code_challenge_method=S256`, `resource` (RFC 8707 -- must
+   exactly match this server's canonical `${BASE_URL}/mcp`), an optional `scope` (defaults to every
+   scope this server's tool/resource/prompt registry supports when omitted), and `state`.
 2. If the user is not signed in, they are redirected to Google sign-in first.
-3. After validating the client and redirect URI, the server creates a short-lived, single-use authorization transaction (`oauth_authorization_transactions`) binding the authenticated session, user, client, redirect URI, PKCE challenge, and state server-side, and returns only an opaque `transaction_id` and one-time `csrf_token` to the browser. The consent page (server-rendered React, no client-side JavaScript) shows the client name and an approve/deny form whose hidden fields carry only those two opaque values — never the client, redirect, or PKCE data itself, so editing them client-side cannot change what was reviewed.
+3. After validating the client, redirect URI, resource, and scope, the server creates a short-lived, single-use authorization transaction (`oauth_authorization_transactions`) binding the authenticated session, user, client, redirect URI, PKCE challenge, resource, scope, state, and the canonical issuer identifier server-side, and returns only an opaque `transaction_id` and one-time `csrf_token` to the browser. The consent page (server-rendered React, no client-side JavaScript) shows the client name, the human-readable description of each scope being granted, and an approve/deny form whose hidden fields carry only those two opaque values -- never the client, redirect, PKCE, resource, or scope data itself, so editing them client-side cannot change what was reviewed.
 4. On approval, `POST /oauth/authorize/approve` validates the request's `Sec-Fetch-Site`/`Origin` header, then atomically consumes the transaction in one `UPDATE ... WHERE ... RETURNING` (rejecting a missing, mismatched, expired, already-consumed, cross-session, or cross-user transaction with no code issued). A 32-byte authorization code is then generated, hashed, and stored in `oauth_codes` with a 10-minute expiration, using only the transaction's stored values.
-5. The user is redirected back to the client's `redirect_uri` (from the transaction, not the form) with the plaintext code and state.
-6. The client exchanges the code at `POST /oauth/token` with the `code_verifier`. The server verifies the PKCE challenge (`SHA-256(code_verifier) == stored code_challenge`) using constant-time comparison.
-7. On success, an access token (1 hour default) and refresh token (30 days default) are issued.
+5. The user is redirected back to the client's `redirect_uri` (from the transaction, not the form) with the plaintext code, state, and, per RFC 9207, `iss` -- the canonical issuer identifier this authorization was issued under, which a client should verify before redeeming the code.
+6. The client exchanges the code at `POST /oauth/token` with the `code_verifier` and the same `resource` value. The server verifies the PKCE challenge (`SHA-256(code_verifier) == stored code_challenge`) using constant-time comparison and rejects a `resource` mismatch with `invalid_target`.
+7. On success, an access token (`MCP_TOKEN_TTL_SECONDS`, 1 hour default) and refresh token (`MCP_REFRESH_TOKEN_TTL_SECONDS`, 30 days default) are issued, both bound to the requested resource and scope. A token whose bound resource no longer matches the one presented to `/mcp` is rejected there as `invalid_token`, and an under-scoped tool call is rejected at the MCP boundary (see "Scope enforcement" below), not just at authorize time.
 
 ### Token Refresh with Rotation
 
@@ -102,47 +151,54 @@ When a client presents a refresh token at `POST /oauth/token` with `grant_type=r
 
 1. The existing refresh token is immediately revoked (single-use).
 2. The associated access token is revoked.
-3. A new access token and a new refresh token are issued.
+3. A new access token and a new refresh token are issued, both public and confidential clients alike.
 
-This rotation pattern ensures that a compromised refresh token can only be used once. If both the legitimate client and an attacker try to use the same refresh token, the second attempt fails and signals a breach.
+This rotation pattern ensures that a compromised refresh token can only be used once. If both the legitimate client and an attacker try to use the same refresh token, the second attempt is rejected with `invalid_grant` and logged as a `refresh_replay` outcome (see `RUNBOOK.md`) -- a signal worth investigating on its own, not just counting.
 
 ### Token Revocation
 
-`POST /oauth/revoke` accepts a token and optional `token_type_hint`. It revokes the matching access or refresh token (and its paired access token if revoking a refresh token). Per RFC 7009, it returns 200 even if the token was not found.
+`POST /oauth/revoke` accepts a token and optional `token_type_hint`, and -- as of `OAUTH-003` --
+authenticates the calling client first, so one client cannot revoke a token that belongs to a
+different client. It revokes the matching access or refresh token (and its paired access token if
+revoking a refresh token) atomically. Per RFC 7009, it returns 200 even if the token was not found,
+so a caller cannot use the revoke endpoint's response to probe for valid tokens.
 
-## Session Affinity
+### Scope enforcement
 
-MCP sessions are stateful: each session has an in-memory `WebStandardStreamableHTTPServerTransport` instance that maintains the JSON-RPC connection state and any open SSE streams. In a multi-instance deployment behind a load balancer, a request must reach the same server instance that created the session.
-
-Redis stores session-to-instance mappings. Each record contains:
-
-- `sessionId` -- The MCP session UUID.
-- `userId` -- The owning user.
-- `ownerInstanceId` -- The identifier of the server instance that created the session.
-- `lastActivityAt` and `expiresAt` -- For TTL-based expiration.
-
-The instance identifier is resolved from `INSTANCE_IDENTIFIER`, `RAILWAY_REPLICA_ID`, `HOSTNAME`, or a random UUID (in that priority order).
-
-When a request arrives with an `mcp-session-id`:
-
-1. The session is looked up in Redis.
-2. If the `ownerInstanceId` does not match the current instance, the server returns **409 Conflict** with `"action": "reconnect"`. The client should discard the session and initialize a new one, which will be routed to whichever instance handles the initialization request.
-
-This approach works across cloud providers without requiring provider-specific sticky session configuration at the load balancer level.
-
-Idle sessions are evicted from the in-memory transport map after 30 minutes. A periodic interval (every 5 minutes) sweeps for idle entries.
+`AUTHZ-001`'s scope vocabulary (`profile:read`, `audit:read` -- conformance-only, never advertised in
+production, `prompts:read`) is enforced per tool/resource/prompt invocation, not only at authorize
+time. Every registered primitive declares a `requiredScope`; an under-scoped call returns
+`isError: true` with `_meta['mcp/www_authenticate']` naming the missing scope (tools) or throws a
+JSON-RPC `-32001` error carrying the same challenge (resources/prompts) before the handler ever
+runs. `tools/list` itself is unaffected by scope -- an under-scoped tool still appears in the
+listing, the same way host applications expect discovery to work.
 
 ## Rate Limiting
 
-A sliding window rate limiter backed by Redis sorted sets protects sensitive endpoints from abuse. The implementation uses `ZREMRANGEBYSCORE` to expire old entries, `ZCARD` to count requests in the window, and `ZADD` to record new requests.
+A sliding window rate limiter backed by Redis sorted sets protects sensitive endpoints from abuse. The implementation uses `ZREMRANGEBYSCORE` to expire old entries, `ZCARD` to count requests in the window, and `ZADD` to record new requests, with a finite-value guard (`SEC-003`/`BUG-001`) so a misconfigured window or maximum fails loudly rather than serializing `NaN`/`Infinity` into Redis. Production refuses to start without Redis configured -- an in-memory fallback exists for local development only, since it is per-process and would let a multi-instance deployment be trivially over-admitted.
 
-| Endpoint                      | Key                                          | Default Limit            |
-| ----------------------------- | -------------------------------------------- | ------------------------ |
-| `POST /oauth/register`        | Client IP or forwarded address               | 10 requests / 60 seconds |
-| `POST /oauth/token`           | Client IP (optionally scoped to `client_id`) | 30 requests / 60 seconds |
-| `POST /mcp` (and GET, DELETE) | Authenticated `userId`                       | 60 requests / 60 seconds |
+| Endpoint                                            | Key                                               | Default Limit             |
+| --------------------------------------------------- | ------------------------------------------------- | ------------------------- |
+| `POST /oauth/register`                              | Network identity (trusted-proxy-aware; see below) | 10 requests / 60 seconds  |
+| `POST /oauth/authorize`                             | Network identity                                  | 30 requests / 60 seconds  |
+| `POST /oauth/token`                                 | Network identity                                  | 30 requests / 60 seconds  |
+| `POST /oauth/revoke`                                | Network identity                                  | 30 requests / 60 seconds  |
+| `GET`/`POST /auth/google/*`                         | Network identity                                  | 20 requests / 60 seconds  |
+| `POST /auth/sign-out`, account connections          | Network identity                                  | 10 requests / 60 seconds  |
+| `POST`/`GET`/`DELETE /mcp`                          | Authenticated `userId`                            | 60 requests / 60 seconds  |
+| `POST`/`GET`/`DELETE /mcp` (concurrent)             | Authenticated `userId`                            | 10 concurrent requests    |
+| `GET /health/ready`, `GET /metrics`                 | Network identity                                  | 60 / 30 requests / 60 sec |
+| Repeated authentication failures (any of the above) | Network identity                                  | 10 failures / 300 seconds |
 
-All limits are configurable via environment variables. When a request is rate-limited, the server returns **429 Too Many Requests** with a `Retry-After` header calculated from the oldest entry in the window.
+Every limit above is a real, named environment variable (`RATE_LIMIT_<SURFACE>_MAX` /
+`RATE_LIMIT_<SURFACE>_WINDOW_SECONDS` -- see `.env.example` for the exhaustive, current list) -- this
+table is a representative summary, not the authoritative source. "Network identity" is derived by
+`request-client-identifier.ts`: the raw socket address, unless the immediate peer is itself inside a
+configured `TRUSTED_PROXY_CIDRS` range, in which case the configured `TRUSTED_PROXY_HEADER`
+(`X-Forwarded-For`, `Forwarded`, or `CF-Connecting-IP`) is trusted instead -- an unconfigured
+deployment cannot have its rate limiting bypassed by a forged header. When a request is
+rate-limited, the server returns **429 Too Many Requests** with a `Retry-After` header calculated
+from the oldest entry in the window.
 
 ## Key Design Decisions
 
@@ -158,9 +214,18 @@ The MCP transport itself is stateless (owned by the official SDK — no session 
 
 Bun provides a built-in HTTP server, native TypeScript execution, a test runner, and a package manager in a single binary. There is no need for a separate bundler, transpiler, or process manager. The `Bun.serve` API supports static file preloading, direct `Request`/`Response` handling, and `requestIP` for rate limiting, which removes the need for middleware frameworks.
 
-### Server-rendered React over SPA
+### Server-rendered React, with client-side JavaScript deliberately excluded from the OAuth consent page
 
-The web UI (home page, OAuth consent screen) uses `renderToStaticMarkup` with no client-side JavaScript hydration. These pages are simple forms that submit via standard POST requests and redirects. Server rendering eliminates the need for a client-side router, state management, or JavaScript bundles. This is particularly important for the OAuth consent page, which must not be manipulable by client-side scripts.
+The OAuth consent screen (`applications/web/src/views/oauth-authorize-page.tsx`) is rendered via
+`renderStaticDocument`/`createStaticHtmlResponse`, which never includes the client bundle — it is a
+plain form that submits via standard POST requests and redirects, and must not be manipulable by
+client-side scripts. The home page (`applications/web/src/components/home-page.tsx`) is rendered via
+`renderStreamingDocument`/`createStreamingHtmlResponse` and does include a small client bundle
+(`applications/web/src/client/entry.tsx`, `/assets/client.js`) for genuinely client-only affordances
+like the copy-to-clipboard button (`components/copy-button.tsx`) — there is no client-side router or
+global state management, and no route depends on JavaScript to function. The distinction is
+deliberate per page, not an inconsistency: security-sensitive pages get no client bundle at all;
+ordinary pages get the minimum client-side behavior an actual affordance needs.
 
 ### Separate MCP package for reusability
 

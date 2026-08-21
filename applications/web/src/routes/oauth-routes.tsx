@@ -2,7 +2,12 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { database, schema } from '@template/database';
-import { getSupportedScopes, isMcpScope, mcpScopeDescriptions } from '@template/mcp';
+import {
+	environment as mcpEnvironment,
+	getSupportedScopes,
+	isMcpScope,
+	mcpScopeDescriptions,
+} from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { metricsCollector } from '@template/mcp/metrics';
 import { environment } from '@web/env';
@@ -1718,6 +1723,14 @@ export async function handleOauthAuthorizationMetadataGet(
 			// `handleOauthAuthorizeDeny`), so it advertises the fact per the
 			// RFC's own registered metadata field.
 			authorization_response_iss_parameter_supported: true,
+			// DOCS-001 / RFC 8414 sec. 2: human-readable documentation and legal
+			// links, derived from the same canonical BASE_URL as every other
+			// metadata field here — never a hardcoded or placeholder domain, so
+			// they resolve against whatever host this server is actually
+			// deployed to.
+			service_documentation: `${baseUrl}/support`,
+			op_policy_uri: `${baseUrl}/privacy`,
+			op_tos_uri: `${baseUrl}/terms`,
 			extensions: {
 				...(environment.MCP_ENABLE_UI_EXTENSION ? { [mcpUiExtensionIdentifier]: {} } : {}),
 			},
@@ -1735,6 +1748,13 @@ export async function handleOauthProtectedResourceMetadataGet(
 			resource: getMcpResourceUrl(context.request),
 			authorization_servers: [baseUrl],
 			scopes_supported: getSupportedScopes(),
+			// DOCS-001 / RFC 9728 sec. 2: same documentation/legal links as the
+			// authorization server metadata above, under this RFC's own field
+			// names.
+			resource_name: mcpEnvironment.MCP_SERVER_NAME,
+			resource_documentation: `${baseUrl}/support`,
+			resource_policy_uri: `${baseUrl}/privacy`,
+			resource_tos_uri: `${baseUrl}/terms`,
 		},
 		{ headers: oauthCorsHeaders },
 	);
@@ -1751,6 +1771,10 @@ export async function handleOauthProtectedResourceMcpMetadataGet(
 			bearer_methods_supported: ['header'],
 			mcp_protocol_version: mcpLatestProtocolVersion,
 			scopes_supported: getSupportedScopes(),
+			resource_name: mcpEnvironment.MCP_SERVER_NAME,
+			resource_documentation: `${baseUrl}/support`,
+			resource_policy_uri: `${baseUrl}/privacy`,
+			resource_tos_uri: `${baseUrl}/terms`,
 		},
 		{ headers: oauthCorsHeaders },
 	);

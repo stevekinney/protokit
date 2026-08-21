@@ -15,21 +15,45 @@
 # - `tools-call-sampling`, `tools-call-elicitation`,
 #   `elicitation-sep1034-defaults`, `elicitation-sep1330-enums`: each times
 #   out (`MCP error -32001: Request timed out`) rather than completing.
+#
+#   TEST-001 (OPEN-10) resolved the question this file previously left open.
 #   `packages/mcp/src/conformance-fixture-registration.ts`'s `test_sampling`
-#   / `test_elicitation*` fixtures correctly call the SDK's own
-#   `sendRequest` (a real server-initiated `sampling/createMessage` /
-#   `elicitation/create` request) and correctly catch a *rejection* with a
-#   graceful `isError: true` result -- but nothing bounds how long that
-#   `sendRequest` await can run, and this repository's own conformance
-#   suite (`conformance-modern.test.ts` / `conformance-legacy.test.ts`)
-#   never exercises sampling or elicitation at all, so there is no existing
-#   evidence either way for whether this is (a) the external CLI's built-in
-#   test client simply not implementing an automatic sampling/elicitation
-#   responder for `server` conformance runs, or (b) a genuine unbounded-await
-#   gap on this server's side that a real client's slow-to-respond human-in
-#   -the-loop elicitation would also trigger. Root-causing that distinction
-#   needs deeper SDK-internals investigation than this item's scope covers --
-#   flagged explicitly rather than guessed at or silently patched.
+#   / `test_elicitation*` fixtures call the SDK's own `sendRequest` (a real
+#   server-initiated `sampling/createMessage` / `elicitation/create`
+#   request) with no explicit `options.timeout`, but the await is NOT
+#   unbounded: `@modelcontextprotocol/server@2.0.0`'s
+#   `requestWithSchemaViaCodec` falls back to the SDK's own
+#   `DEFAULT_REQUEST_TIMEOUT_MSEC` (60000ms, `core-internal/src/shared/
+#   protocol.ts`) whenever the caller omits `timeout`, and rejects with
+#   `SdkError(RequestTimeout, "Request timed out")` once it elapses -- which
+#   is exactly the `-32001` this file's scenarios observe. Confirmed
+#   empirically, not just read from source: running
+#   `@modelcontextprotocol/conformance server --scenario tools-call-sampling
+#   --verbose` against a real, unmodified `conformance-server.ts` measured
+#   `1:00.49` wall-clock before the failure, matching the 60s default to
+#   within CLI startup/teardown overhead. `packages/mcp/src/
+#   conformance-sampling-timeout.test.ts` pins this behavior as a
+#   regression test: it drives `test_sampling` against a real client that
+#   registers a `sampling/createMessage` handler but never resolves it, and
+#   asserts the call finishes bounded -- between 45s and 90s -- rather than
+#   never, accepting either of the two equally-bounded ~60s outcomes a real
+#   client can observe (the server's own `isError: true` result, or the
+#   client's own `tools/call` request timing out first), so a future SDK
+#   upgrade that removes the default (making the await genuinely unbounded)
+#   fails this test rather than silently reintroducing the availability gap
+#   the roadmap warned about.
+#
+#   That answers (b) from this file's prior wording: there is no genuine
+#   unbounded-await gap. The four scenarios still fail here for reason (a):
+#   the pinned `@modelcontextprotocol/conformance` CLI's own `server`-mode
+#   test client does not implement an automatic sampling/elicitation
+#   responder (confirmed by its own `--verbose` "Implementation Note" output
+#   for `tools-call-sampling`, which describes what the *server* must
+#   implement and says nothing about the CLI supplying a client-side
+#   responder), so every one of these calls always times out against this
+#   CLI regardless of server behavior. This is the CLI's client, not a
+#   server-side defect -- these entries stay in the baseline, now for a
+#   proven reason instead of an open question.
 #
 # - `server-sse-multiple-streams`: this CI job's own workflow (added in the
 #   same commit as this file, alongside the modern-era job) had never

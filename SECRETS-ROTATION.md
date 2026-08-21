@@ -9,21 +9,34 @@ straight to a `0600` file or a secret store, never to stdout.
 ## Session-signing secret (`SESSION_SIGNING_SECRET`)
 
 Signs session cookies and derives CSRF tokens
-(`applications/web/src/lib/session-signing-secret.ts`, `csrf-protection.ts`). There is no
-dual-secret verification window in this codebase — rotating this value invalidates every
-existing session and CSRF token immediately, the moment the new value is loaded.
+(`applications/web/src/lib/session-signing-secret.ts`, `csrf-protection.ts`). `DATA-001` added a
+deliberate, time-bounded overlap window — rotation is a two-step, two-command process, not a single
+instantaneous cutover:
 
-Rotate with `bun scripts/rotate-secret.ts session`. It generates a new 32-byte hex secret,
-writes it to `.env.local` (mode `0600`, old value never printed), and — if `gh` is installed and
-`SESSION_SIGNING_SECRET` is one of the GitHub-managed secrets — pushes the same value to the
-GitHub secret store. Restart every running instance afterward; until you do, instances signing
-with the old value and instances signing with the new value will reject each other's sessions
-inconsistently. Because there is no grace period, treat this as a planned maintenance action:
-every signed-in user is signed out the moment the new secret takes effect.
+1. `bun scripts/rotate-secret.ts session` generates a new 32-byte hex secret, writes it to
+   `.env.local` as `SESSION_SIGNING_SECRET`, and moves the outgoing value to
+   `SESSION_SIGNING_SECRET_PREVIOUS` (mode `0600`, neither value ever printed) — if `gh` is
+   installed and `SESSION_SIGNING_SECRET` is one of the GitHub-managed secrets, it also pushes the
+   new value to the GitHub secret store. `resolveSessionSigningSecrets()` signs new
+   cookies/CSRF tokens with the current secret but still verifies anything signed under
+   `SESSION_SIGNING_SECRET_PREVIOUS`, so restarting every instance during this window does not sign
+   out already-signed-in users.
+2. `bun scripts/rotate-secret.ts session-cutover` clears `SESSION_SIGNING_SECRET_PREVIOUS` once
+   every client has had time to pick up the new value (a new sign-in, or the cookie's natural
+   refresh). After this, a session cookie, CSRF token, or Google sign-in state cookie signed only
+   under the retired secret is rejected outright — this is the step that actually ends the overlap,
+   not step 1.
 
-`scripts/rotate-secret.test.ts` proves the invalidation property directly: a value signed with
-the pre-rotation secret does not verify against the post-rotation secret, using the exact HMAC
-construction `csrf-protection.ts` documents.
+Restart every running instance after step 1 for the new secret to take effect for newly issued
+cookies, and again after step 2 so no instance is still willing to verify the retired secret. Treat
+step 2 as the planned-maintenance action if you need a hard cutoff; skipping it indefinitely just
+means the overlap window never closes.
+
+`scripts/rotate-secret.test.ts` proves the file-writing mechanics of both commands (the outgoing
+value moves to `SESSION_SIGNING_SECRET_PREVIOUS` on rotation and is removed on cutover); the actual
+verification behavior — a value signed under the previous secret still verifies during the overlap
+window, then stops verifying once the cutover removes it — is proven in
+`applications/web/src/lib/session-signing-secret.test.ts`'s `resolveSessionSigningSecrets` suite.
 
 ## OAuth client credentials (`oauth_clients` table)
 

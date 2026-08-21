@@ -360,6 +360,52 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		expect(mcpResponse.status).not.toBe(401);
 	});
 
+	// TEST-001: named explicitly by the roadmap ("regression tests for ...
+	// malformed JSON-RPC") -- an authenticated request that clears every
+	// boundary control (origin, bearer token, audience, scope) but sends a
+	// body the JSON-RPC layer itself cannot parse must fail as a protocol
+	// error, not as an authentication or authorization failure, and must
+	// never reach a tool handler.
+	it('rejects a syntactically invalid JSON body from an otherwise fully authenticated request', async () => {
+		const port = startServer();
+		const cookie = await signIn(port);
+		const accessToken = await obtainAccessToken(port, cookie);
+
+		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${accessToken}`,
+				'content-type': 'application/json',
+				accept: 'application/json, text/event-stream',
+			},
+			body: '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"',
+		});
+
+		expect(mcpResponse.status).not.toBe(401);
+		expect(mcpResponse.status).not.toBe(403);
+		expect(mcpResponse.status).toBeLessThan(500);
+	});
+
+	it('rejects a well-formed JSON body that is not a valid JSON-RPC envelope', async () => {
+		const port = startServer();
+		const cookie = await signIn(port);
+		const accessToken = await obtainAccessToken(port, cookie);
+
+		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${accessToken}`,
+				'content-type': 'application/json',
+				accept: 'application/json, text/event-stream',
+			},
+			body: JSON.stringify({ not: 'a jsonrpc envelope at all' }),
+		});
+
+		expect(mcpResponse.status).not.toBe(401);
+		expect(mcpResponse.status).not.toBe(403);
+		expect(mcpResponse.status).toBeLessThan(500);
+	});
+
 	it('the same token is rejected at /mcp once its stored resource no longer matches (audience binding, not just possession)', async () => {
 		const port = startServer();
 		const cookie = await signIn(port);

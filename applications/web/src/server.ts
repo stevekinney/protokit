@@ -3,6 +3,7 @@ import { logger } from '@template/mcp/logger';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';
 import { loadAssetManifest } from '@web/lib/asset-manifest';
+import { createInFlightRequestTracker } from '@web/lib/in-flight-request-tracker';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 import { mcpRequestMaxBodyBytes } from '@web/lib/request-limits';
@@ -75,14 +76,37 @@ const hostname = resolveBindAddress({
 	configuredBindAddress: environment.SERVER_BIND_ADDRESS,
 });
 
+// `OPS-001`: `Bun.serve(...).stop(false)` (below) stops accepting new
+// connections but returns immediately -- it does not wait for a request
+// already in `fetch` to finish. Wrapping every dynamically-handled request
+// (never the pre-built `static` responses, which do no async work worth
+// draining) lets `gracefulShutdown` know when it is actually safe to close
+// the MCP transports those in-flight requests may still be using.
+const inFlightRequests = createInFlightRequestTracker();
+
+// `OPS-001`: found empirically, not assumed -- Bun.serve's own default
+// `idleTimeout` is 10 seconds, but the MCP SDK's `subscriptions/listen`
+// stream (`@modelcontextprotocol/server`'s `DEFAULT_SSE_KEEP_ALIVE_MS`)
+// only writes a keep-alive comment frame every 15 seconds. Left at Bun's
+// default, this server killed its own long-lived SSE responses with
+// "request timed out after 10 seconds" before the SDK's own keep-alive
+// ever had a chance to prevent that -- independent of anything a reverse
+// proxy in front of this server might also do. Set comfortably above the
+// SDK's keep-alive interval so this server's own idle timeout is never
+// the first thing to close a stream the SDK is actively keeping alive.
+const mcpStreamIdleTimeoutSeconds = 60;
+
 const server = Bun.serve({
 	port,
 	hostname,
 	static: staticRoutes,
 	maxRequestBodySize: globalMaxRequestBodyBytes,
+	idleTimeout: mcpStreamIdleTimeoutSeconds,
 	fetch(request, bunServer) {
 		const requestIpAddress = bunServer.requestIP(request)?.address;
-		return handleApplicationRequest(request, { clientAddress: requestIpAddress });
+		return inFlightRequests.track(() =>
+			handleApplicationRequest(request, { clientAddress: requestIpAddress }),
+		);
 	},
 });
 
@@ -106,12 +130,28 @@ async function gracefulShutdown(signal: string): Promise<void> {
 	stopScheduledCleanup();
 	server.stop(false);
 
+	const shutdownDeadline = Date.now() + GRACEFUL_SHUTDOWN_TIMEOUT_MS;
 	const shutdownTimeout = setTimeout(() => {
 		logger.warn('Graceful shutdown timed out, forcing exit');
 		process.exit(1);
 	}, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
 
 	try {
+		// Wait for whatever `fetch` was already handling when the signal
+		// arrived to actually finish -- closing MCP transports out from
+		// under a response still being written turns a real result into a
+		// dropped connection, not a clean completion or cancellation.
+		const drainBudgetMs = Math.max(0, shutdownDeadline - Date.now());
+		const drainResult = await inFlightRequests.drain(drainBudgetMs);
+		if (!drainResult.drained) {
+			logger.warn(
+				{ remaining: drainResult.remaining },
+				'Graceful shutdown drain budget exhausted with requests still in flight; closing transports anyway',
+			);
+		} else {
+			logger.info('All in-flight requests finished');
+		}
+
 		await shutdownMcpTransports();
 		logger.info('All MCP transports closed');
 

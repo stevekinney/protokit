@@ -115,6 +115,13 @@ export const webServerEnvironmentSchema = {
 	// Set it explicitly (`0.0.0.0`) to run in a container, where loopback binding
 	// makes a published port unreachable. See `lib/resolve-bind-address.ts`.
 	SERVER_BIND_ADDRESS: z.string().min(1).optional(),
+	// DOCS-001: the contact address the `/support` page and this template's
+	// privacy/terms content point users at. Optional so the template runs
+	// out of the box, but a real deployment should set it — an unset value
+	// renders honest "not yet configured" guidance instead of a fabricated
+	// address, which is deliberate: this repository's own documentation
+	// audit refuses to ship a placeholder contact as if it were real.
+	SUPPORT_CONTACT_EMAIL: z.string().email().optional(),
 	// CONFIG-001 (S-06): no default. A host that forgets to set this must
 	// crash rather than silently run as `development` — the mode that
 	// leaves `GET /auth/dev/login` reachable. Every legitimate entry point

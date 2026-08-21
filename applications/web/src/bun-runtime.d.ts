@@ -50,7 +50,12 @@ declare module 'bun:test' {
 declare namespace Bun {
 	type SpawnedProcess = {
 		exited: Promise<number>;
-		kill: () => void;
+		// OPS-001: real Bun.Subprocess#kill accepts an optional POSIX signal
+		// (name or number); `graceful-shutdown.integration.test.ts` needs
+		// SIGTERM specifically, not whatever Bun's default signal is.
+		kill: (signal?: number | NodeJS.Signals) => void;
+		/** OPS-001: real Bun.Subprocess#killed -- true once `kill()` has been requested. */
+		readonly killed: boolean;
 		// INTEROP-001: added for `connector-smoke-support.ts`'s bounded CLI
 		// runner, which pipes and reads a spawned child's output. Present
 		// (as `ReadableStream<Uint8Array> | null`) whenever `stdout`/`stderr`
@@ -83,6 +88,8 @@ declare namespace Bun {
 		static?: Record<string, Response>;
 		/** Hard cap, in bytes, on any request body Bun will buffer before handing the request to `fetch`. Defense in depth below the route-specific limits in `request-limits.ts`. */
 		maxRequestBodySize?: number;
+		/** OPS-001: real Bun.serve option, seconds (default 10) before an idle connection is closed. Must exceed any long-lived SSE response's own keep-alive interval. */
+		idleTimeout?: number;
 		fetch: (request: Request, server: Server) => Response | Promise<Response>;
 	};
 
@@ -106,4 +113,13 @@ declare const Bun: {
 	spawnSync: (command: string[], options?: Record<string, unknown>) => Bun.SpawnSyncResult;
 	file: (path: string | URL) => Bun.FileReference;
 	build: (config: Bun.BuildConfig) => Promise<Bun.BuildOutput>;
+	/** OPS-001: real Bun.sleep -- used by tests that poll or wait a fixed interval. */
+	sleep: (ms: number) => Promise<void>;
 };
+
+// OPS-001: real Bun/Node ImportMeta carries `dir` (the containing directory,
+// no trailing slash) alongside `url`; `graceful-shutdown.integration.test.ts`
+// uses it to spawn `server.ts` from an absolute, test-file-relative path.
+interface ImportMeta {
+	readonly dir: string;
+}

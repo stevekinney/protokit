@@ -63,6 +63,7 @@ export const environment = createEnv({
 		HEALTH_READINESS_CACHE_TTL_SECONDS: process.env.HEALTH_READINESS_CACHE_TTL_SECONDS,
 		PORT: process.env.PORT,
 		SERVER_BIND_ADDRESS: process.env.SERVER_BIND_ADDRESS,
+		SUPPORT_CONTACT_EMAIL: process.env.SUPPORT_CONTACT_EMAIL,
 		// Read via a bracket literal, never `process.env.NODE_ENV`. Bun's bundler
 		// constant-folds the dot form at BUILD time — it baked "production" into the
 		// container image and "development" into a local build — so the shipped

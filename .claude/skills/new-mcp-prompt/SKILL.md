@@ -1,44 +1,47 @@
 # Skill: New MCP Prompt
 
-Scaffold a new MCP prompt in the template.
+Scaffold a new MCP prompt in the template. `packages/mcp/CLAUDE.md`'s "Adding a New Prompt" section
+is the canonical, actively-maintained step list — read it first. This file is a matching quick-start
+template.
 
 ## Steps
 
 1. Create `packages/mcp/src/prompts/<prompt-name>.ts` (kebab-case filename)
-2. Define the prompt object with:
+2. Build it with `definePrompt({ ... })` from `../types/primitives.js`, giving it:
    - `name`: snake_case (e.g., `my_prompt_name`)
-   - `description`: Clear, concise description of what the prompt does
-   - `arguments`: Raw Zod shape (not wrapped in `z.object()`) defining the prompt arguments
-   - `handler`: Async function with `(arguments_: { ... }, context: { userId: string })` signature
+   - `title`: human-readable display name
+   - `description`: clear, concise description of what the prompt does
+   - `arguments`: raw Zod shape (not wrapped in `z.object()`) defining the prompt arguments, or
+     `arguments: undefined` for a prompt that takes none
+   - `requiredScope`: one value from `mcpScopes` (`../scopes.js`) — checked before `prompts/get`
+     reaches `handler`
+   - `handler`: async function with `(arguments_, context: McpContext)` signature
 3. Follow the error handling pattern:
    - Create a child logger: `logger.child({ prompt: 'prompt_name', userId: context.userId })`
    - Wrap handler body in try/catch
    - On success: return `{ messages: [{ role: 'user', content: { type: 'text', text: '...' } }] }`
    - On failure: log `requestLogger.error({ err }, 'Prompt failed')` and return a fallback message
    - Prompts must never throw — always return a structured MCP response
-4. Register in `packages/mcp/src/server.ts`:
-   ```typescript
-   server.registerPrompt(
-   	myPrompt.name,
-   	{ description: myPrompt.description, argsSchema: myPrompt.arguments },
-   	async (arguments_) => myPrompt.handler(arguments_, context),
-   );
-   ```
-5. Re-export from `packages/mcp/src/index.ts`
+4. Add it to `src/prompts/index.ts`'s `allPrompts` array — nothing else needs to change in
+   `server.ts`; every entry is auto-registered with scope enforcement already applied.
+5. Re-export from `packages/mcp/src/index.ts` if it needs to be importable from outside the package.
 
 ## Template
 
 ```typescript
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { definePrompt } from '../types/primitives.js';
 
-export const myPromptNamePrompt = {
-	name: 'my_prompt_name' as const,
+export const myPromptNamePrompt = definePrompt({
+	name: 'my_prompt_name',
+	title: 'My Prompt Name',
 	description: 'Description of what this prompt does.',
 	arguments: {
 		myArgument: z.string().describe('Description of the argument'),
 	},
-	handler: async (arguments_: { myArgument: string }, context: { userId: string }) => {
+	requiredScope: 'prompts:read',
+	handler: async (arguments_, context) => {
 		const requestLogger = logger.child({ prompt: 'my_prompt_name', userId: context.userId });
 		try {
 			requestLogger.info('Prompt requested');
@@ -68,7 +71,7 @@ export const myPromptNamePrompt = {
 			};
 		}
 	},
-};
+});
 ```
 
 ## Using Markdown Templates
@@ -82,4 +85,8 @@ import templateContent from './templates/my-template.md' with { type: 'text' };
 const rendered = templateContent.replace('{variable}', actualValue);
 ```
 
-Create template files in `packages/mcp/src/prompts/templates/`. The `text-imports.d.ts` declaration in `packages/mcp/src/` provides TypeScript support.
+`with { type: 'text' }` is required, not optional — Bun's default `.md` loader renders Markdown to
+HTML, which is never what you want for text a client reads as prose (a real defect `CONTENT-001`
+found and fixed on `instructions.md`'s own import). Create template files in
+`packages/mcp/src/prompts/templates/`. The `markdown.d.ts` declaration in `packages/mcp/src/`
+provides TypeScript support for this pattern.
