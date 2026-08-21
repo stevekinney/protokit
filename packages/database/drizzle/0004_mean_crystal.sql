@@ -1,0 +1,2 @@
+ALTER TABLE "oauth_refresh_tokens" ADD COLUMN "family_id" text DEFAULT gen_random_uuid() NOT NULL;--> statement-breakpoint
+CREATE INDEX "oauth_refresh_tokens_family_id_idx" ON "oauth_refresh_tokens" USING btree ("family_id");

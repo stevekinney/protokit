@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
+
+import { writeSecretFileAtomic, ROOT_DIRECTORY } from './utilities.ts';
 
 const DEVELOPMENT_USER_EMAIL = 'dev@localhost';
 const DEVELOPMENT_USER_NAME = 'Development User';
@@ -76,6 +79,29 @@ async function seedOauthClient(): Promise<{
 	return { clientId, clientSecret };
 }
 
+export const ALREADY_CREATED_MARKER = '(already created — secret not retrievable)';
+
+/**
+ * SECRETS-001 (S-12): the plaintext secret used to be printed straight to stdout, where it
+ * would sit in terminal scrollback, a recorded session, or CI logs indefinitely. It exists
+ * nowhere else — the database stores only its hash — so the one-time delivery still has to
+ * happen somewhere; a 0600 file next to `.env.local` (already git- and docker-ignored) is that
+ * somewhere instead of a log stream. Nothing that isn't already an OAuth client secret gets
+ * weaker: an attacker who can read this file could already read `.env.local` sitting right next
+ * to it. Returns the message to print — never the secret itself.
+ */
+export function deliverSeedClientSecret(secretFilePath: string, clientSecret: string): string {
+	if (clientSecret === ALREADY_CREATED_MARKER) {
+		return `OAuth Client Secret: ${ALREADY_CREATED_MARKER}`;
+	}
+
+	writeSecretFileAtomic(secretFilePath, `${clientSecret}\n`);
+	return [
+		`OAuth Client Secret: written to ${secretFilePath} (mode 0600, not printed)`,
+		'Read it once and delete the file — it is not retrievable from the database.',
+	].join('\n');
+}
+
 async function main() {
 	const userId = await seedDevelopmentUser();
 	const { clientId, clientSecret } = await seedOauthClient();
@@ -83,13 +109,17 @@ async function main() {
 	console.log('\n=== Seed Complete ===\n');
 	console.log(`Development User: ${DEVELOPMENT_USER_EMAIL} (${userId})`);
 	console.log(`OAuth Client ID: ${clientId}`);
-	console.log(`OAuth Client Secret: ${clientSecret}`);
+	console.log(
+		deliverSeedClientSecret(join(ROOT_DIRECTORY, '.env.local.seed-client-secret'), clientSecret),
+	);
 	console.log('');
 
 	process.exit(0);
 }
 
-main().catch((error) => {
-	logger.error({ err: error }, 'Seed script failed');
-	process.exit(1);
-});
+if (import.meta.main) {
+	main().catch((error) => {
+		logger.error({ err: error }, 'Seed script failed');
+		process.exit(1);
+	});
+}

@@ -175,16 +175,16 @@ async function main(): Promise<void> {
 	write(`${developmentPrefix} Server is ready!\n\n`);
 
 	if (tunnelEnabled) {
-		// Spawn the cloudflared tunnel
+		// Spawn the cloudflared tunnel using the locally installed binary that
+		// `commandExists('cloudflared')` already verified above — not `bunx cloudflared`, which
+		// resolves and runs an unpinned npm package regardless of what is actually installed on
+		// PATH, defeating the point of checking for a reviewed binary first (SECRETS-001, S-12).
 		const tunnelPrefix = `${ANSI_MAGENTA}[tunnel]${ANSI_RESET}`;
-		const tunnelProcess = Bun.spawn(
-			['bunx', 'cloudflared', 'tunnel', '--url', 'http://localhost:3000'],
-			{
-				stdout: 'pipe',
-				stderr: 'pipe',
-				cwd: import.meta.dirname + '/..',
-			},
-		);
+		const tunnelProcess = Bun.spawn(['cloudflared', 'tunnel', '--url', 'http://localhost:3000'], {
+			stdout: 'pipe',
+			stderr: 'pipe',
+			cwd: import.meta.dirname + '/..',
+		});
 
 		childProcesses.push(tunnelProcess);
 		prefixStream(tunnelProcess.stdout, tunnelPrefix);

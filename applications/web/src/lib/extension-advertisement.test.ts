@@ -38,6 +38,7 @@ mock.module('drizzle-orm', () => ({
 	eq: (column: unknown, value: unknown) => ({ column, value }),
 	gt: (column: unknown, value: unknown) => ({ column, value }),
 	isNull: (column: unknown) => ({ column }),
+	inArray: (column: unknown, values: unknown) => ({ column, values }),
 }));
 
 mock.module('@web/lib/redis-client', () => ({

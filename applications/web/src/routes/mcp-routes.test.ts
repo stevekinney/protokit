@@ -145,6 +145,7 @@ describe('handleMcpRequestWithAuthentication', () => {
 				clientId: 'client-1',
 				userId: 'user-1',
 				scope: 'mcp:read',
+				resource: 'http://localhost:3000/mcp',
 				revokedAt: null,
 				expiresAt: new Date(Date.now() + 60000),
 			},
@@ -154,5 +155,25 @@ describe('handleMcpRequestWithAuthentication', () => {
 		});
 		const response = await handleMcpRequestWithAuthentication(context);
 		expect(response.status).toBe(200);
+	});
+
+	it('returns 401 when the token was issued for a different resource', async () => {
+		mockTokenResult = [
+			{
+				accessToken: 'hashed:valid-token',
+				clientId: 'client-1',
+				userId: 'user-1',
+				scope: 'mcp:read',
+				resource: 'http://attacker.example.com/mcp',
+				revokedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+		const context = createContext({
+			headers: { authorization: 'Bearer valid-token' },
+		});
+		const response = await handleMcpRequestWithAuthentication(context);
+		expect(response.status).toBe(401);
+		expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
 	});
 });

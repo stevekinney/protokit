@@ -75,6 +75,7 @@ function baseTransactionInput(
 		codeChallengeMethod: 'S256',
 		state: 'state-xyz',
 		issuer: 'http://localhost:3000',
+		resource: 'http://localhost:3000/mcp',
 		...overrides,
 	};
 }
@@ -97,6 +98,7 @@ describe('createAuthorizationTransaction / consumeAuthorizationTransaction (real
 			codeChallengeMethod: 'S256',
 			state: 'state-xyz',
 			issuer: 'http://localhost:3000',
+			resource: 'http://localhost:3000/mcp',
 		});
 	});
 

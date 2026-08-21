@@ -7,6 +7,10 @@ describe('summarizePrompt', () => {
 		expect(summarizePrompt.name).toBe('summarize');
 	});
 
+	it('has a title', () => {
+		expect(summarizePrompt.title).toBeTruthy();
+	});
+
 	it('has a description', () => {
 		expect(summarizePrompt.description).toBeTruthy();
 	});

@@ -1,14 +1,18 @@
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { definePrompt } from '../types/primitives.js';
 
-export const summarizePrompt = {
-	name: 'summarize' as const,
+export const summarizePrompt = definePrompt({
+	name: 'summarize',
+	title: 'Summarize Topic',
 	description:
 		'Generates a prompt that asks the assistant to summarize a given topic for the authenticated user.',
 	arguments: {
 		topic: z.string().describe('The topic to summarize'),
 	},
-	handler: async (arguments_: { topic: string }, context: { userId: string }) => {
+	handler: async (arguments_, context) => {
+		// S-14 (owned by OBS-001, not touched here): this logs raw user-supplied
+		// topic content with no redaction policy.
 		const requestLogger = logger.child({ prompt: 'summarize', userId: context.userId });
 
 		try {
@@ -40,4 +44,4 @@ export const summarizePrompt = {
 			};
 		}
 	},
-};
+});

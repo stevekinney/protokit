@@ -313,12 +313,36 @@ describeWithRedis('OAuth token endpoint (requires Redis)', () => {
 });
 
 describeWithRedis('OAuth token revocation (requires Redis)', () => {
+	// OAUTH-003 / S-02: `/oauth/revoke` now authenticates the caller as a
+	// registered OAuth client before it will touch any token row (see
+	// `handleOauthRevokePostInner` in `oauth-routes.tsx`). A real, public
+	// (`token_endpoint_auth_method: none`) client is registered through the
+	// live `/oauth/register` endpoint so this file keeps proving RFC 7009's
+	// "200 even for an unknown token" contract against an *authenticated*
+	// request -- the only kind `/oauth/revoke` accepts now -- rather than an
+	// unauthenticated one the endpoint no longer allows.
+	async function registerPublicClient(port: number): Promise<string> {
+		const response = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				client_name: 'Revocation RFC 7009 Test Client',
+				redirect_uris: ['https://example.com/callback'],
+				token_endpoint_auth_method: 'none',
+			}),
+		});
+		expect(response.status).toBe(201);
+		const body = (await response.json()) as { client_id: string };
+		return body.client_id;
+	}
+
 	it('returns 200 for revocation of unknown token per RFC 7009', async () => {
 		const port = startServer();
+		const clientId = await registerPublicClient(port);
 		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: 'token=nonexistent-token',
+			body: new URLSearchParams({ token: 'nonexistent-token', client_id: clientId }).toString(),
 		});
 		expect(response.status).toBe(200);
 	});
@@ -331,5 +355,28 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 			body: '',
 		});
 		expect(response.status).toBe(400);
+	});
+
+	it('rejects revocation with no client_id (OAUTH-003 / S-02: revocation is now client-bound)', async () => {
+		const port = startServer();
+		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ token: 'nonexistent-token' }).toString(),
+		});
+		expect(response.status).toBe(400);
+	});
+
+	it('rejects revocation from an unregistered client', async () => {
+		const port = startServer();
+		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				token: 'nonexistent-token',
+				client_id: 'never-registered-client',
+			}).toString(),
+		});
+		expect(response.status).toBe(401);
 	});
 });

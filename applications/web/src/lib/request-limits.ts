@@ -49,7 +49,21 @@ export const oauthMaxResponseTypeCount = 5;
 export const oauthMaxStateLength = 512;
 export const oauthMaxAuthorizationCodeLength = 512;
 export const oauthMaxTokenLength = 512;
-export const oauthMaxClientIdLength = 128;
+
+/**
+ * `client_id` (OAUTH-002): a DCR client ID is a `randomUUID()` (36
+ * characters), but a Client ID Metadata Document client ID is the full
+ * HTTPS URL the document lives at -- same shape and bound as a redirect
+ * URI, since it is one. Both must fit in one limit checked before any
+ * database lookup or network fetch.
+ */
+export const oauthMaxClientIdLength = oauthMaxRedirectUriLength;
+
+/**
+ * `resource` (RFC 8707): same shape as a redirect URI, since it is also a
+ * full HTTPS URL — the canonical `${BASE_URL}/mcp` string.
+ */
+export const oauthMaxResourceLength = 2048;
 
 /**
  * `POST /oauth/authorize/approve` and `/oauth/authorize/deny` (SEC-005):
@@ -74,3 +88,26 @@ export const pkceCodeChallengeLength = 43;
 
 /** Bearer tokens are 96 hex characters (`randomBytes(48).toString('hex')`); cap generously above that. */
 export const mcpMaxBearerTokenLength = 512;
+
+// -- Client ID Metadata Document (CIMD) fetch limits (OAUTH-002) -----------
+//
+// The authorization server fetches these documents from a URL the *client*
+// controls, not one this server's operator configured -- every limit here
+// exists to bound how much damage a hostile or broken document can do.
+
+/** Abort the fetch if the client's metadata endpoint has not responded in time. */
+export const cimdFetchTimeoutMs = 5000;
+
+/** Same shape as `oauthRegisterMaxBodyBytes` -- a metadata document is the same JSON shape as a registration request. */
+export const cimdMaxResponseBytes = 16 * 1024;
+
+/**
+ * How long a successfully fetched and validated document is trusted before
+ * this server fetches it again. Bounds both fetch volume against the
+ * client's endpoint and how quickly this server observes a client rotating
+ * its `redirect_uris`.
+ */
+export const cimdCacheTtlMs = 10 * 60 * 1000;
+
+/** Caps the in-memory cache so an attacker cycling through many distinct `client_id` URLs cannot grow it without bound. */
+export const cimdCacheMaxEntries = 1000;

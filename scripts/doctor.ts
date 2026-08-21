@@ -236,7 +236,7 @@ export function evaluateGithubAuthentication(): CheckResult[] {
 	}
 
 	try {
-		execute('gh auth status');
+		execute('gh', ['auth', 'status']);
 		return [makeResult('GitHub', 'pass', 'GitHub authentication', 'Authenticated')];
 	} catch {
 		return [makeResult('GitHub', 'warn', 'GitHub authentication', 'Not authenticated')];
@@ -250,7 +250,7 @@ export function evaluateGithubSecrets(): CheckResult[] {
 
 	let secretList: string;
 	try {
-		secretList = execute('gh secret list');
+		secretList = execute('gh', ['secret', 'list']);
 	} catch {
 		return [
 			makeResult(
@@ -275,7 +275,7 @@ export function evaluateRailwayLinked(): CheckResult[] {
 	}
 
 	try {
-		execute('railway status');
+		execute('railway', ['status']);
 		return [makeResult('Railway', 'pass', 'Railway project', 'Linked')];
 	} catch {
 		return [makeResult('Railway', 'warn', 'Railway project', 'Not linked')];

@@ -114,7 +114,7 @@ describeWithRedis('OAuth consent CSRF and transaction binding (requires Redis)',
 		cookie: string,
 	): Promise<{ transactionId: string; csrfToken: string }> {
 		const response = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM`,
+			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://127.0.0.1:${port}/mcp`,
 			{ headers: { cookie } },
 		);
 		expect(response.status).toBe(200);

@@ -1,0 +1,249 @@
+import { randomUUID } from 'node:crypto';
+import { describe, expect, it } from 'bun:test';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { createMcpHandler } from '@modelcontextprotocol/server';
+import { allTools } from './tools/index.js';
+import { allResources } from './resources/index.js';
+import { allPrompts } from './prompts/index.js';
+import { createMcpServer } from './server.js';
+import { createTestContext } from './testing/context.js';
+import type { McpUserProfile } from './types/primitives.js';
+
+/**
+ * META-001: the registry contract that turns a metadata gap into a review
+ * failure. This intentionally checks the *production* registries
+ * (`allTools`/`allResources`/`allPrompts` and a `createMcpServer` instance
+ * built with `enableConformanceMode: false`) — the conformance-only
+ * fixtures registered by `registerConformanceFixtures` are test
+ * infrastructure, not operations this server advertises to a real
+ * connector, and are out of scope here.
+ */
+
+const snakeCaseName = /^[a-z][a-z0-9_]*$/;
+const maxToolNameLength = 64;
+
+describe('tool registry metadata contract', () => {
+	it('every tool has a snake_case name at most 64 characters', () => {
+		for (const tool of allTools) {
+			expect(tool.name).toMatch(snakeCaseName);
+			expect(tool.name.length).toBeLessThanOrEqual(maxToolNameLength);
+		}
+	});
+
+	it('every tool has a title and a non-empty description', () => {
+		for (const tool of allTools) {
+			expect(tool.title, `${tool.name} is missing a title`).toBeTruthy();
+			expect(tool.description, `${tool.name} is missing a description`).toBeTruthy();
+		}
+	});
+
+	it('every tool declares an inputSchema', () => {
+		for (const tool of allTools) {
+			expect(tool.inputSchema, `${tool.name} is missing an inputSchema`).toBeDefined();
+		}
+	});
+
+	it('every input parameter has its own description', () => {
+		for (const tool of allTools) {
+			const shape = (tool.inputSchema as { shape?: Record<string, { description?: string }> })
+				.shape;
+			if (!shape) continue;
+			for (const [parameterName, parameterSchema] of Object.entries(shape)) {
+				expect(
+					parameterSchema.description,
+					`${tool.name}'s "${parameterName}" parameter has no .describe()`,
+				).toBeTruthy();
+			}
+		}
+	});
+
+	it('every tool declares all four safety annotations as booleans', () => {
+		for (const tool of allTools) {
+			expect(tool.annotations, `${tool.name} is missing annotations`).toBeDefined();
+			for (const hint of [
+				'readOnlyHint',
+				'destructiveHint',
+				'idempotentHint',
+				'openWorldHint',
+			] as const) {
+				expect(
+					typeof tool.annotations[hint],
+					`${tool.name}.annotations.${hint} must be a boolean`,
+				).toBe('boolean');
+			}
+		}
+	});
+
+	it('every tool that declares an outputSchema returns structuredContent that validates against it', async () => {
+		const context = createTestContext();
+		for (const tool of allTools) {
+			if (!tool.outputSchema) continue;
+
+			// Parse `{}` through the tool's own inputSchema (rather than
+			// calling the handler with a bare `{}`) so Zod defaults apply the
+			// same way they do for a real `tools/call` — bypassing that would
+			// exercise a shape no real caller ever produces.
+			const input = tool.inputSchema.parse({});
+			const result = await tool.handler(input, context);
+			expect(
+				result.isError,
+				`${tool.name} returned an error from its metadata-contract smoke call`,
+			).not.toBe(true);
+			expect(
+				result.structuredContent,
+				`${tool.name} declares an outputSchema but returned no structuredContent`,
+			).toBeDefined();
+
+			const parsed = tool.outputSchema.safeParse(result.structuredContent);
+			expect(
+				parsed.success,
+				`${tool.name}'s structuredContent does not validate against its own outputSchema`,
+			).toBe(true);
+		}
+	});
+});
+
+describe('resource registry metadata contract', () => {
+	it('every resource has a name, title, uri, description, and mimeType', () => {
+		for (const resource of allResources) {
+			expect(resource.name).toBeTruthy();
+			expect(resource.title, `${resource.name} is missing a title`).toBeTruthy();
+			expect(resource.uri).toBeTruthy();
+			expect(resource.description, `${resource.name} is missing a description`).toBeTruthy();
+			expect(resource.mimeType).toBeTruthy();
+		}
+	});
+});
+
+describe('prompt registry metadata contract', () => {
+	it('every prompt has a name, title, and description', () => {
+		for (const prompt of allPrompts) {
+			expect(prompt.name).toBeTruthy();
+			expect(prompt.title, `${prompt.name} is missing a title`).toBeTruthy();
+			expect(prompt.description, `${prompt.name} is missing a description`).toBeTruthy();
+		}
+	});
+});
+
+function conformanceUser(userId: string): McpUserProfile {
+	return {
+		id: userId,
+		email: 'metadata-contract@localhost',
+		name: 'Metadata Contract User',
+		image: null,
+		role: 'user',
+	};
+}
+
+describe('wire capabilities and list ordering', () => {
+	const handler = createMcpHandler(
+		() => {
+			const userId = randomUUID();
+			return createMcpServer({
+				userId,
+				user: conformanceUser(userId),
+				enableUiExtension: false,
+				enableConformanceMode: false,
+			});
+		},
+		{ legacy: 'stateless' },
+	);
+
+	async function connectedClient(): Promise<Client> {
+		const client = new Client({ name: 'metadata-contract-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(
+			new URL('http://metadata-contract.local/mcp'),
+			{
+				fetch: (input, init) => handler.fetch(new Request(input, init)),
+			},
+		);
+		await client.connect(transport);
+		return client;
+	}
+
+	it('advertises no capability this server does not genuinely implement', async () => {
+		const client = await connectedClient();
+		const capabilities = client.getServerCapabilities();
+
+		// Never real server capabilities in the first place (they describe
+		// what a *client* offers), and nothing here ever calls them.
+		expect((capabilities as Record<string, unknown> | undefined)?.sampling).toBeUndefined();
+		expect((capabilities as Record<string, unknown> | undefined)?.elicitation).toBeUndefined();
+
+		// No `logging/setLevel` handler and no production caller of
+		// `notifications/message` outside the conformance-only fixtures.
+		expect(capabilities?.logging).toBeUndefined();
+
+		// Nothing in this codebase ever sends a `list_changed` notification.
+		expect(capabilities?.tools?.listChanged).toBe(false);
+		expect(capabilities?.resources?.listChanged).toBe(false);
+		expect(capabilities?.prompts?.listChanged).toBe(false);
+
+		// Subscribing records interest but nothing ever delivers an update
+		// (PROTO-002 owns building that delivery path) — not advertised.
+		expect(capabilities?.resources?.subscribe).toBeUndefined();
+
+		await client.close();
+	});
+
+	it('returns tools/list in a deterministic order across repeated calls', async () => {
+		const client = await connectedClient();
+
+		const first = await client.listTools();
+		const second = await client.listTools();
+
+		expect(first.tools.map((tool) => tool.name)).toEqual(second.tools.map((tool) => tool.name));
+		expect(first.tools.map((tool) => tool.name)).toEqual(allTools.map((tool) => tool.name));
+
+		await client.close();
+	});
+
+	it('never advertises a conformance-only fixture in a production discovery response', async () => {
+		const client = await connectedClient();
+
+		const tools = await client.listTools();
+		expect(tools.tools.map((tool) => tool.name)).not.toContain('list_audit_events');
+
+		const resources = await client.listResources();
+		expect(resources.resources.map((resource) => resource.name)).not.toContain(
+			'test_static_text_resource',
+		);
+
+		const prompts = await client.listPrompts();
+		expect(prompts.prompts.map((prompt) => prompt.name)).not.toContain('test_simple_prompt');
+
+		await client.close();
+	});
+});
+
+describe('MCP Apps capability advertisement', () => {
+	it('stays absent even when enableUiExtension is true, because no application resource is registered', async () => {
+		const handler = createMcpHandler(
+			() => {
+				const userId = randomUUID();
+				return createMcpServer({
+					userId,
+					user: conformanceUser(userId),
+					// CONTENT-001: the flag alone is not enough — `packages/mcp-apps`
+					// ships no application, so `allResources` has no
+					// `RESOURCE_MIME_TYPE` entry, and the capability must not appear
+					// on the wire regardless of this flag.
+					enableUiExtension: true,
+					enableConformanceMode: false,
+				});
+			},
+			{ legacy: 'stateless' },
+		);
+		const client = new Client({ name: 'ui-extension-contract-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL('http://ui-extension.local/mcp'), {
+			fetch: (input, init) => handler.fetch(new Request(input, init)),
+		});
+		await client.connect(transport);
+
+		const capabilities = client.getServerCapabilities() as
+			Record<string, Record<string, unknown> | undefined> | undefined;
+		expect(capabilities?.experimental).toEqual({});
+
+		await client.close();
+	});
+});

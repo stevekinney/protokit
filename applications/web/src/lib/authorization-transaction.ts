@@ -25,6 +25,8 @@ export type AuthorizationTransactionInput = {
 	codeChallengeMethod: string;
 	state: string | null;
 	issuer: string;
+	/** OAUTH-001 / RFC 8707: the canonical MCP resource URL this authorization was requested for, already validated by the caller. */
+	resource: string;
 };
 
 export type CreatedAuthorizationTransaction = {
@@ -49,6 +51,7 @@ export async function createAuthorizationTransaction(
 		codeChallengeMethod: input.codeChallengeMethod,
 		state: input.state,
 		issuer: input.issuer,
+		resource: input.resource,
 		expiresAt: new Date(Date.now() + authorizationTransactionTimeToLiveMs),
 	});
 
@@ -62,6 +65,7 @@ export type ConsumedAuthorizationTransaction = {
 	codeChallengeMethod: string;
 	state: string | null;
 	issuer: string;
+	resource: string;
 };
 
 /**
@@ -112,5 +116,6 @@ export async function consumeAuthorizationTransaction(input: {
 		codeChallengeMethod: consumed.codeChallengeMethod,
 		state: consumed.state,
 		issuer: consumed.issuer,
+		resource: consumed.resource,
 	};
 }

@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { database, schema } from '@template/database';
+import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
@@ -12,6 +13,10 @@ import {
 	createAuthorizationTransaction,
 } from '@web/lib/authorization-transaction';
 import { isValidClientName } from '@web/lib/client-name-validation';
+import {
+	fetchClientIdMetadataDocument,
+	isClientIdMetadataDocumentUrl,
+} from '@web/lib/client-metadata-documents';
 import { isTrustedRequestOrigin } from '@web/lib/csrf-protection';
 import { hashCredential } from '@web/lib/hash-credential';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
@@ -50,6 +55,7 @@ import {
 	oauthMaxGrantTypeCount,
 	oauthMaxRedirectUriCount,
 	oauthMaxRedirectUriLength,
+	oauthMaxResourceLength,
 	oauthMaxResponseTypeCount,
 	oauthMaxStateLength,
 	oauthMaxTokenLength,
@@ -77,37 +83,69 @@ const oauthNoStoreHeaders: Record<string, string> = {
 const supportedGrantTypes = ['authorization_code', 'refresh_token'] as const;
 const supportedResponseTypes = ['code'] as const;
 const supportedTokenEndpointAuthenticationMethods = ['client_secret_post', 'none'] as const;
+/**
+ * OAUTH-002 / SEP-837: OpenID Connect Dynamic Client Registration's
+ * `application_type`. Optional here, never defaulted — the roadmap's
+ * compatibility contract requires Claude Code's loopback callback
+ * redirect URIs keep working for a client that never sends this field at
+ * all, so absence must not be silently coerced into either value.
+ */
+const supportedApplicationTypes = ['web', 'native'] as const;
 
-const oauthRegistrationSchema = z.object({
-	client_name: z
-		.string()
-		.min(1)
-		.max(oauthMaxClientNameLength)
-		.refine(
-			isValidClientName,
-			'client_name must not contain control, bidirectional-override, or zero-width characters',
-		)
-		.default('Unknown Client'),
-	redirect_uris: z
-		.array(z.string().url().max(oauthMaxRedirectUriLength))
-		.min(1, 'At least one redirect URI is required')
-		.max(oauthMaxRedirectUriCount)
-		.refine(
-			(uris) => uris.every(isValidRedirectUri),
-			'Redirect URIs must use HTTPS (or http://localhost for development)',
-		),
-	grant_types: z
-		.array(z.enum(supportedGrantTypes))
-		.max(oauthMaxGrantTypeCount)
-		.default(['authorization_code', 'refresh_token']),
-	response_types: z
-		.array(z.enum(supportedResponseTypes))
-		.max(oauthMaxResponseTypeCount)
-		.default(['code']),
-	token_endpoint_auth_method: z
-		.enum(supportedTokenEndpointAuthenticationMethods)
-		.default('client_secret_post'),
-});
+function redirectUrisMatchApplicationType(
+	uris: string[],
+	applicationType: (typeof supportedApplicationTypes)[number] | undefined,
+): boolean {
+	// `web` apps have no legitimate use for a loopback redirect URI (SEP-837:
+	// avoiding the OIDC redirect-URI conflict this exists to prevent means
+	// actually enforcing the distinction once a client opts into declaring
+	// one). `native` and "unspecified" are unchanged from the pre-existing
+	// HTTPS-or-loopback behavior every current connector relies on.
+	if (applicationType !== 'web') return true;
+	return uris.every((uri) => new URL(uri).protocol === 'https:');
+}
+
+const oauthRegistrationSchema = z
+	.object({
+		client_name: z
+			.string()
+			.min(1)
+			.max(oauthMaxClientNameLength)
+			.refine(
+				isValidClientName,
+				'client_name must not contain control, bidirectional-override, or zero-width characters',
+			)
+			.default('Unknown Client'),
+		redirect_uris: z
+			.array(z.string().url().max(oauthMaxRedirectUriLength))
+			.min(1, 'At least one redirect URI is required')
+			.max(oauthMaxRedirectUriCount)
+			.refine(
+				(uris) => uris.every(isValidRedirectUri),
+				'Redirect URIs must use HTTPS (or http://localhost for development)',
+			),
+		grant_types: z
+			.array(z.enum(supportedGrantTypes))
+			.max(oauthMaxGrantTypeCount)
+			.default(['authorization_code', 'refresh_token']),
+		response_types: z
+			.array(z.enum(supportedResponseTypes))
+			.max(oauthMaxResponseTypeCount)
+			.default(['code']),
+		token_endpoint_auth_method: z
+			.enum(supportedTokenEndpointAuthenticationMethods)
+			.default('client_secret_post'),
+		application_type: z.enum(supportedApplicationTypes).optional(),
+	})
+	.superRefine((data, ctx) => {
+		if (!redirectUrisMatchApplicationType(data.redirect_uris, data.application_type)) {
+			ctx.addIssue({
+				code: 'custom',
+				message: 'application_type "web" requires every redirect_uri to use HTTPS.',
+				path: ['redirect_uris'],
+			});
+		}
+	});
 
 function getSearchParamString(searchParams: URLSearchParams, key: string): string | null {
 	return searchParams.get(key);
@@ -133,6 +171,7 @@ const tokenEndpointParameterNames = [
 	'refresh_token',
 	'token',
 	'token_type_hint',
+	'resource',
 ] as const;
 
 class UnsupportedContentTypeError extends Error {
@@ -262,6 +301,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		'code_challenge',
 		'code_challenge_method',
 		'state',
+		'resource',
 	] as const;
 	const duplicateParameterName = findDuplicateParameterName(
 		context.requestUrl.searchParams,
@@ -286,6 +326,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	const codeChallenge = context.requestUrl.searchParams.get('code_challenge');
 	const codeChallengeMethod = context.requestUrl.searchParams.get('code_challenge_method');
 	const state = context.requestUrl.searchParams.get('state') || '';
+	const resource = context.requestUrl.searchParams.get('resource');
 
 	if (!clientId || !redirectUri || responseType !== 'code' || !codeChallenge) {
 		return createStaticHtmlResponse({
@@ -300,10 +341,31 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
+	// OAUTH-001 / RFC 8707: this server has exactly one protected resource
+	// (the MCP endpoint), so `resource` must be present and must name it
+	// exactly — never inferred from what the client happened to ask for.
+	// Rejecting a missing or mismatched value here, before any client
+	// lookup or transaction is created, is what makes every authorization
+	// code (and everything minted from it) provably scoped to this
+	// resource rather than merely labeled with it after the fact.
+	if (!resource || resource !== getMcpResourceUrl(context.request)) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: (
+				<OauthAuthorizePage
+					mode="error"
+					error="Missing or unsupported resource parameter. resource must exactly match this server's MCP resource URL."
+				/>
+			),
+		});
+	}
+
 	if (
 		clientId.length > oauthMaxClientIdLength ||
 		redirectUri.length > oauthMaxRedirectUriLength ||
-		state.length > oauthMaxStateLength
+		state.length > oauthMaxStateLength ||
+		resource.length > oauthMaxResourceLength
 	) {
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
@@ -330,11 +392,63 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
-	const [client] = await database
-		.select()
-		.from(schema.oauthClients)
-		.where(eq(schema.oauthClients.clientId, clientId))
-		.limit(1);
+	type OauthClientRow = typeof schema.oauthClients.$inferSelect;
+	let client: OauthClientRow | undefined;
+
+	// OAUTH-002 / MCP 2026-07-28: an HTTPS `client_id` is a Client ID
+	// Metadata Document identifier, not a DCR `client_id` (always a
+	// `randomUUID()`, never CIMD-shaped) — fetch, validate, and upsert it
+	// on EVERY authorization request that names one, not only the first
+	// time. `fetchClientIdMetadataDocument` caches successful fetches for
+	// `cimdCacheTtlMs`, so a repeat authorize within that window is an
+	// in-memory hit, not a new network call. Re-fetching every time (rather
+	// than only when no row exists yet) is what makes a client's own
+	// `redirect_uris` update — e.g. removing a compromised one — actually
+	// take effect here, per the spec's "authorization servers MUST
+	// validate redirect URIs presented in an authorization request against
+	// those in the metadata document." A row from an earlier successful
+	// fetch that a later fetch cannot revalidate is treated as unknown
+	// rather than trusted indefinitely on stale data.
+	if (isClientIdMetadataDocumentUrl(clientId)) {
+		const document = await fetchClientIdMetadataDocument(clientId);
+		if (document) {
+			const now = new Date();
+			const values = {
+				clientId: document.clientId,
+				clientSecret: null,
+				clientName: document.clientName,
+				clientType: 'public' as const,
+				tokenEndpointAuthMethod: 'none' as const,
+				applicationType: document.applicationType,
+				redirectUris: document.redirectUris,
+				grantTypes: document.grantTypes,
+				responseTypes: document.responseTypes,
+				clientIdMetadataUrl: document.clientId,
+				updatedAt: now,
+			};
+			[client] = await database
+				.insert(schema.oauthClients)
+				.values(values)
+				.onConflictDoUpdate({
+					target: schema.oauthClients.clientId,
+					set: {
+						clientName: values.clientName,
+						applicationType: values.applicationType,
+						redirectUris: values.redirectUris,
+						grantTypes: values.grantTypes,
+						responseTypes: values.responseTypes,
+						updatedAt: values.updatedAt,
+					},
+				})
+				.returning();
+		}
+	} else {
+		[client] = await database
+			.select()
+			.from(schema.oauthClients)
+			.where(eq(schema.oauthClients.clientId, clientId))
+			.limit(1);
+	}
 
 	if (!client) {
 		return createStaticHtmlResponse({
@@ -363,6 +477,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		codeChallengeMethod: codeChallengeMethod || 'S256',
 		state: state || null,
 		issuer: getBaseUrl(context.request),
+		resource,
 	});
 
 	// Defense in depth against a client name registered before this check
@@ -485,6 +600,7 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 		codeChallenge: transaction.codeChallenge,
 		codeChallengeMethod: transaction.codeChallengeMethod,
 		state: transaction.state,
+		resource: transaction.resource,
 		expiresAt: new Date(Date.now() + 10 * 60 * 1000),
 	});
 
@@ -641,28 +757,31 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 		);
 	}
 
-	const { client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method } =
-		parsedBody.data;
+	const {
+		client_name,
+		redirect_uris,
+		grant_types,
+		response_types,
+		token_endpoint_auth_method,
+		application_type,
+	} = parsedBody.data;
 
-	if (token_endpoint_auth_method === 'none' && grant_types.includes('refresh_token')) {
-		return jsonResponse(
-			{
-				error: 'invalid_client_metadata',
-				error_description: 'refresh_token requires token_endpoint_auth_method=client_secret_post.',
-			},
-			{ status: 400, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
-		);
-	}
-
+	// OAUTH-002: a public client authenticates with PKCE alone and has no
+	// secure channel to receive a secret over, so one is never generated or
+	// stored for it — not even a value the response withholds. A `null`
+	// `clientSecret` column is the only representation of "this client has
+	// no secret" this schema allows.
+	const isPublicClient = token_endpoint_auth_method === 'none';
 	const clientId = randomUUID();
-	const clientSecret = randomBytes(32).toString('hex');
+	const clientSecret = isPublicClient ? null : randomBytes(32).toString('hex');
 
 	await database.insert(schema.oauthClients).values({
 		clientId,
-		clientSecret: hashCredential(clientSecret),
+		clientSecret: clientSecret ? hashCredential(clientSecret) : null,
 		clientName: client_name,
-		clientType: token_endpoint_auth_method === 'none' ? 'public' : 'confidential',
+		clientType: isPublicClient ? 'public' : 'confidential',
 		tokenEndpointAuthMethod: token_endpoint_auth_method,
+		applicationType: application_type ?? null,
 		redirectUris: redirect_uris,
 		grantTypes: grant_types,
 		responseTypes: response_types,
@@ -671,21 +790,114 @@ export async function handleOauthRegisterPost(context: RequestContext): Promise<
 	return jsonResponse(
 		{
 			client_id: clientId,
-			client_secret: clientSecret,
+			// RFC 7591 §3.2.1: `client_secret`/`client_secret_expires_at` are
+			// only present when a secret was actually issued.
+			...(clientSecret ? { client_secret: clientSecret, client_secret_expires_at: 0 } : {}),
 			client_name,
 			redirect_uris,
 			grant_types,
 			response_types,
 			token_endpoint_auth_method,
+			...(application_type ? { application_type } : {}),
 			client_id_issued_at: Math.floor(Date.now() / 1000),
-			client_secret_expires_at: 0,
 		},
 		{ status: 201, headers: { ...oauthCorsHeaders, ...oauthNoStoreHeaders } },
 	);
 }
 
+type OauthClientAuthenticationResult =
+	{ ok: true; client: typeof schema.oauthClients.$inferSelect } | { ok: false; response: Response };
+
+/**
+ * OAUTH-003 / S-02: the one place every client-authenticated OAuth endpoint
+ * (both token grants and, below, revocation) verifies a client's identity,
+ * so "authenticate before any mutation" is enforced identically everywhere
+ * instead of being repeated -- and potentially drifting -- at each call
+ * site. Looks the client up, then verifies `client_secret_post` credentials
+ * in constant time, or rejects an unexpected secret from a `none` client.
+ * Performs no database write and consults no token row, so a failed
+ * authentication attempt here can never have mutated anything.
+ */
+async function authenticateOauthClient(
+	clientId: string,
+	clientSecret: string | undefined,
+	responseHeaders: HeadersInit,
+): Promise<OauthClientAuthenticationResult> {
+	const invalidClient = (): OauthClientAuthenticationResult => ({
+		ok: false,
+		response: jsonResponse({ error: 'invalid_client' }, { status: 401, headers: responseHeaders }),
+	});
+
+	const [client] = await database
+		.select()
+		.from(schema.oauthClients)
+		.where(eq(schema.oauthClients.clientId, clientId))
+		.limit(1);
+	if (!client) {
+		return invalidClient();
+	}
+
+	if (client.tokenEndpointAuthMethod === 'client_secret_post') {
+		// `client.clientSecret` is only ever null for a `none` client (OAUTH-002);
+		// a `client_secret_post` client without a stored secret is a data
+		// inconsistency this must fail closed on, never treat as "no secret required".
+		if (!clientSecret || !client.clientSecret) {
+			return invalidClient();
+		}
+		if (!constantTimeEquals(client.clientSecret, hashCredential(clientSecret))) {
+			return invalidClient();
+		}
+	}
+
+	if (client.tokenEndpointAuthMethod === 'none' && clientSecret) {
+		return invalidClient();
+	}
+
+	return { ok: true, client };
+}
+
+/**
+ * OAUTH-003: reuse-detection response for refresh-token rotation.
+ * `familyId` is constant across every refresh token descended from one
+ * authorization-code exchange, carried forward unchanged on each rotation
+ * (`oauth_refresh_tokens.family_id`). Revoking a family marks every
+ * not-yet-revoked member revoked and revokes whichever access token(s)
+ * those rows still reference and have not themselves already been revoked.
+ * In the ordinary case there is exactly one live member -- rotation always
+ * revokes the previous member immediately -- but this stays correct if a
+ * race ever produced more than one live member in the same family.
+ */
+async function revokeOauthRefreshTokenFamily(familyId: string): Promise<void> {
+	const revokedFamilyMembers = await database
+		.update(schema.oauthRefreshTokens)
+		.set({ revokedAt: new Date() })
+		.where(
+			and(
+				eq(schema.oauthRefreshTokens.familyId, familyId),
+				isNull(schema.oauthRefreshTokens.revokedAt),
+			),
+		)
+		.returning({ accessTokenHash: schema.oauthRefreshTokens.accessTokenHash });
+
+	const liveAccessTokenHashes = revokedFamilyMembers.map((member) => member.accessTokenHash);
+	if (liveAccessTokenHashes.length === 0) {
+		return;
+	}
+
+	await database
+		.update(schema.oauthTokens)
+		.set({ revokedAt: new Date() })
+		.where(
+			and(
+				inArray(schema.oauthTokens.accessToken, liveAccessTokenHashes),
+				isNull(schema.oauthTokens.revokedAt),
+			),
+		);
+}
+
 async function handleOauthTokenAuthorizationCodeGrant(
 	body: Record<string, string>,
+	request: Request,
 ): Promise<Response> {
 	const tokenResponseHeaders = {
 		'Cache-Control': 'no-store',
@@ -693,8 +905,8 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		...oauthCorsHeaders,
 	};
 
-	const { code, redirect_uri, client_id, client_secret, code_verifier } = body;
-	if (!code || !redirect_uri || !client_id || !code_verifier) {
+	const { code, redirect_uri, client_id, client_secret, code_verifier, resource } = body;
+	if (!code || !redirect_uri || !client_id || !code_verifier || !resource) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Missing required parameters' },
 			{ status: 400, headers: tokenResponseHeaders },
@@ -704,10 +916,25 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	if (
 		code.length > oauthMaxTokenLength ||
 		redirect_uri.length > oauthMaxRedirectUriLength ||
-		client_id.length > oauthMaxClientIdLength
+		client_id.length > oauthMaxClientIdLength ||
+		resource.length > oauthMaxResourceLength
 	) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'A parameter exceeded its maximum length' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
+	// OAUTH-001 / RFC 8707 §2: the token request's `resource` must name the
+	// same, single, canonical MCP resource this server ever issues codes
+	// for. Checked before any client or code lookup, so a request for the
+	// wrong resource never reaches the database at all.
+	if (resource !== getMcpResourceUrl(request)) {
+		return jsonResponse(
+			{
+				error: 'invalid_target',
+				error_description: "resource does not match this server's MCP resource URL",
+			},
 			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
@@ -721,17 +948,15 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		);
 	}
 
-	const [client] = await database
-		.select()
-		.from(schema.oauthClients)
-		.where(eq(schema.oauthClients.clientId, client_id))
-		.limit(1);
-	if (!client) {
-		return jsonResponse(
-			{ error: 'invalid_client' },
-			{ status: 401, headers: tokenResponseHeaders },
-		);
+	const authentication = await authenticateOauthClient(
+		client_id,
+		client_secret,
+		tokenResponseHeaders,
+	);
+	if (!authentication.ok) {
+		return authentication.response;
 	}
+	const { client } = authentication;
 
 	if (!client.grantTypes.includes('authorization_code')) {
 		return jsonResponse(
@@ -740,29 +965,6 @@ async function handleOauthTokenAuthorizationCodeGrant(
 				error_description: 'Client is not authorized for authorization_code.',
 			},
 			{ status: 400, headers: tokenResponseHeaders },
-		);
-	}
-
-	if (client.tokenEndpointAuthMethod === 'client_secret_post') {
-		if (!client_secret) {
-			return jsonResponse(
-				{ error: 'invalid_client' },
-				{ status: 401, headers: tokenResponseHeaders },
-			);
-		}
-
-		if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
-			return jsonResponse(
-				{ error: 'invalid_client' },
-				{ status: 401, headers: tokenResponseHeaders },
-			);
-		}
-	}
-
-	if (client.tokenEndpointAuthMethod === 'none' && client_secret) {
-		return jsonResponse(
-			{ error: 'invalid_client' },
-			{ status: 401, headers: tokenResponseHeaders },
 		);
 	}
 
@@ -797,6 +999,21 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		);
 	}
 
+	// Defense in depth: the request-level check above already rejected any
+	// `resource` that is not this server's canonical MCP resource. This
+	// additionally proves the code itself was issued for that same
+	// resource — relevant if configuration ever changes between the
+	// authorize and token requests — before any token is minted.
+	if (authorizationCode.resource !== resource) {
+		return jsonResponse(
+			{
+				error: 'invalid_target',
+				error_description: 'resource does not match the authorization code',
+			},
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
+
 	const challenge = createHash('sha256').update(code_verifier).digest('base64url');
 	if (!constantTimeEquals(challenge, authorizationCode.codeChallenge)) {
 		return jsonResponse(
@@ -824,6 +1041,7 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		clientId: authorizationCode.clientId,
 		userId: authorizationCode.userId,
 		scope: authorizationCode.scope || '',
+		resource: authorizationCode.resource,
 		expiresAt: tokens.accessTokenExpiresAt,
 	});
 	await database.insert(schema.oauthRefreshTokens).values({
@@ -831,7 +1049,12 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		clientId: authorizationCode.clientId,
 		userId: authorizationCode.userId,
 		scope: authorizationCode.scope || '',
+		resource: authorizationCode.resource,
 		accessTokenHash: tokens.accessTokenHash,
+		// OAUTH-003: the authorization-code exchange starts a new refresh-token
+		// lineage, so this refresh token is the root of its own family. Every
+		// token this one rotates into carries the same familyId forward.
+		familyId: randomUUID(),
 		expiresAt: tokens.refreshTokenExpiresAt,
 	});
 
@@ -847,14 +1070,17 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	);
 }
 
-async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promise<Response> {
+async function handleOauthTokenRefreshGrant(
+	body: Record<string, string>,
+	request: Request,
+): Promise<Response> {
 	const tokenResponseHeaders = {
 		'Cache-Control': 'no-store',
 		Pragma: 'no-cache',
 		...oauthCorsHeaders,
 	};
 
-	const { refresh_token, client_id, client_secret } = body;
+	const { refresh_token, client_id, client_secret, resource } = body;
 	if (!refresh_token) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Missing refresh_token parameter' },
@@ -867,25 +1093,47 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
+	if (!resource) {
+		return jsonResponse(
+			{ error: 'invalid_request', error_description: 'Missing resource parameter' },
+			{ status: 400, headers: tokenResponseHeaders },
+		);
+	}
 
-	if (refresh_token.length > oauthMaxTokenLength || client_id.length > oauthMaxClientIdLength) {
+	if (
+		refresh_token.length > oauthMaxTokenLength ||
+		client_id.length > oauthMaxClientIdLength ||
+		resource.length > oauthMaxResourceLength
+	) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'A parameter exceeded its maximum length' },
 			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
 
-	const [client] = await database
-		.select()
-		.from(schema.oauthClients)
-		.where(eq(schema.oauthClients.clientId, client_id))
-		.limit(1);
-	if (!client) {
+	// OAUTH-001 / RFC 8707 §2: the refreshed access token must stay bound to
+	// the same single canonical MCP resource as every other token this
+	// server issues. Checked before any database work.
+	if (resource !== getMcpResourceUrl(request)) {
 		return jsonResponse(
-			{ error: 'invalid_client' },
-			{ status: 401, headers: tokenResponseHeaders },
+			{
+				error: 'invalid_target',
+				error_description: "resource does not match this server's MCP resource URL",
+			},
+			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
+
+	const authentication = await authenticateOauthClient(
+		client_id,
+		client_secret,
+		tokenResponseHeaders,
+	);
+	if (!authentication.ok) {
+		return authentication.response;
+	}
+	const { client } = authentication;
+
 	if (!client.grantTypes.includes('refresh_token')) {
 		return jsonResponse(
 			{
@@ -896,22 +1144,23 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 		);
 	}
 
-	if (client.tokenEndpointAuthMethod === 'client_secret_post') {
-		if (!client_secret) {
-			return jsonResponse(
-				{ error: 'invalid_client' },
-				{ status: 401, headers: tokenResponseHeaders },
-			);
-		}
-
-		if (!constantTimeEquals(client.clientSecret, hashCredential(client_secret))) {
-			return jsonResponse(
-				{ error: 'invalid_client' },
-				{ status: 401, headers: tokenResponseHeaders },
-			);
-		}
-	}
-
+	// OAUTH-003 / S-02: bind the single-use rotation predicate to the
+	// authenticated client and the already-validated resource, atomically,
+	// in the same UPDATE ... WHERE ... RETURNING statement that performs the
+	// mutation. neon-http's driver has no multi-statement transaction
+	// support (`db.transaction()` throws "No transactions support in
+	// neon-http driver" -- confirmed directly against the installed driver),
+	// so this single statement *is* the unit of atomicity here, the same
+	// pattern SEC-003's rate-limiting Lua script and
+	// authorization-transaction.ts's consume step already establish for
+	// this codebase. Previously the client-id and resource checks ran
+	// *after* this statement had already revoked the token, so a party
+	// presenting another client's live refresh token under its own
+	// client_id burned that token even though its own request was then
+	// rejected -- a denial-of-service on a client it does not own, with no
+	// benefit to the attacker. Folding both into the predicate means a
+	// mismatched client or resource simply matches no row -- nothing is
+	// mutated -- rather than mutating first and rejecting after.
 	const refreshTokenHash = hashCredential(refresh_token);
 	const [revokedRefreshToken] = await database
 		.update(schema.oauthRefreshTokens)
@@ -919,24 +1168,48 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 		.where(
 			and(
 				eq(schema.oauthRefreshTokens.refreshToken, refreshTokenHash),
+				eq(schema.oauthRefreshTokens.clientId, client.clientId),
+				eq(schema.oauthRefreshTokens.resource, resource),
 				isNull(schema.oauthRefreshTokens.revokedAt),
 				gt(schema.oauthRefreshTokens.expiresAt, new Date()),
 			),
 		)
 		.returning();
+
 	if (!revokedRefreshToken) {
+		// Nothing matched the predicate above, so nothing was mutated by this
+		// request. Distinguish "this exact token was already rotated" (reuse
+		// of a previously-issued refresh token -- a signal that token has
+		// leaked, per the OAuth Security BCP's refresh-token rotation-reuse
+		// guidance) from every other reason a request can land here (token
+		// never existed, wrong owning client, wrong resource, expired) via a
+		// read-only lookup by hash alone. This lookup cannot itself let a
+		// race succeed twice: the mutating UPDATE above already ran and
+		// matched nothing, so this branch has nothing left to protect except
+		// deciding whether to react to a stolen token. Never logs the token
+		// or its hash -- only the family identifier.
+		const [existingByHash] = await database
+			.select({
+				familyId: schema.oauthRefreshTokens.familyId,
+				revokedAt: schema.oauthRefreshTokens.revokedAt,
+			})
+			.from(schema.oauthRefreshTokens)
+			.where(eq(schema.oauthRefreshTokens.refreshToken, refreshTokenHash))
+			.limit(1);
+
+		if (existingByHash?.revokedAt) {
+			await revokeOauthRefreshTokenFamily(existingByHash.familyId);
+			logger.warn(
+				{ familyId: existingByHash.familyId },
+				'refresh token reuse detected; revoked token family',
+			);
+		}
+
 		return jsonResponse(
 			{
 				error: 'invalid_grant',
 				error_description: 'Refresh token not found, already used, or expired',
 			},
-			{ status: 400, headers: tokenResponseHeaders },
-		);
-	}
-
-	if (revokedRefreshToken.clientId !== client_id) {
-		return jsonResponse(
-			{ error: 'invalid_grant', error_description: 'Client ID mismatch' },
 			{ status: 400, headers: tokenResponseHeaders },
 		);
 	}
@@ -957,6 +1230,7 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 		clientId: revokedRefreshToken.clientId,
 		userId: revokedRefreshToken.userId,
 		scope: revokedRefreshToken.scope || '',
+		resource: revokedRefreshToken.resource,
 		expiresAt: tokens.accessTokenExpiresAt,
 	});
 	await database.insert(schema.oauthRefreshTokens).values({
@@ -964,7 +1238,12 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 		clientId: revokedRefreshToken.clientId,
 		userId: revokedRefreshToken.userId,
 		scope: revokedRefreshToken.scope || '',
+		resource: revokedRefreshToken.resource,
 		accessTokenHash: tokens.accessTokenHash,
+		// OAUTH-003: rotation carries the family forward unchanged, so every
+		// token descended from one authorization-code exchange stays
+		// revocable as one lineage.
+		familyId: revokedRefreshToken.familyId,
 		expiresAt: tokens.refreshTokenExpiresAt,
 	});
 
@@ -980,24 +1259,35 @@ async function handleOauthTokenRefreshGrant(body: Record<string, string>): Promi
 	);
 }
 
-export async function handleOauthRevokePost(context: RequestContext): Promise<Response> {
-	const rateLimitResult = await enforceOauthRevokeRateLimit({
-		networkIdentity: context.networkIdentity,
-	});
-	if (!rateLimitResult.allowed) {
-		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
-			'Cache-Control': 'no-store',
-			Pragma: 'no-cache',
-			...oauthCorsHeaders,
-		});
-	}
+const revocationResponseHeaders = {
+	'Cache-Control': 'no-store',
+	Pragma: 'no-cache',
+	...oauthCorsHeaders,
+};
 
-	const revocationResponseHeaders = {
-		'Cache-Control': 'no-store',
-		Pragma: 'no-cache',
-		...oauthCorsHeaders,
-	};
-
+/**
+ * OAUTH-003 / S-02: `/oauth/revoke` previously authenticated no client at
+ * all -- any caller who knew a token's raw value (or could guess it) could
+ * revoke it regardless of which client it belonged to. RFC 7009 §2.1
+ * requires the same client authentication as the token endpoint, so this
+ * reuses `authenticateOauthClient`. A failed authentication attempt reaches
+ * no token row and performs no write, matching this item's "a failed
+ * client-authentication attempt does not mutate the token" requirement.
+ *
+ * Once authenticated, the actual revoke mutations bind their `UPDATE ...
+ * WHERE ...` predicate to the authenticated client's id (`eq(clientId,
+ * client.clientId)`), atomically, the same pattern the refresh grant uses
+ * below. A token that exists but belongs to a different client therefore
+ * matches no row -- nothing is mutated -- and this handler still falls
+ * through to the unconditional RFC 7009 §2.2 `200`, so a cross-client
+ * revocation attempt neither succeeds nor is distinguishable from "token
+ * not found" by its caller. That is what keeps the RFC's "return 200 even
+ * for a token this server cannot find" contract intact while adding client
+ * authentication: an authenticated client revoking a token it doesn't own
+ * gets exactly the same response as one revoking a token that never
+ * existed.
+ */
+async function handleOauthRevokePostInner(context: RequestContext): Promise<Response> {
 	let body: Record<string, string>;
 	try {
 		body = await parseRequestBodyForTokenEndpoint(context.request, oauthRevokeMaxBodyBytes);
@@ -1005,23 +1295,39 @@ export async function handleOauthRevokePost(context: RequestContext): Promise<Re
 		return respondToOauthBodyError(error, revocationResponseHeaders);
 	}
 
-	const { token, token_type_hint } = body;
+	const { token, token_type_hint, client_id, client_secret } = body;
 	if (!token) {
 		return jsonResponse(
 			{ error: 'invalid_request', error_description: 'Missing token parameter' },
 			{ status: 400, headers: revocationResponseHeaders },
 		);
 	}
+	if (!client_id) {
+		return jsonResponse(
+			{ error: 'invalid_request', error_description: 'Missing client_id parameter' },
+			{ status: 400, headers: revocationResponseHeaders },
+		);
+	}
 
-	if (token.length > oauthMaxTokenLength) {
+	if (token.length > oauthMaxTokenLength || client_id.length > oauthMaxClientIdLength) {
 		return jsonResponse(
 			{
 				error: 'invalid_request',
-				error_description: 'token parameter exceeded its maximum length',
+				error_description: 'A parameter exceeded its maximum length',
 			},
 			{ status: 400, headers: revocationResponseHeaders },
 		);
 	}
+
+	const authentication = await authenticateOauthClient(
+		client_id,
+		client_secret,
+		revocationResponseHeaders,
+	);
+	if (!authentication.ok) {
+		return authentication.response;
+	}
+	const { client } = authentication;
 
 	const tokenHash = hashCredential(token);
 
@@ -1030,7 +1336,11 @@ export async function handleOauthRevokePost(context: RequestContext): Promise<Re
 			.update(schema.oauthTokens)
 			.set({ revokedAt: new Date() })
 			.where(
-				and(eq(schema.oauthTokens.accessToken, tokenHash), isNull(schema.oauthTokens.revokedAt)),
+				and(
+					eq(schema.oauthTokens.accessToken, tokenHash),
+					eq(schema.oauthTokens.clientId, client.clientId),
+					isNull(schema.oauthTokens.revokedAt),
+				),
 			)
 			.returning();
 
@@ -1046,6 +1356,7 @@ export async function handleOauthRevokePost(context: RequestContext): Promise<Re
 			.where(
 				and(
 					eq(schema.oauthRefreshTokens.refreshToken, tokenHash),
+					eq(schema.oauthRefreshTokens.clientId, client.clientId),
 					isNull(schema.oauthRefreshTokens.revokedAt),
 				),
 			)
@@ -1066,8 +1377,37 @@ export async function handleOauthRevokePost(context: RequestContext): Promise<Re
 		}
 	}
 
-	// RFC 7009: Return 200 even if token was not found or already revoked
+	// RFC 7009 §2.2: return 200 even if the token was not found, was already
+	// revoked, or belongs to a different client than the one authenticated
+	// above -- deliberately indistinguishable from each other so a response
+	// never reveals whether a token exists or who owns it.
 	return new Response(null, { status: 200, headers: revocationResponseHeaders });
+}
+
+export async function handleOauthRevokePost(context: RequestContext): Promise<Response> {
+	// Mirrors `handleOauthTokenPost`'s failed-authentication lockout: without
+	// it, `/oauth/revoke` would be a cheaper client-secret-guessing oracle
+	// than `/oauth/token`, since it now performs the same constant-time
+	// secret comparison but previously had no lockout guarding it.
+	if (await isAuthenticationLockedOut({ networkIdentity: context.networkIdentity })) {
+		return jsonResponse(
+			{ error: 'invalid_client', error_description: 'Too many failed authentication attempts.' },
+			{ status: 429, headers: revocationResponseHeaders },
+		);
+	}
+
+	const rateLimitResult = await enforceOauthRevokeRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, revocationResponseHeaders);
+	}
+
+	const response = await handleOauthRevokePostInner(context);
+	if (response.status === 400 || response.status === 401) {
+		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
+	}
+	return response;
 }
 
 const tokenEndpointNoStoreHeaders = {
@@ -1098,10 +1438,10 @@ async function handleOauthTokenPostInner(context: RequestContext): Promise<Respo
 	}
 
 	if (body.grant_type === 'authorization_code') {
-		return handleOauthTokenAuthorizationCodeGrant(body);
+		return handleOauthTokenAuthorizationCodeGrant(body, context.request);
 	}
 	if (body.grant_type === 'refresh_token') {
-		return handleOauthTokenRefreshGrant(body);
+		return handleOauthTokenRefreshGrant(body, context.request);
 	}
 
 	return jsonResponse(
@@ -1153,6 +1493,10 @@ export async function handleOauthAuthorizationMetadataGet(
 			grant_types_supported: ['authorization_code', 'refresh_token'],
 			code_challenge_methods_supported: ['S256'],
 			token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+			// OAUTH-002 / MCP 2026-07-28: this is the exact key clients check
+			// per the spec's "Advertising CIMD Support" section before using an
+			// HTTPS URL as `client_id` instead of falling back to DCR.
+			client_id_metadata_document_supported: true,
 			extensions: {
 				...(environment.MCP_ENABLE_UI_EXTENSION ? { [mcpUiExtensionIdentifier]: {} } : {}),
 			},

@@ -14,7 +14,7 @@
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"test": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} bun test --isolate",
+		"test": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_TOKEN_MAX=1000 RATE_LIMIT_REVOKE_MAX=1000 RATE_LIMIT_MCP_MAX=1000 RATE_LIMIT_AUTHORIZE_MAX=1000 RATE_LIMIT_REGISTER_MAX=1000 RATE_LIMIT_FAILED_AUTH_MAX=1000 bun test --isolate",
 		"test:end-to-end": "bunx playwright test"
 	},
 	"dependencies": {

@@ -6,6 +6,7 @@ export { logger } from './logger.js';
 export {
 	createToolTextResponse,
 	createToolJsonResponse,
+	createToolStructuredResponse,
 	createToolErrorResponse,
 } from './tool-response.js';
 export { environment } from './env.js';
@@ -26,8 +27,10 @@ export {
 export { metricsCollector } from './metrics.js';
 export type { ToolMetricEntry, MetricsSnapshot } from './metrics.js';
 export type { ResourceSubscriptionBackend } from './resource-subscription-backend.js';
+export { defineTool, definePrompt } from './types/primitives.js';
 export type {
 	McpToolDefinition,
+	McpToolAnnotations,
 	McpResourceDefinition,
 	McpPromptDefinition,
 	McpUserProfile,

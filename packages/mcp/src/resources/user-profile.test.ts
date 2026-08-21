@@ -7,6 +7,10 @@ describe('userProfileResource', () => {
 		expect(userProfileResource.name).toBe('user_profile');
 	});
 
+	it('has a title', () => {
+		expect(userProfileResource.title).toBeTruthy();
+	});
+
 	it('has the expected uri', () => {
 		expect(userProfileResource.uri).toBe('user://profile');
 	});

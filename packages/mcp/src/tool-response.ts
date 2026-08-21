@@ -52,3 +52,35 @@ export function createToolErrorResponse(message: string) {
 		isError: true,
 	};
 }
+
+/**
+ * META-001: the response shape for a tool that declares an `outputSchema`.
+ * `structuredContent` carries the data a client validates against that
+ * schema; `summary` is the separate, intentional human-readable text the
+ * roadmap asks for ("text content only for an intentional human-readable
+ * summary") rather than a second copy of the same JSON as text.
+ *
+ * Both the summary and the structured payload go through the same
+ * SEC-004 size bound as every other tool response.
+ */
+export function createToolStructuredResponse<T>(data: T, summary: string) {
+	const boundedSummary = boundedTextContent(summary);
+	if (boundedSummary.content[0].text !== summary) {
+		return { ...boundedSummary, isError: true };
+	}
+
+	const serialized = JSON.stringify(data) ?? 'null';
+	if (serialized.length > maxToolResultCharacters) {
+		return {
+			content: [
+				{
+					type: 'text' as const,
+					text: `Result omitted: exceeded the ${maxToolResultCharacters}-character tool result limit (was ${serialized.length} characters).`,
+				},
+			],
+			isError: true,
+		};
+	}
+
+	return { ...boundedSummary, structuredContent: data };
+}

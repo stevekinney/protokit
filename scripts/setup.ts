@@ -1,25 +1,16 @@
 import { randomBytes } from 'node:crypto';
-import { execSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
 
 import {
 	commandExists,
 	execute,
 	appendToEnvironmentFile,
 	getEnvironmentValue,
+	readEnvironmentFile,
 	prompt,
+	promptSecret,
 	confirm,
-	ENVIRONMENT_FILE_PATH,
-	ROOT_DIRECTORY,
+	setGithubSecret,
 } from './utilities.ts';
-
-function setGithubSecret(name: string, value: string) {
-	execSync(`gh secret set ${name}`, {
-		input: value,
-		stdio: ['pipe', 'pipe', 'pipe'],
-		cwd: ROOT_DIRECTORY,
-	});
-}
 
 function checkPrerequisites(commands: string[]) {
 	const missing = commands.filter((command) => !commandExists(command));
@@ -32,6 +23,17 @@ function checkPrerequisites(commands: string[]) {
 		if (missing.includes('gh')) console.error('  gh: https://cli.github.com/');
 		process.exit(1);
 	}
+}
+
+/**
+ * Neon's documented region identifiers (e.g. `aws-us-east-2`, `azure-eastus2`) are lowercase
+ * alphanumerics joined by single hyphens. This is a sanity check on the shape of the value, not
+ * a security boundary — `execute()` already passes the region as a literal argv element, so a
+ * malformed value cannot execute anything even if this check were skipped. Rejecting it early
+ * just gives a clearer error than a confusing `neonctl` failure three steps later.
+ */
+export function isValidNeonRegionIdentifier(region: string): boolean {
+	return /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(region);
 }
 
 async function setupNeon(): Promise<
@@ -57,9 +59,16 @@ async function setupNeon(): Promise<
 
 	const region = (await prompt('Neon region (default: aws-us-east-2): ')) || 'aws-us-east-2';
 
+	if (!isValidNeonRegionIdentifier(region)) {
+		console.error(
+			`"${region}" does not look like a Neon region identifier (expected something like "aws-us-east-2").`,
+		);
+		process.exit(1);
+	}
+
 	let organizationId: string | undefined;
 	try {
-		const organizationsOutput = execute('neonctl orgs list --output json');
+		const organizationsOutput = execute('neonctl', ['orgs', 'list', '--output', 'json']);
 		const organizations: Array<{ id: string; name: string }> = JSON.parse(organizationsOutput);
 		if (organizations.length > 1) {
 			console.log('\nAvailable organizations:');
@@ -78,13 +87,12 @@ async function setupNeon(): Promise<
 		// Non-fatal: old neonctl version or no orgs — continue without --org-id
 	}
 
-	const organizationFlag = organizationId ? ` --org-id ${organizationId}` : '';
+	const createProjectArguments = ['projects', 'create', '--region-id', region, '--output', 'json'];
+	if (organizationId) createProjectArguments.push('--org-id', organizationId);
 
 	let neonProjectId: string;
 	try {
-		const output = execute(
-			`neonctl projects create --region-id ${region}${organizationFlag} --output json`,
-		);
+		const output = execute('neonctl', createProjectArguments);
 		const project = JSON.parse(output);
 		neonProjectId = project.project.id;
 		console.log(`Created Neon project: ${neonProjectId}`);
@@ -94,10 +102,17 @@ async function setupNeon(): Promise<
 		return; // unreachable, satisfies TypeScript control flow
 	}
 
-	const connectionString = execute(
-		`neonctl connection-string --project-id ${neonProjectId} --pooled`,
-	);
-	const directConnectionString = execute(`neonctl connection-string --project-id ${neonProjectId}`);
+	const connectionString = execute('neonctl', [
+		'connection-string',
+		'--project-id',
+		neonProjectId,
+		'--pooled',
+	]);
+	const directConnectionString = execute('neonctl', [
+		'connection-string',
+		'--project-id',
+		neonProjectId,
+	]);
 
 	appendToEnvironmentFile('DATABASE_URL', connectionString);
 	appendToEnvironmentFile('DATABASE_URL_UNPOOLED', directConnectionString);
@@ -121,7 +136,9 @@ async function setupGoogle() {
 	console.log('  https://your-app.railway.app/api/auth/callback/google\n');
 
 	const googleClientId = await prompt('GOOGLE_CLIENT_ID (blank to skip): ');
-	const googleClientSecret = googleClientId ? await prompt('GOOGLE_CLIENT_SECRET: ') : '';
+	const googleClientSecret = googleClientId
+		? await promptSecret('GOOGLE_CLIENT_SECRET (input hidden): ')
+		: '';
 
 	if (googleClientId && googleClientSecret) {
 		appendToEnvironmentFile('GOOGLE_CLIENT_ID', googleClientId);
@@ -155,7 +172,7 @@ async function setupSessionConfiguration() {
 	} else {
 		const secret = randomBytes(32).toString('hex');
 		appendToEnvironmentFile('SESSION_SIGNING_SECRET', secret);
-		console.log('Generated SESSION_SIGNING_SECRET and written to .env.local');
+		console.log('Generated SESSION_SIGNING_SECRET and written to .env.local (value not printed)');
 	}
 
 	if (!getEnvironmentValue('SESSION_COOKIE_NAME')) {
@@ -176,7 +193,11 @@ async function setupRedis() {
 		return;
 	}
 
-	const redisUrl = (await prompt('REDIS_URL (default: redis://localhost:6379): ')).trim();
+	// May carry embedded credentials (redis://user:pass@host) — hidden the same as any other
+	// secret input.
+	const redisUrl = await promptSecret(
+		'REDIS_URL (default: redis://localhost:6379, input hidden): ',
+	);
 	appendToEnvironmentFile('REDIS_URL', redisUrl || 'redis://localhost:6379');
 	appendToEnvironmentFile('RATE_LIMIT_REGISTER_MAX', '10');
 	appendToEnvironmentFile('RATE_LIMIT_REGISTER_WINDOW_SECONDS', '60');
@@ -222,27 +243,20 @@ async function setupRailway() {
 
 	console.log('\nInitializing Railway project...');
 	try {
-		execute('railway init -y', { stdio: 'inherit' });
+		execute('railway', ['init', '-y'], { stdio: 'inherit' });
 
-		if (existsSync(ENVIRONMENT_FILE_PATH)) {
-			const envContent = readFileSync(ENVIRONMENT_FILE_PATH, 'utf-8');
-			const envLines = envContent
-				.split('\n')
-				.filter((line) => line.includes('=') && !line.startsWith('#'));
-
-			for (const line of envLines) {
-				const [key, ...valueParts] = line.split('=');
-				const value = valueParts.join('=');
-				if (key && value) {
-					try {
-						execute(`railway variable set ${key}="${value}"`);
-					} catch {
-						console.warn(`  Failed to set ${key} on Railway`);
-					}
-				}
+		const variables = readEnvironmentFile();
+		for (const [key, value] of Object.entries(variables)) {
+			if (!value) continue;
+			try {
+				// `--stdin` delivers the value over stdin rather than as an argv element, so a
+				// credential never appears in `ps` output while Railway is configuring it.
+				execute('railway', ['variable', 'set', key, '--stdin'], { input: value });
+			} catch {
+				console.warn(`  Failed to set ${key} on Railway`);
 			}
-			console.log('Railway environment variables configured.');
 		}
+		console.log('Railway environment variables configured.');
 	} catch {
 		console.warn('Railway setup failed. Configure manually with: railway init');
 	}
@@ -260,11 +274,11 @@ async function setupGithubSecrets(neonProjectId?: string) {
 	if (!shouldConfigure) return;
 
 	const connectionString = neonProjectId
-		? execute(`neonctl connection-string --project-id ${neonProjectId} --pooled`)
+		? execute('neonctl', ['connection-string', '--project-id', neonProjectId, '--pooled'])
 		: getEnvironmentValue('DATABASE_URL');
 
 	const directConnectionString = neonProjectId
-		? execute(`neonctl connection-string --project-id ${neonProjectId}`)
+		? execute('neonctl', ['connection-string', '--project-id', neonProjectId])
 		: getEnvironmentValue('DATABASE_URL_UNPOOLED');
 
 	if (!connectionString || !directConnectionString) {
@@ -285,8 +299,8 @@ async function setupGithubSecrets(neonProjectId?: string) {
 		setGithubSecret('DATABASE_URL', connectionString);
 		setGithubSecret('DATABASE_URL_UNPOOLED', directConnectionString);
 
-		const neonApiKey = await prompt(
-			'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip): ',
+		const neonApiKey = await promptSecret(
+			'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip, input hidden): ',
 		);
 
 		if (neonApiKey) {
@@ -307,7 +321,7 @@ async function runInitialMigration() {
 	console.log('\n--- Migration ---\n');
 	console.log('Running initial migration...');
 	try {
-		execute('bun scripts/migrate.ts', { stdio: 'inherit' });
+		execute('bun', ['scripts/migrate.ts'], { stdio: 'inherit' });
 		console.log('Migration completed successfully.');
 	} catch {
 		console.warn('Migration failed. Run manually: bun scripts/migrate.ts');
@@ -315,9 +329,10 @@ async function runInitialMigration() {
 
 	console.log('Verifying database connectivity...');
 	try {
-		execute(
-			"bun -e \"const { neon } = require('@neondatabase/serverless'); const sql = neon(process.env.DATABASE_URL); sql`SELECT 1`.then(() => console.log('Connected.'))\"",
-		);
+		execute('bun', [
+			'-e',
+			"const { neon } = require('@neondatabase/serverless'); const sql = neon(process.env.DATABASE_URL); sql`SELECT 1`.then(() => console.log('Connected.'))",
+		]);
 	} catch {
 		console.warn('Could not verify database connectivity. Check DATABASE_URL.');
 	}
@@ -383,14 +398,16 @@ const phases: Record<string, () => Promise<void>> = {
 	},
 };
 
-if (subcommand) {
-	const phase = phases[subcommand];
-	if (!phase) {
-		console.error(`Unknown phase: ${subcommand}`);
-		console.error(`Available phases: ${Object.keys(phases).join(', ')}`);
-		process.exit(1);
+if (import.meta.main) {
+	if (subcommand) {
+		const phase = phases[subcommand];
+		if (!phase) {
+			console.error(`Unknown phase: ${subcommand}`);
+			console.error(`Available phases: ${Object.keys(phases).join(', ')}`);
+			process.exit(1);
+		}
+		await phase();
+	} else {
+		await runFullSetup();
 	}
-	await phase();
-} else {
-	await runFullSetup();
 }

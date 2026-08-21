@@ -30,8 +30,17 @@ mock.module('@template/database', () => ({
 			}),
 		}),
 		insert: () => ({
-			values: async (values: unknown) => {
+			values: (values: unknown) => {
 				mockInsertedValues.push(values);
+				// Supports both call shapes used across this file: a bare
+				// `await database.insert(...).values(...)` (registration), and
+				// the CIMD upsert chain `.values(...).onConflictDoUpdate(...).returning()`.
+				return {
+					then: (resolve: (value: undefined) => void) => resolve(undefined),
+					onConflictDoUpdate: () => ({
+						returning: () => Promise.resolve([{ ...(values as Record<string, unknown>) }]),
+					}),
+				};
 			},
 		}),
 		update: () => ({
@@ -60,6 +69,7 @@ mock.module('drizzle-orm', () => ({
 	eq: (column: unknown, value: unknown) => ({ column, value }),
 	gt: (column: unknown, value: unknown) => ({ column, value }),
 	isNull: (column: unknown) => ({ column }),
+	inArray: (column: unknown, values: unknown) => ({ column, values }),
 }));
 
 const mockRateLimitState = {
@@ -113,6 +123,24 @@ mock.module('@web/lib/validate-redirect-uri', () => ({
 		uri.startsWith('https://') || uri.startsWith('http://localhost'),
 }));
 
+// The actual fetch/DNS/SSRF/schema logic is covered directly and
+// exhaustively by client-metadata-documents.test.ts with injected
+// dependencies. Mocked here so this file's authorize-handler tests can
+// drive both branches (document fetched vs. not) without any network or
+// DNS activity.
+const mockCimdState: { document: Record<string, unknown> | null } = { document: null };
+mock.module('@web/lib/client-metadata-documents', () => ({
+	isClientIdMetadataDocumentUrl: (clientId: string) => {
+		try {
+			const parsed = new URL(clientId);
+			return parsed.protocol === 'https:' && parsed.pathname !== '' && parsed.pathname !== '/';
+		} catch {
+			return false;
+		}
+	},
+	fetchClientIdMetadataDocument: async () => mockCimdState.document,
+}));
+
 mock.module('@web/lib/mcp-protocol-constants', () => ({
 	mcpSupportedProtocolVersions: ['2025-11-25', '2026-07-28'],
 	mcpLatestProtocolVersion: '2026-07-28',
@@ -147,6 +175,7 @@ const mockAuthorizationTransactionState: {
 		codeChallengeMethod: string;
 		state: string | null;
 		issuer: string;
+		resource: string;
 	} | null;
 } = {
 	created: { transactionId: 'transaction-id', csrfToken: 'csrf-token' },
@@ -255,6 +284,15 @@ describe('authorization metadata endpoint', () => {
 		const body = (await response.json()) as { extensions: Record<string, unknown> };
 		expect(body.extensions['io.modelcontextprotocol/oauth-client-credentials']).toBeUndefined();
 	});
+
+	it('advertises client_id_metadata_document_supported (OAUTH-002)', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthAuthorizationMetadataGet(context);
+		const body = await response.json();
+		expect(body.client_id_metadata_document_supported).toBe(true);
+	});
 });
 
 describe('protected resource metadata endpoint', () => {
@@ -349,7 +387,7 @@ describe('client registration', () => {
 		expect(mockInsertedValues).toEqual([]);
 	});
 
-	it('returns 400 when refresh_token with auth_method none', async () => {
+	it('OAUTH-002: allows refresh_token for a public client (auth_method none) and issues no client_secret', async () => {
 		const context = createContext({
 			body: JSON.stringify({
 				client_name: 'My App',
@@ -360,7 +398,42 @@ describe('client registration', () => {
 			headers: { 'content-type': 'application/json' },
 		});
 		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(201);
+		const body = await response.json();
+		expect(body.token_endpoint_auth_method).toBe('none');
+		expect(body.client_secret).toBeUndefined();
+		expect(body.client_secret_expires_at).toBeUndefined();
+		expect(mockInsertedValues).toHaveLength(1);
+		expect((mockInsertedValues[0] as { clientSecret: unknown }).clientSecret).toBeNull();
+	});
+
+	it('OAUTH-002: rejects application_type "web" combined with a loopback redirect_uri', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: ['http://localhost:3000/callback'],
+				application_type: 'web',
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
 		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('OAUTH-002: accepts application_type "native" with a loopback redirect_uri and echoes it back', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: ['http://localhost:3000/callback'],
+				application_type: 'native',
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(201);
+		const body = await response.json();
+		expect(body.application_type).toBe('native');
 	});
 
 	it('returns 400 for invalid redirect URI scheme', async () => {
@@ -541,6 +614,7 @@ describe('token exchange', () => {
 				redirect_uri: 'https://example.com/cb',
 				client_id: 'c1',
 				code_verifier: 'too-short',
+				resource: 'http://localhost:3000/mcp',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});
@@ -575,6 +649,7 @@ describe('token revocation', () => {
 		setEnvironment({});
 		mockOauthTokens = [];
 		mockOauthRefreshTokens = [];
+		mockOauthClients = [];
 	});
 
 	it('returns 400 when token parameter is missing', async () => {
@@ -587,10 +662,34 @@ describe('token revocation', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('returns 200 even when token is not found (RFC 7009)', async () => {
+	it('returns 400 when client_id parameter is missing (OAUTH-003)', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/revoke',
-			body: 'token=unknown-token',
+			body: 'token=some-token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+	});
+
+	it('returns 401 for an unregistered client (OAUTH-003)', async () => {
+		mockOauthClients = [];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-token&client_id=unknown-client',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(401);
+	});
+
+	it('returns 200 for an authenticated client revoking an unknown token (RFC 7009)', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});
 		const response = await handleOauthRevokePost(context);
@@ -650,15 +749,58 @@ describe('authorization GET', () => {
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
+		mockInsertedValues = [];
+		mockCimdState.document = null;
 		mockAuthorizationTransactionState.created = {
 			transactionId: 'transaction-id',
 			csrfToken: 'csrf-token',
 		};
 	});
 
+	it('OAUTH-002: an https client_id with no matching row fetches and upserts a Client ID Metadata Document', async () => {
+		mockCimdState.document = {
+			clientId: 'https://app.example.com/oauth/client.json',
+			clientName: 'CIMD App',
+			redirectUris: ['https://app.example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+			applicationType: null,
+		};
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=https%3A%2F%2Fapp.example.com%2Foauth%2Fclient.json&redirect_uri=https://app.example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(200);
+		const body = await response.text();
+		expect(body).toContain('CIMD App');
+		expect(mockInsertedValues).toHaveLength(1);
+		const inserted = mockInsertedValues[0] as Record<string, unknown>;
+		expect(inserted.clientId).toBe('https://app.example.com/oauth/client.json');
+		expect(inserted.clientSecret).toBeNull();
+		expect(inserted.tokenEndpointAuthMethod).toBe('none');
+		expect(inserted.clientType).toBe('public');
+		expect(inserted.clientIdMetadataUrl).toBe('https://app.example.com/oauth/client.json');
+	});
+
+	it('OAUTH-002: renders "Unknown OAuth client" when a Client ID Metadata Document cannot be fetched or fails validation, and writes no row', async () => {
+		mockCimdState.document = null;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=https%3A%2F%2Fapp.example.com%2Foauth%2Fclient.json&redirect_uri=https://app.example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toContain('Unknown OAuth client');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
 	it('redirects to sign-in when user is not authenticated', async () => {
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: null,
 		});
@@ -680,7 +822,7 @@ describe('authorization GET', () => {
 	it('returns 400 when client is unknown', async () => {
 		mockOauthClients = [];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -701,7 +843,7 @@ describe('authorization GET', () => {
 			csrfToken: 'created-csrf-token',
 		};
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -717,7 +859,7 @@ describe('authorization GET', () => {
 
 	it('returns 400 for unsupported code_challenge_method', async () => {
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc&code_challenge_method=plain',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc&code_challenge_method=plain&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -734,7 +876,7 @@ describe('authorization GET', () => {
 			},
 		];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -746,7 +888,7 @@ describe('authorization GET', () => {
 		mockRateLimitState.authorizeAllowed = false;
 		try {
 			const context = createContext({
-				url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+				url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 				method: 'GET',
 				user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 			});
@@ -759,7 +901,7 @@ describe('authorization GET', () => {
 
 	it('rejects a duplicate client_id query parameter', async () => {
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&client_id=c2&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&client_id=c2&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -772,7 +914,7 @@ describe('authorization GET', () => {
 			{ clientId: 'c1', clientName: 'Test App', redirectUris: ['https://example.com/cb'] },
 		];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=too-short',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=too-short&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -789,6 +931,7 @@ describe('authorization approve', () => {
 		codeChallengeMethod: 'S256',
 		state: 'state-xyz',
 		issuer: 'http://localhost:3000',
+		resource: 'http://localhost:3000/mcp',
 	};
 
 	beforeEach(() => {
@@ -947,6 +1090,7 @@ describe('authorization deny', () => {
 		codeChallengeMethod: 'S256',
 		state: 'state-xyz',
 		issuer: 'http://localhost:3000',
+		resource: 'http://localhost:3000/mcp',
 	};
 
 	beforeEach(() => {
@@ -1063,6 +1207,7 @@ describe('authorization code token exchange', () => {
 				redirect_uri: 'https://example.com/cb',
 				client_id: 'unknown',
 				code_verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+				resource: 'http://localhost:3000/mcp',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});

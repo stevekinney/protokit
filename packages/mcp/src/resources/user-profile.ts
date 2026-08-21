@@ -1,11 +1,12 @@
-import type { McpContext } from '../types/primitives.js';
+import type { McpResourceDefinition } from '../types/primitives.js';
 
-export const userProfileResource = {
-	name: 'user_profile' as const,
+export const userProfileResource: McpResourceDefinition = {
+	name: 'user_profile',
+	title: 'User Profile',
 	uri: 'user://profile',
-	description: "Exposes the authenticated user's profile information as a JSON resource.",
+	description: "Exposes the authenticated user's own profile information as a JSON resource.",
 	mimeType: 'application/json',
-	handler: async (uri: URL, context: McpContext) => {
+	handler: async (uri, context) => {
 		return {
 			contents: [
 				{

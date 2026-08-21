@@ -32,7 +32,12 @@ export const webServerEnvironmentSchema = {
 	RAILWAY_REPLICA_IDENTIFIER: z.string().optional(),
 	HOSTNAME_IDENTIFIER: z.string().optional(),
 	MCP_ALLOWED_ORIGINS: z.string().min(1).default('http://localhost:3000'),
-	MCP_ENABLE_UI_EXTENSION: z.coerce.boolean().optional().default(true),
+	// CONTENT-001: defaults off. `packages/mcp-apps` ships no application
+	// today (`src/applications/` does not exist), so advertising the
+	// experimental UI-extension capability by default advertised a
+	// capability with nothing behind it. Set to `true` only once a real app
+	// exists under `packages/mcp-apps/src/applications/`.
+	MCP_ENABLE_UI_EXTENSION: z.coerce.boolean().optional().default(false),
 	MCP_CONFORMANCE_MODE: z.coerce.boolean().optional().default(false),
 	MCP_TOKEN_TTL_SECONDS: z.coerce.number().positive().optional().default(3600),
 	MCP_REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().positive().optional().default(2592000),

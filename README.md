@@ -77,7 +77,7 @@ Optional:
 - `RATE_LIMIT_REGISTER_WINDOW_SECONDS` (default `60`)
 - `RATE_LIMIT_TOKEN_MAX` (default `30`)
 - `RATE_LIMIT_TOKEN_WINDOW_SECONDS` (default `60`)
-- `MCP_ENABLE_UI_EXTENSION` (default `true`)
+- `MCP_ENABLE_UI_EXTENSION` (default `false` — no MCP App exists in this template yet; see `packages/mcp-apps`)
 - `MCP_CONFORMANCE_MODE` (default `false`)
 
 ## Commands
@@ -123,7 +123,7 @@ bun applications/web/dist/server.js
 
 ## Registry Manifest
 
-`server.json` includes a registry descriptor. Update placeholder domain values before publishing.
+`server.json.example` is a registry descriptor template. Copy it to `server.json` (git-ignored) and replace `example.com`/`YOUR_DOMAIN` with your real deployment's domain before submitting to an MCP registry — a `server.json` still containing placeholder values is not ready to publish.
 
 ## License
 

@@ -127,6 +127,31 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		});
 	}
 
+	// OAUTH-001 / RFC 8707: a token that is otherwise valid (unrevoked,
+	// unexpired, correctly hashed) is still rejected outright if it was not
+	// issued for exactly this resource. Without this check, any token ever
+	// minted by this authorization server — regardless of which client or
+	// which resource it was requested for — would be accepted here, since
+	// nothing above verifies the token's audience. Treated the same as an
+	// invalid token (RFC 6750 `invalid_token`), not leaked as a distinct
+	// error that would let a caller distinguish "wrong audience" from
+	// "doesn't exist" and probe for issued tokens.
+	if (oauthToken.resource !== getMcpResourceUrl(context.request)) {
+		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
+		const baseUrl = getBaseUrl(context.request);
+		const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/mcp`;
+		return createMcpProtocolErrorResponse({
+			status: 401,
+			error: 'unauthorized',
+			errorDescription: 'Invalid or expired token.',
+			headers: {
+				...mcpCorsHeaders,
+				'MCP-Protocol-Version': mcpLatestProtocolVersion,
+				'WWW-Authenticate': `Bearer error="invalid_token", resource_metadata="${resourceMetadataUrl}"`,
+			},
+		});
+	}
+
 	return buildMcpAuthInfo({
 		accessToken,
 		expiresAt: oauthToken.expiresAt,
@@ -134,7 +159,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 			userId: oauthToken.userId,
 			oauthClientId: oauthToken.clientId,
 			scopes: (oauthToken.scope ?? '').split(' ').filter((scope) => scope.length > 0),
-			resource: getMcpResourceUrl(context.request),
+			resource: oauthToken.resource,
 			networkIdentity: context.networkIdentity,
 		},
 	});
