@@ -1,5 +1,6 @@
 import { createEnv } from '@t3-oss/env-core';
-import { z } from 'zod';
+
+import { databaseServerEnvironmentSchema } from './environment-schema.js';
 
 // CONFIG-001 / BUG-001: see applications/web/src/env.ts for the full
 // explanation. The escape hatch is removed everywhere, not just gated on
@@ -11,15 +12,7 @@ if (process.env.SKIP_ENV_VALIDATION) {
 }
 
 export const environment = createEnv({
-	server: {
-		DATABASE_URL: z.string().min(1),
-		DATABASE_URL_UNPOOLED: z.string().min(1).optional(),
-		// Local development and test only — see `local-proxy.ts`. Points the
-		// Neon serverless driver's SQL-over-HTTP requests at a local
-		// Neon-compatible proxy in front of a plain Postgres container instead
-		// of a real Neon project. Must never be set in a deployed environment.
-		DATABASE_LOCAL_PROXY_URL: z.string().min(1).optional(),
-	},
+	server: databaseServerEnvironmentSchema,
 	runtimeEnv: {
 		DATABASE_URL: process.env.DATABASE_URL,
 		DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,

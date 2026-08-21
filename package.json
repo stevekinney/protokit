@@ -18,6 +18,8 @@
 		"db:validate": "bun turbo db:validate",
 		"db:seed": "NODE_ENV=development bun scripts/seed.ts",
 		"dev:full": "bun scripts/develop.ts",
+		"doctor": "bun scripts/doctor.ts",
+		"test:doctor": "bun test scripts/doctor.test.ts",
 		"audit:workflows": "bun .github/scripts/audit-workflows.ts",
 		"test:conformance:modern": "NODE_ENV=test bun test packages/mcp/src/conformance-modern.test.ts",
 		"test:conformance:legacy": "NODE_ENV=test bun test packages/mcp/src/conformance-legacy.test.ts",
@@ -39,7 +41,10 @@
 		"prepare": "husky"
 	},
 	"dependencies": {
-		"@template/database": "workspace:*"
+		"@template/database": "workspace:*",
+		"@template/mcp": "workspace:*",
+		"@template/web": "workspace:*",
+		"zod": "^4.4.3"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

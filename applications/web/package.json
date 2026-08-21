@@ -3,6 +3,10 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
+	"exports": {
+		"./environment-schema": "./src/environment-schema.ts",
+		"./lib/production-startup-requirements": "./src/lib/production-startup-requirements.ts"
+	},
 	"scripts": {
 		"dev": "NODE_ENV=development bun run src/development.ts",
 		"build": "bun run src/build.ts",

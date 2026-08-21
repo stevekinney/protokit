@@ -8,7 +8,8 @@
 		"./logger": "./src/logger.ts",
 		"./env": "./src/env.ts",
 		"./testing": "./src/testing/index.ts",
-		"./metrics": "./src/metrics.ts"
+		"./metrics": "./src/metrics.ts",
+		"./environment-schema": "./src/environment-schema.ts"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",

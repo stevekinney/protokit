@@ -7,7 +7,8 @@
 		".": "./src/index.ts",
 		"./schema": "./src/schema.ts",
 		"./env": "./src/env.ts",
-		"./migrate": "./src/migrate.ts"
+		"./migrate": "./src/migrate.ts",
+		"./environment-schema": "./src/environment-schema.ts"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",

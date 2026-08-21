@@ -1,5 +1,10 @@
 import { describe, expect, it, mock } from 'bun:test';
 
+import {
+	collectProductionStartupFailures,
+	type ProductionStartupConfiguration,
+} from '@web/lib/production-startup-requirements';
+
 const mockEnvironment: Record<string, unknown> = { NODE_ENV: 'development' };
 const mockDatabaseEnvironment: Record<string, unknown> = {
 	DATABASE_URL:
@@ -30,6 +35,8 @@ function resetToValidProductionConfiguration(): void {
 	mockEnvironment.REDIS_URL = 'rediss://production-redis.example.com:6380';
 	mockEnvironment.GOOGLE_CLIENT_ID = 'client-id';
 	mockEnvironment.GOOGLE_CLIENT_SECRET = 'client-secret';
+	mockEnvironment.TRUSTED_PROXY_CIDRS = '10.0.0.0/8';
+	mockEnvironment.TRUSTED_PROXY_HEADER = 'x-forwarded-for';
 	redisConfigured = true;
 	mockDatabaseEnvironment.DATABASE_URL =
 		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require';
@@ -120,6 +127,22 @@ describe('assertProductionStartupInvariants', () => {
 		expect(() => assertProductionStartupInvariants()).toThrow(/DATABASE_LOCAL_PROXY_URL is set/);
 	});
 
+	it('throws in production when TRUSTED_PROXY_CIDRS is not set', () => {
+		resetToValidProductionConfiguration();
+		mockEnvironment.TRUSTED_PROXY_CIDRS = undefined;
+		expect(() => assertProductionStartupInvariants()).toThrow(
+			/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/,
+		);
+	});
+
+	it('throws in production when TRUSTED_PROXY_HEADER is not set', () => {
+		resetToValidProductionConfiguration();
+		mockEnvironment.TRUSTED_PROXY_HEADER = undefined;
+		expect(() => assertProductionStartupInvariants()).toThrow(
+			/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/,
+		);
+	});
+
 	it('throws in production when Google credentials are partially configured', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.GOOGLE_CLIENT_SECRET = undefined;
@@ -145,5 +168,52 @@ describe('assertProductionStartupInvariants', () => {
 			expect(message).toContain('REDIS_URL is not set');
 			expect(message).toContain('BASE_URL is not set');
 		}
+	});
+});
+
+/** A fully valid production configuration, used directly against the pure function. */
+function validConfiguration(): ProductionStartupConfiguration {
+	return {
+		nodeEnvironment: 'production',
+		baseUrl: 'https://app.example.com',
+		redisUrl: 'rediss://production-redis.example.com:6380',
+		isRedisConfigured: true,
+		databaseUrl:
+			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require',
+		databaseUrlUnpooled: undefined,
+		databaseLocalProxyUrl: undefined,
+		googleClientId: 'client-id',
+		googleClientSecret: 'client-secret',
+		trustedProxyCidrs: '10.0.0.0/8',
+		trustedProxyHeader: 'x-forwarded-for',
+	};
+}
+
+describe('collectProductionStartupFailures', () => {
+	it('returns no failures for a fully valid production configuration', () => {
+		expect(collectProductionStartupFailures(validConfiguration())).toEqual([]);
+	});
+
+	it(
+		'reports NODE_ENV mismatch — this is doctor-reachable but never triggered by the real ' +
+			'server, since assertProductionStartupInvariants only calls this once NODE_ENV is already production',
+		() => {
+			const failures = collectProductionStartupFailures({
+				...validConfiguration(),
+				nodeEnvironment: 'development',
+			});
+			expect(failures.some((failure) => failure.includes('NODE_ENV is "development"'))).toBe(true);
+		},
+	);
+
+	it('never includes a raw credential value in a failure message', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			redisUrl: 'rediss://admin:admin@production-redis.example.com:6380',
+			databaseUrl: 'postgresql://root:root@production-host.example.com:5432/app?sslmode=require',
+		});
+		const joined = failures.join('\n');
+		expect(joined).not.toContain('admin:admin');
+		expect(joined).not.toContain('root:root');
 	});
 });
