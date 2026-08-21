@@ -55,7 +55,14 @@ describe('resolvePublicFile', () => {
 		const publicDirectory = fileURLToPath(new URL('../public', import.meta.url));
 		const outsideDirectory = join(tmpdir(), `resolve-public-file-outside-${process.pid}`);
 		const outsideSecretPath = join(outsideDirectory, 'secret.txt');
-		const symlinkPath = join(publicDirectory, 'escape-symlink-test.txt');
+		// The fixture name must be unique per process. `publicDirectory` is the
+		// repository's real `public/` directory, shared by every concurrent run,
+		// so a fixed name means two suites racing here either collide on
+		// `symlinkSync` (EEXIST) or have one run's `afterAll` delete the other's
+		// symlink mid-assertion. That surfaced as an intermittent failure that
+		// looked like database contention and was very nearly dismissed as such.
+		const symlinkName = `escape-symlink-test-${process.pid}.txt`;
+		const symlinkPath = join(publicDirectory, symlinkName);
 
 		beforeAll(() => {
 			mkdirSync(outsideDirectory, { recursive: true });
@@ -69,7 +76,7 @@ describe('resolvePublicFile', () => {
 		});
 
 		it('rejects a symlink inside the public root that points outside it', async () => {
-			const file = await resolvePublicFile('escape-symlink-test.txt');
+			const file = await resolvePublicFile(symlinkName);
 			expect(file).toBeNull();
 		});
 	});
