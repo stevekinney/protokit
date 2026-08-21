@@ -76,7 +76,7 @@ const server = Bun.serve({
 	},
 });
 
-logger.info({ port, hostname: hostname ?? '0.0.0.0' }, 'Web server started');
+logger.info({ port, listenHostname: hostname ?? '0.0.0.0' }, 'Web server started');
 
 let isShuttingDown = false;
 
