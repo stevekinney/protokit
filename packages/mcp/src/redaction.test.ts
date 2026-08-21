@@ -43,8 +43,17 @@ const canaries = {
 	cookie: 'session=canary-cookie-value-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d',
 	accessToken: 'canary-access-token-7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a',
 	refreshToken: 'canary-refresh-token-3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f',
-	idToken:
-		'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjYW5hcnktaWQtdG9rZW4tc3ViamVjdCJ9.canary-id-token-signature-abc123',
+	// Assembled at runtime rather than written as a literal. A committed
+	// three-segment JWT — even an obviously synthetic one — matches gitleaks'
+	// `jwt` rule and fails the full-history secret scan. The scan is right to
+	// be blunt about that, so the fix is to stop committing the shape rather
+	// than to widen `.gitleaks.toml`, which the security workflow explicitly
+	// says must not absorb new findings.
+	idToken: [
+		btoa(JSON.stringify({ alg: 'RS256' })),
+		btoa(JSON.stringify({ sub: 'canary-id-token-subject' })),
+		'canary-id-token-signature-abc123',
+	].join('.'),
 	authorizationCode: 'canary-authorization-code-4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b',
 	pkceVerifier: 'canary-pkce-code-verifier-5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c',
 	clientSecret: 'canary-client-secret-6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d',

@@ -45,20 +45,44 @@ async function cleanup(): Promise<void> {
 	}
 }
 
+/**
+ * Waits for a readiness condition, polling at a fixed interval.
+ *
+ * This is a readiness probe, not a test timeout, and the distinction matters
+ * for how generous the budget should be. The previous shape — five attempts
+ * with exponential backoff from 250ms — gave up after about 3.75 seconds
+ * total, which was enough on a developer laptop and not enough for a cold
+ * container start on a continuous-integration runner, where the process has to
+ * boot Bun, load the asset manifest, and open Postgres and Redis connections.
+ * The job failed there having never actually tested anything.
+ *
+ * A longer budget does not weaken what this catches: a container that never
+ * becomes ready still fails, just after a wait proportionate to a real cold
+ * start. What DID weaken diagnosis was the error message — a crashed container
+ * and a slow one produced identical output — so callers now supply an
+ * `onTimeout` hook that dumps container logs before the failure is raised.
+ */
 async function waitForCondition(
 	label: string,
 	attempt: () => Promise<boolean>,
-	maxAttempts = 5,
+	options: { timeoutMs?: number; intervalMs?: number; onTimeout?: () => Promise<void> } = {},
 ): Promise<void> {
-	let delayMs = 250;
-	for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
+	const timeoutMs = options.timeoutMs ?? 60_000;
+	const intervalMs = options.intervalMs ?? 500;
+	const deadline = Date.now() + timeoutMs;
+
+	while (Date.now() < deadline) {
 		if (await attempt()) return;
-		if (attemptNumber === maxAttempts) {
-			throw new Error(`Timed out waiting for: ${label} (${maxAttempts} attempts)`);
-		}
-		await Bun.sleep(delayMs);
-		delayMs *= 2;
+		await Bun.sleep(intervalMs);
 	}
+
+	if (options.onTimeout) {
+		await options.onTimeout().catch(() => {
+			// Diagnostics are best-effort; never mask the real timeout.
+		});
+	}
+
+	throw new Error(`Timed out waiting for: ${label} (after ${timeoutMs}ms)`);
 }
 
 function assert(condition: boolean, message: string): void {
@@ -276,14 +300,32 @@ async function main(): Promise<void> {
 	const appHostPort = await containerHostPort(appContainer, 3000);
 	const appBaseUrl = `http://localhost:${appHostPort}`;
 
-	await waitForCondition(`application listening on ${appBaseUrl}`, async () => {
-		try {
-			await fetch(`${appBaseUrl}/health`);
-			return true;
-		} catch {
-			return false;
-		}
-	});
+	await waitForCondition(
+		`application listening on ${appBaseUrl}`,
+		async () => {
+			try {
+				await fetch(`${appBaseUrl}/health`);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		{
+			// A cold container start on a continuous-integration runner is slower
+			// than on a laptop; the previous ~3.75s budget expired before the server
+			// finished booting. Dump the container's logs on timeout so a genuine
+			// startup crash is distinguishable from a slow start, which the old
+			// message could not do.
+			onTimeout: async () => {
+				console.error(
+					'[smoke] application container did not become ready — container logs follow:',
+				);
+				const logs = await $`docker logs ${appContainer}`.nothrow().quiet();
+				process.stderr.write(logs.stdout.toString());
+				process.stderr.write(logs.stderr.toString());
+			},
+		},
+	);
 
 	console.log('[smoke] checking /health (public liveness, no dependency detail)');
 	const healthResponse = await fetch(`${appBaseUrl}/health`);

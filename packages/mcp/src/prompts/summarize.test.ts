@@ -1,6 +1,29 @@
-import { describe, it, expect } from 'bun:test';
-import { summarizePrompt } from './summarize';
-import { createTestContext } from '../testing/context';
+import { describe, it, expect, mock } from 'bun:test';
+
+/**
+ * Declares diagnostics OFF explicitly rather than inheriting whatever the
+ * process happens to have.
+ *
+ * `summarize-diagnostics.test.ts` mocks `../env.js` with
+ * `LOG_CONTENT_DIAGNOSTICS_UNTIL` set. Bun's `mock.module` is global and is
+ * not restored at file boundaries, so when that file ran first this one saw
+ * diagnostics ON and `summarize.ts` logged the raw-topic branch instead of
+ * `topicLength` — the assertion below failed with `Received: undefined`. It
+ * passed locally and failed in continuous integration purely because the two
+ * files ran in a different order.
+ *
+ * Both files now state their own precondition, so neither depends on the
+ * other's ordering. This is the same class of defect as OPEN-5 in
+ * PROGRESS.local.md, reintroduced here in `packages/mcp`.
+ */
+mock.module('../env.js', () => ({
+	environment: {
+		LOG_CONTENT_DIAGNOSTICS_UNTIL: undefined,
+	},
+}));
+
+const { summarizePrompt } = await import('./summarize.js');
+const { createTestContext } = await import('../testing/context.js');
 
 describe('summarizePrompt', () => {
 	it('has the expected name', () => {

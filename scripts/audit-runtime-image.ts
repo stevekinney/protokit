@@ -48,13 +48,54 @@ if (shouldBuild) {
 }
 
 // 1. Vulnerability scan of the built artifact itself, not just the lockfile.
+//
+// Runs trivy from a local binary when one exists, and otherwise from the same
+// pinned image digest `.github/workflows/security-scan.yml` uses for its other
+// trivy steps. Continuous integration runners have no `trivy` on PATH, which is
+// what made this check fail there: the scan never ran at all, and the script
+// reported that as "reported an unexpired HIGH/CRITICAL vulnerability" — a
+// missing scanner and a vulnerable image are very different facts and must
+// never share a message.
+const TRIVY_IMAGE =
+	'aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c';
+
 console.log('[audit:runtime-image] scanning image with trivy');
-const trivyResult =
-	await $`trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,secret ${imageTag}`
-		.nothrow()
-		.quiet();
-if (trivyResult.exitCode !== 0) {
+
+const hasLocalTrivy = (await $`command -v trivy`.nothrow().quiet()).exitCode === 0;
+
+const trivyArguments = [
+	'image',
+	'--exit-code',
+	'1',
+	'--severity',
+	'HIGH,CRITICAL',
+	'--scanners',
+	'vuln,secret',
+	imageTag,
+];
+
+const trivyResult = hasLocalTrivy
+	? await $`trivy ${trivyArguments}`.nothrow().quiet()
+	: await $`docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${TRIVY_IMAGE} ${trivyArguments}`
+			.nothrow()
+			.quiet();
+
+if (!hasLocalTrivy) {
+	console.log(`[audit:runtime-image] no local trivy binary; using pinned ${TRIVY_IMAGE}`);
+}
+
+// Trivy documents exit code 1 as "findings present". Anything else means the
+// scanner itself could not run, which is a failure of this check rather than a
+// verdict about the image — report it as such instead of implying findings.
+if (trivyResult.exitCode === 1) {
 	fail('trivy image reported an unexpired HIGH/CRITICAL vulnerability or a secret finding');
+	process.stderr.write(trivyResult.stdout.toString());
+	process.stderr.write(trivyResult.stderr.toString());
+} else if (trivyResult.exitCode !== 0) {
+	fail(
+		`trivy could not be run (exit ${trivyResult.exitCode}) — the image was NOT scanned. ` +
+			'This is a broken check, not a clean result; do not read it as "no vulnerabilities".',
+	);
 	process.stderr.write(trivyResult.stdout.toString());
 	process.stderr.write(trivyResult.stderr.toString());
 } else {

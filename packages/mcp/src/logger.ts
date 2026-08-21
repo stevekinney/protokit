@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import pino from 'pino';
 import type { DestinationStream, LoggerOptions } from 'pino';
 import { environment } from './env.js';
@@ -135,10 +136,39 @@ export function createLogger(options?: { destination?: DestinationStream }): pin
 		return pino(baseOptions, options.destination);
 	}
 
+	// `pino-pretty` is a devDependency, so it is absent from the production
+	// runtime image, which installs with `--production`. Selecting the transport
+	// on `NODE_ENV` alone therefore crashed the shipped container on startup
+	// ("unable to determine transport target for pino-pretty") for any run that
+	// was not `NODE_ENV=production` — which is exactly what the container smoke
+	// test does, deliberately, because the production startup invariants demand
+	// HTTPS and real credentials.
+	//
+	// That crash was latent until DEPLOY-001 stopped the bundler baking
+	// NODE_ENV in at build time: while every image reported "production", this
+	// branch was unreachable inside a container and nothing noticed.
+	//
+	// Resolve before requiring, and fall back to plain JSON. Pretty output is a
+	// developer convenience; refusing to start because a formatting dependency
+	// is missing is never the right trade.
+	const prettyTransportAvailable = !isProduction && canResolvePrettyTransport();
+
 	return pino({
 		...baseOptions,
-		...(!isProduction && { transport: { target: 'pino-pretty' } }),
+		...(prettyTransportAvailable && { transport: { target: 'pino-pretty' } }),
 	});
+}
+
+function canResolvePrettyTransport(): boolean {
+	try {
+		// `createRequire` rather than a Bun-specific resolver: this package's
+		// tsconfig does not pull in Bun's globals, and module resolution is the
+		// one thing here with a portable answer.
+		createRequire(import.meta.url).resolve('pino-pretty');
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export const logger = createLogger();
