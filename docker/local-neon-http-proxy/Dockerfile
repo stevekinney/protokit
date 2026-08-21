@@ -11,7 +11,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # install apt dependencies
 RUN \
   apt-get update -qq \
-  && apt-get install -qq --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
+  && apt-get install -qq -y --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
   build-essential \
   pkg-config \
   git \
@@ -32,7 +32,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # install apt dependencies
 RUN \
   apt-get update -qq \
-  && apt-get install -qq --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
+  && apt-get install -qq -y --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
   curl \
   ca-certificates \
   openssl \
@@ -42,12 +42,12 @@ RUN \
 # install caddy
 RUN \
   apt-get update -qq \
-  && apt-get install -qq --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
+  && apt-get install -qq -y --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
   gnupg2 debian-keyring debian-archive-keyring apt-transport-https \
   && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg2 --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
   && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list \
   && apt-get update -qq \
-  && apt-get install -qq --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
+  && apt-get install -qq -y --no-install-recommends -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef \
   caddy \
   && apt-get clean -qq && rm -rf /var/lib/apt/lists/*
 
@@ -69,6 +69,17 @@ COPY ./Caddyfile Caddyfile
 COPY ./start.sh start.sh
 
 RUN chmod +x start.sh
+
+# SUPPLY-001: this is local test-only infrastructure (never shipped in the
+# production image), but it's still scanned by `trivy fs` and previously ran
+# as root with no USER declared. Both ports it serves (4444, 4445) are
+# unprivileged, so a dedicated non-root account works without capability
+# grants; `/app` and everything under it is chowned to that account so
+# caddy's on-disk cache and the proxy's cert files stay writable.
+RUN groupadd --system --gid 10001 neonproxy \
+  && useradd --system --uid 10001 --gid neonproxy --home-dir /app --no-create-home neonproxy \
+  && chown -R neonproxy:neonproxy /app
+USER neonproxy:neonproxy
 
 EXPOSE 4444
 ENTRYPOINT ["./start.sh"]

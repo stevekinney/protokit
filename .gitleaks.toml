@@ -1,0 +1,22 @@
+title = "protokit gitleaks config"
+
+# SUPPLY-001: gitleaks scans the full git history, not just the working
+# tree, so a full-history baseline sweep is a one-time exercise — new
+# findings after this point must be fixed, not allowlisted. Every entry
+# below is a reviewed false positive: a fixed placeholder string used only
+# to satisfy a minimum-length validation rule in a test or a CI
+# fail-closed check, never a value that authenticates against anything.
+# Re-review this file whenever `bun run audit:secrets` reports a new
+# finding rather than widening an existing rule.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed placeholder strings — not real credentials"
+regexes = [
+  # `SESSION_SIGNING_SECRET`/`BETTER_AUTH_SECRET` fixtures used only to
+  # satisfy a minimum-length check in tests and in CI's fail-closed
+  # startup-invariant assertion; never a value anything authenticates with.
+  '''a-very-secret-key-that-is-at-least-32-chars-long''',
+  '''ci-placeholder-secret-at-least-32-chars''',
+]

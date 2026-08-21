@@ -3,8 +3,9 @@ node_modules
 build
 dist
 .turbo
-.env.local
-.env.*.local
+.env
+.env.*
+!.env.example
 *.db
 *.db-journal
 .DS_Store
