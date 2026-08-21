@@ -8,21 +8,24 @@ import { $ } from 'bun';
  * runs it against ephemeral Redis and Postgres instances on an isolated
  * Docker network, and exercises it over real HTTP — nothing here is mocked.
  *
- * `DATABASE_URL` is deliberately pointed at a plain `postgres:17` container.
  * The application's runtime database client speaks Neon's HTTP protocol
  * (`@neondatabase/serverless`), which a plain Postgres instance cannot
- * answer — that mismatch is a separate, already-tracked defect (BUG-002,
- * owned by `TEST-DB-001`). Until that lands, `/health` is expected to
- * report `database: "unavailable"`; this script asserts that exact
- * dependency-level shape rather than papering over it, so the check
- * tightens automatically once `TEST-DB-001` fixes the underlying driver
- * mismatch instead of silently going stale.
+ * answer directly. `TEST-DB-001` solved this for the local integration lane
+ * by vendoring a Neon-compatible HTTP proxy (`docker/local-neon-http-proxy`,
+ * also used by `docker-compose.test.yml`) that sits in front of Postgres and
+ * speaks the SQL-over-HTTP protocol the driver expects. This harness brings
+ * that same proxy onto the isolated smoke-test network so the containerized
+ * application reaches a real database over the exact code path production
+ * uses, rather than accepting an "unavailable" database dependency as
+ * expected.
  */
 
 const runId = randomBytes(4).toString('hex');
 const imageTag = `protokit-container-smoke:${runId}`;
+const neonProxyImageTag = 'protokit-smoke-neon-proxy:latest';
 const networkName = `protokit-smoke-net-${runId}`;
 const postgresContainer = `protokit-smoke-postgres-${runId}`;
+const neonProxyContainer = `protokit-smoke-neon-proxy-${runId}`;
 const redisContainer = `protokit-smoke-redis-${runId}`;
 const appContainer = `protokit-smoke-app-${runId}`;
 
@@ -177,10 +180,40 @@ async function main(): Promise<void> {
 	const hostDatabaseUrl = `postgresql://smoke:smoke@localhost:${postgresHostPort}/smoke`;
 
 	console.log('[smoke] applying migrations against the empty database');
+	// `drizzle-kit migrate` speaks raw Postgres wire protocol regardless of the
+	// runtime driver, so this step talks directly to Postgres — no proxy
+	// involved. The proxy only matters for the application's own runtime
+	// queries, exercised below.
 	await $`bun turbo db:migrate --filter=@template/database --force`.env({
 		...process.env,
 		DATABASE_URL: hostDatabaseUrl,
 	});
+
+	console.log('[smoke] building the local Neon HTTP proxy image (vendored, TEST-DB-001)');
+	// Not tagged per-run and not torn down in cleanup: it is identical,
+	// vendored, unmodified source every time (see docker/local-neon-http-proxy),
+	// and it's a from-source Rust build, so reusing Docker's layer cache across
+	// smoke test runs (the same tradeoff `docker-compose.test.yml` makes) keeps
+	// repeat runs fast instead of rebuilding the proxy binary from scratch
+	// every time.
+	await $`docker build -t ${neonProxyImageTag} ./docker/local-neon-http-proxy`;
+
+	console.log('[smoke] starting the Neon HTTP proxy');
+	await $`docker run -d --name ${neonProxyContainer} --network ${networkName} --network-alias neon-proxy -e PG_CONNECTION_STRING=postgres://smoke:smoke@postgres:5432/smoke ${neonProxyImageTag}`;
+	trackCleanup(`docker rm -f ${neonProxyContainer}`);
+
+	await waitForCondition(
+		'Neon HTTP proxy accepting connections',
+		async () => {
+			try {
+				await $`docker exec ${neonProxyContainer} curl -s -o /dev/null http://localhost:4444/sql`.quiet();
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		8,
+	);
 
 	console.log('[smoke] starting the application container');
 	const sessionSigningSecret = randomBytes(32).toString('hex');
@@ -220,6 +253,13 @@ async function main(): Promise<void> {
 		'REDIS_URL=redis://redis:6379',
 		'-e',
 		'DATABASE_URL=postgresql://smoke:smoke@postgres:5432/smoke',
+		// TEST-DB-001: routes the Neon serverless driver's SQL-over-HTTP
+		// requests at the vendored local proxy instead of real Neon, the same
+		// override the integration test lane uses. This is what makes the
+		// database dependency below actually reachable rather than
+		// structurally unable to answer the driver's protocol.
+		'-e',
+		'DATABASE_LOCAL_PROXY_URL=http://neon-proxy:4444/sql',
 		imageTag,
 	];
 	await $`docker ${appRunArguments}`;
@@ -240,8 +280,8 @@ async function main(): Promise<void> {
 	console.log('[smoke] checking /health');
 	const healthResponse = await fetch(`${appBaseUrl}/health`);
 	assert(
-		healthResponse.status === 200 || healthResponse.status === 503,
-		`unexpected /health status ${healthResponse.status}`,
+		healthResponse.status === 200,
+		`expected /health to report every dependency healthy, got status ${healthResponse.status}`,
 	);
 	const health = (await healthResponse.json()) as {
 		dependencies: { redis: string; database: string };
@@ -250,13 +290,10 @@ async function main(): Promise<void> {
 		health.dependencies.redis === 'ok',
 		`expected Redis dependency healthy, got ${health.dependencies.redis}`,
 	);
-	if (health.dependencies.database !== 'ok') {
-		console.log(
-			'[smoke] database dependency reports "' +
-				health.dependencies.database +
-				'" — expected until TEST-DB-001 fixes the neon-http/plain-Postgres mismatch (BUG-002)',
-		);
-	}
+	assert(
+		health.dependencies.database === 'ok',
+		`expected database dependency healthy through the Neon HTTP proxy, got ${health.dependencies.database}`,
+	);
 
 	console.log('[smoke] checking OAuth discovery endpoints');
 	const protectedResourceResponse = await fetch(
