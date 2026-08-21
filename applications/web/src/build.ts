@@ -105,7 +105,14 @@ const serverBuildResult = await Bun.build({
 	target: 'bun',
 	outdir: 'dist',
 	sourcemap: 'external',
-	define: { 'process.env.NODE_ENV': '"production"' },
+	// Deliberately no `define` for `process.env.NODE_ENV`. Baking it in as a
+	// compile-time literal makes the built server read "production" no matter
+	// what the runtime environment says, which defeats CONFIG-001's fail-closed
+	// startup invariants inside the artifact — they can never observe a wrong or
+	// missing NODE_ENV — and makes the image impossible to boot in any other mode,
+	// which is what broke `bun run test:container-smoke`. The Dockerfile sets
+	// `ENV NODE_ENV=production`, so production still gets the right value from the
+	// environment, and a host that forgets it now fails closed as intended.
 });
 
 if (!serverBuildResult.success) {
