@@ -36,8 +36,6 @@ jobs:
         with:
           bun-version: '1.3.14'
 
-      - run: bun install --frozen-lockfile
-
       - name: Record revision and migration plan
         run: |
           set -euo pipefail
@@ -90,12 +88,19 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      # `@railway/cli` is a pinned devDependency (package.json / bun.lock), resolved from the
-      # frozen lockfile above rather than the mutable `@5` range -- RAILWAY_TOKEN is in scope for
-      # this step, so the CLI version must be reviewed and reproducible, not "whatever 5.x is
-      # newest today". `--bun` runs the locked workspace copy instead of letting bunx fetch its
-      # own resolution.
+      # Pinned to an exact, immutable version rather than the mutable `@5` range:
+      # RAILWAY_TOKEN is in scope for this step, so the CLI that runs beside it must be a
+      # reviewed version, not "whatever 5.x is newest today".
+      #
+      # Deliberately NOT a devDependency. Vendoring the CLI into the dependency graph does
+      # buy a lockfile integrity hash, but it also drags its transitive tree into this
+      # project's own dependency graph -- `@railway/cli@5.43.1` depends on `tar@6.2.1`,
+      # which carries nine advisories including a critical, and `bun audit` (rightly) fails
+      # the security gate on them. This is deploy-time tooling that never ships in the
+      # runtime image; adopting a vulnerable tree permanently to pin a CLI we invoke once
+      # is a bad trade. An exact npm version cannot be republished, so the mutable-resolution
+      # problem is solved either way.
       - name: Deploy to Railway
-        run: bunx --bun @railway/cli up --service "${{ vars.RAILWAY_SERVICE_NAME }}" --detach --yes
+        run: bunx @railway/cli@5.43.1 up --service "${{ vars.RAILWAY_SERVICE_NAME }}" --detach --yes
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
