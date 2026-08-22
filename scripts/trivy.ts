@@ -1,3 +1,4 @@
+import { resolve as resolvePath, dirname, basename } from 'node:path';
 import { $ } from 'bun';
 
 /**
@@ -23,6 +24,12 @@ export const TRIVY_IMAGE =
 let cachedHasLocalTrivy: boolean | undefined;
 
 async function hasLocalTrivy(): Promise<boolean> {
+	// `TRIVY_FORCE_DOCKER=1` forces the container path even where a local binary
+	// exists. Without it, a developer with trivy installed never exercises the
+	// branch continuous integration actually takes — which is precisely how the
+	// relative-`-v` bug below reached CI twice while passing locally every time.
+	if (process.env.TRIVY_FORCE_DOCKER === '1') return false;
+
 	cachedHasLocalTrivy ??= (await $`command -v trivy`.nothrow().quiet()).exitCode === 0;
 	return cachedHasLocalTrivy;
 }
@@ -67,11 +74,14 @@ export async function runTrivy(
 	let effectiveArguments = trivyArguments;
 
 	if (options.outputPath) {
-		const outputDirectory = options.outputPath.replace(/\/[^/]+$/, '');
-		const outputFileName = options.outputPath.slice(outputDirectory.length + 1);
-		dockerArguments.push('-v', `${outputDirectory}:/trivy-output`);
+		// Docker refuses a relative `-v` source: it reads anything without a
+		// leading slash as a named volume, so `dist/provenance` failed with
+		// "includes invalid characters for a local volume name". Resolve against
+		// the working directory before mounting.
+		const absoluteOutputPath = resolvePath(options.outputPath);
+		dockerArguments.push('-v', `${dirname(absoluteOutputPath)}:/trivy-output`);
 		effectiveArguments = trivyArguments.map((argument) =>
-			argument === options.outputPath ? `/trivy-output/${outputFileName}` : argument,
+			argument === options.outputPath ? `/trivy-output/${basename(absoluteOutputPath)}` : argument,
 		);
 	}
 
