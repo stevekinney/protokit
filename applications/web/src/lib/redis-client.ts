@@ -1,6 +1,7 @@
 import { createClient, type RedisClientType } from 'redis';
 import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
+import { withDeadline } from '@web/lib/with-deadline';
 
 type RedisClient = RedisClientType;
 
@@ -90,6 +91,14 @@ export async function disconnectRedisSubscriberClient(): Promise<void> {
 	}
 }
 
+// `socket.connectTimeout` below only bounds establishing the TCP/TLS connection. Once Redis has
+// accepted that connection, `ping()` has no deadline of its own -- a server that accepts and then
+// stalls (mid-failover, wedged, network partition after the handshake) leaves this await open
+// indefinitely. Round-3 review (OPS-002): this is exactly what let a stuck probe stay in
+// `createCoalescedProbe`'s `inFlight` slot forever, since the coalescer only clears that slot when
+// the probe promise settles.
+const redisHealthProbeTimeoutMs = 2000;
+
 export async function isRedisHealthy(): Promise<boolean> {
 	if (!isRedisConfigured()) return false;
 
@@ -103,7 +112,7 @@ export async function isRedisHealthy(): Promise<boolean> {
 
 	try {
 		await probe.connect();
-		await probe.ping();
+		await withDeadline(probe.ping(), redisHealthProbeTimeoutMs);
 		return true;
 	} catch {
 		return false;

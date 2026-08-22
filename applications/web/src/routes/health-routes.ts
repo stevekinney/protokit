@@ -13,6 +13,7 @@ import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceHealthProbeRateLimit } from '@web/lib/request-rate-limiter';
 import { isRedisConfigured, isRedisHealthy } from '@web/lib/redis-client';
+import { withDeadline } from '@web/lib/with-deadline';
 
 /**
  * OPS-002 / S-15: `GET /health` — a public, unauthenticated liveness check.
@@ -36,9 +37,18 @@ type DependencySnapshot = {
 	};
 };
 
+// The Neon HTTP driver's `execute` has no per-call timeout option, so a `select 1` that reaches a
+// dependency which accepts the request but never answers (a wedged proxy, a hung connection pool)
+// leaves this await open indefinitely -- the same class of gap `isRedisHealthy` has for `ping()`
+// after `connect()` succeeds. Round-3 review (OPS-002): an unbounded probe here left the
+// coalesced-probe cache's `inFlight` slot permanently occupied, since it only clears once the
+// probe promise settles, so every subsequent `/health/ready` caller within the process lifetime
+// would await the same probe that will never resolve or reject.
+const databaseHealthProbeTimeoutMs = 2000;
+
 async function isDatabaseHealthy(): Promise<boolean> {
 	try {
-		await database.execute(sql`select 1`);
+		await withDeadline(database.execute(sql`select 1`), databaseHealthProbeTimeoutMs);
 		return true;
 	} catch {
 		return false;

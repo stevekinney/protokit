@@ -6,6 +6,7 @@ import { isAddressInCidr } from '@web/lib/trusted-proxy';
 import { isValidClientName } from '@web/lib/client-name-validation';
 import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';
 import { isExactContentType } from '@web/lib/exact-content-type';
+import { withDeadline } from '@web/lib/with-deadline';
 import {
 	cimdCacheMaxEntries,
 	cimdCacheTtlMs,
@@ -103,11 +104,26 @@ export type ClientMetadataDocumentFetchDependencies = {
 	fetchImpl?: typeof fetch;
 	lookupImpl?: DnsLookupAllFunction;
 	now?: () => number;
+	/**
+	 * Deadline for the DNS-resolution phase of `assertHostnameIsPubliclyRoutable`, in
+	 * milliseconds. Defaults to `cimdFetchTimeoutMs` -- the same bounded-fetch budget already
+	 * applied to the HTTP fetch that follows, so the whole preflight (resolve + connect) has one
+	 * consistent time budget rather than an unbounded resolve step ahead of a bounded fetch.
+	 * Overridable so tests can exercise the timeout path without a 5-second wait.
+	 */
+	dnsTimeoutMs?: number;
 };
+
+// `node:dns/promises`' `lookup` has no built-in deadline: a resolver outage or an
+// attacker-controlled slow-responding DNS server can hold this await open indefinitely, which
+// would tie up the handler well past `cimdFetchTimeoutMs` even though that constant is applied to
+// the fetch that follows. `withDeadline` races the lookup against a timer so the DNS phase is
+// bounded exactly like the fetch phase.
 
 async function assertHostnameIsPubliclyRoutable(
 	hostname: string,
 	lookupImpl: DnsLookupAllFunction,
+	dnsTimeoutMs: number,
 ): Promise<void> {
 	if (isIPv4(hostname) || isIPv6(hostname)) {
 		if (isBlockedIpAddress(hostname)) {
@@ -118,7 +134,7 @@ async function assertHostnameIsPubliclyRoutable(
 
 	let records: { address: string }[];
 	try {
-		records = await lookupImpl(hostname, { all: true, verbatim: true });
+		records = await withDeadline(lookupImpl(hostname, { all: true, verbatim: true }), dnsTimeoutMs);
 	} catch {
 		throw new ClientMetadataDocumentFetchError('dns_resolution_failed');
 	}
@@ -314,7 +330,11 @@ export async function fetchClientIdMetadataDocument(
 	const url = new URL(clientId);
 
 	try {
-		await assertHostnameIsPubliclyRoutable(url.hostname, lookupImpl);
+		await assertHostnameIsPubliclyRoutable(
+			url.hostname,
+			lookupImpl,
+			dependencies.dnsTimeoutMs ?? cimdFetchTimeoutMs,
+		);
 	} catch (error) {
 		logger.warn(
 			{ err: error, clientIdHostname: url.hostname },

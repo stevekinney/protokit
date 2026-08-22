@@ -23,7 +23,6 @@ import type { RequestContext } from '@web/lib/request-context';
 import {
 	enforceGoogleAuthRateLimit,
 	enforceSessionCreationRateLimit,
-	recordFailedAuthentication,
 } from '@web/lib/request-rate-limiter';
 import { sessionCsrfTokenMaxLength, signOutMaxBodyBytes } from '@web/lib/request-limits';
 import {
@@ -205,7 +204,16 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 
 	const stateValidation = await validateGoogleCallbackState(context.request);
 	if (!stateValidation.valid) {
-		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
+		// A missing, malformed, expired, or already-used `state` (or its cookie) never checked a
+		// credential -- this handler never authenticates a client secret against this server, so
+		// there is nothing here analogous to `handleOauthTokenPost`/`handleOauthRevokePost`'s
+		// `authenticateOauthClient` 401. Recording it toward the shared network-wide
+		// failed-authentication lockout let unrelated protocol noise (a stale tab, a replayed
+		// callback, a crawler) from one shared NAT trip a five-minute lockout on
+		// `/oauth/token`, `/oauth/revoke`, and `/mcp` for every user behind that address -- while
+		// this route itself never even checks `isAuthenticationLockedOut`, so the counter didn't
+		// even throttle the thing generating it. `enforceGoogleAuthRateLimit` above already rate
+		// limits this endpoint on its own terms.
 		return withClearedGoogleStateCookie(
 			createStaticHtmlResponse({
 				metadata: { title: 'Google Sign-In Error' },

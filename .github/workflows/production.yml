@@ -88,7 +88,14 @@ jobs:
         with:
           bun-version: '1.3.14'
 
+      - run: bun install --frozen-lockfile
+
+      # `@railway/cli` is a pinned devDependency (package.json / bun.lock), resolved from the
+      # frozen lockfile above rather than the mutable `@5` range -- RAILWAY_TOKEN is in scope for
+      # this step, so the CLI version must be reviewed and reproducible, not "whatever 5.x is
+      # newest today". `--bun` runs the locked workspace copy instead of letting bunx fetch its
+      # own resolution.
       - name: Deploy to Railway
-        run: bunx @railway/cli@5 up --service "${{ vars.RAILWAY_SERVICE_NAME }}" --detach --yes
+        run: bunx --bun @railway/cli up --service "${{ vars.RAILWAY_SERVICE_NAME }}" --detach --yes
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

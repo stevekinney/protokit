@@ -327,6 +327,29 @@ describe('fetchClientIdMetadataDocument', () => {
 			expect(result).toBeNull();
 		});
 
+		it('bounds a DNS lookup that never resolves, instead of hanging past the fetch timeout budget', async () => {
+			// Regression for a round-3 review finding (P2): the DNS phase had no deadline of its
+			// own -- only the fetch that follows it was bounded by cimdFetchTimeoutMs. A stalled
+			// resolver (or an attacker-controlled slow-responding name server) could hold this
+			// preflight open indefinitely. `dnsTimeoutMs` lets this test exercise the real deadline
+			// path without waiting out the production 5-second budget.
+			let fetchWasCalled = false;
+			const start = Date.now();
+			const result = await fetchClientIdMetadataDocument(validDocumentUrl, {
+				fetchImpl: async () => {
+					fetchWasCalled = true;
+					return jsonResponse(validDocumentBody);
+				},
+				lookupImpl: () => new Promise(() => {}), // never resolves or rejects
+				dnsTimeoutMs: 25,
+			});
+			const elapsedMs = Date.now() - start;
+
+			expect(result).toBeNull();
+			expect(elapsedMs).toBeLessThan(1000);
+			expect(fetchWasCalled).toBe(false);
+		});
+
 		it('passes redirect: "error" to fetch so a redirect to an internal target cannot be followed', async () => {
 			let observedRedirectMode: string | undefined;
 			const result = await fetchClientIdMetadataDocument(validDocumentUrl, {

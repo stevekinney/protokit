@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 mock.module('@web/env', () => ({
 	environment: {
@@ -59,6 +59,8 @@ mock.module('@web/lib/google-id-token', () => ({
 	}),
 }));
 
+export const recordFailedAuthenticationSpy = mock(async () => {});
+
 mock.module('@web/lib/request-rate-limiter', () => ({
 	enforceGoogleAuthRateLimit: async () => ({
 		allowed: true,
@@ -70,7 +72,7 @@ mock.module('@web/lib/request-rate-limiter', () => ({
 		retryAfterSeconds: 0,
 		remainingRequests: 10,
 	}),
-	recordFailedAuthentication: async () => {},
+	recordFailedAuthentication: recordFailedAuthenticationSpy,
 }));
 
 mock.module('@web/lib/session-authentication', () => ({
@@ -153,6 +155,10 @@ describe('handleGoogleSignInStart', () => {
 });
 
 describe('handleGoogleSignInCallback', () => {
+	beforeEach(() => {
+		recordFailedAuthenticationSpy.mockClear();
+	});
+
 	it('returns 400 when code is missing', async () => {
 		const context = createContext({ url: 'http://localhost:3000/auth/google/callback' });
 		const response = await handleGoogleSignInCallback(context);
@@ -165,6 +171,21 @@ describe('handleGoogleSignInCallback', () => {
 		});
 		const response = await handleGoogleSignInCallback(context);
 		expect(response.status).toBe(400);
+	});
+
+	it('does not record a missing/malformed state toward the shared failed-authentication lockout', async () => {
+		// Regression for a round-3 review finding (P2): a malformed/missing/cookie-less `state`
+		// never checks a credential (no client secret is compared here, unlike
+		// `handleOauthTokenPost`/`handleOauthRevokePost`'s `authenticateOauthClient`), so it must
+		// not poison the shared network-wide lockout that guards those routes and `/mcp`. This
+		// route already has its own rate limit (`enforceGoogleAuthRateLimit`, mocked above).
+		const context = createContext({
+			url: 'http://localhost:3000/auth/google/callback?code=test-code',
+		});
+		const response = await handleGoogleSignInCallback(context);
+
+		expect(response.status).toBe(400);
+		expect(recordFailedAuthenticationSpy).not.toHaveBeenCalled();
 	});
 
 	it('creates session and redirects on success', async () => {

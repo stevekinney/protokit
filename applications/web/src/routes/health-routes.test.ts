@@ -4,6 +4,9 @@ const mockEnvironment: Record<string, unknown> = {};
 let mockDatabaseHealthy = true;
 let mockRedisHealthy = true;
 let mockDatabaseCallCount = 0;
+// Round-3 review (OPS-002): a dependency that accepts the probe but never answers must not hang
+// `probeDependencies` -- and therefore the coalesced-probe cache's `inFlight` slot -- forever.
+let mockDatabaseHang = false;
 
 mock.module('@web/env', () => ({
 	environment: mockEnvironment,
@@ -13,6 +16,7 @@ mock.module('@template/database', () => ({
 	database: {
 		execute: async () => {
 			mockDatabaseCallCount += 1;
+			if (mockDatabaseHang) return new Promise(() => {}); // never resolves or rejects
 			if (!mockDatabaseHealthy) throw new Error('database down');
 			return [{ '?column?': 1 }];
 		},
@@ -104,6 +108,7 @@ describe('handleHealthReadinessGet', () => {
 	beforeEach(() => {
 		mockDatabaseHealthy = true;
 		mockRedisHealthy = true;
+		mockDatabaseHang = false;
 		setEnvironment({});
 		resetHealthReadinessCacheForTests();
 	});
@@ -188,6 +193,34 @@ describe('handleHealthReadinessGet', () => {
 
 		expect(mockDatabaseCallCount).toBe(1);
 	});
+
+	it('clears the coalesced in-flight probe after a dependency accepts but never answers, instead of hanging every caller forever', async () => {
+		// Regression for a round-3 review finding (P2): `probeDependencies` had no deadline of
+		// its own, so a dependency that accepts a connection but never completes its probe
+		// (Neon leaves `select 1` pending, Redis stalls after connecting) left
+		// `createCoalescedProbe`'s `inFlight` promise permanently unsettled -- every
+		// subsequent `/health/ready` request, forever, would await that same probe. Reverting
+		// the `withDeadline` wrap around `database.execute` in `isDatabaseHealthy`
+		// reproduces this directly: the test times out instead of observing 503.
+		mockDatabaseHang = true;
+
+		const response = await handleHealthReadinessGet(buildContext());
+		expect(response.status).toBe(503);
+		const body = await response.json();
+		expect(body.status).toBe('degraded');
+		expect(body.dependencies.database).toBe('unavailable');
+
+		// The stuck probe's own deadline resolved, which cleared `inFlight` -- prove the
+		// coalescer is genuinely usable again, not merely that one call returned. Recovery
+		// (the dependency now healthy) is observable on the very next request once the TTL
+		// window from the degraded result has passed.
+		mockDatabaseHang = false;
+		resetHealthReadinessCacheForTests();
+		const recovered = await handleHealthReadinessGet(buildContext());
+		expect(recovered.status).toBe(200);
+		const recoveredBody = await recovered.json();
+		expect(recoveredBody.dependencies.database).toBe('ok');
+	}, 10_000);
 
 	it('rejects a request over plaintext transport in production', async () => {
 		setEnvironment({ NODE_ENV: 'production' });

@@ -229,6 +229,78 @@ async function setupMcpProtocolAndExtensions() {
 }
 
 /**
+ * Mirrors `assertProductionStartupInvariants`'s canonical-origin check
+ * (`applications/web/src/lib/production-startup-requirements.ts`): scheme + host (+ optional
+ * port) only, HTTPS, no path/query/fragment/userinfo. `setupBaseUrl` uses this to keep re-prompting
+ * instead of writing a value production will reject at startup.
+ */
+export function isValidProductionBaseUrl(value: string): boolean {
+	if (!value.startsWith('https://')) return false;
+	try {
+		const parsed = new URL(value);
+		return (
+			parsed.origin === value &&
+			parsed.pathname === '/' &&
+			!parsed.search &&
+			!parsed.hash &&
+			!parsed.username &&
+			!parsed.password
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * `OAUTH-P1` (round 3 review): a fresh full setup ran `setupRailway` straight into
+ * `planRailwayVariables`, which unconditionally forces `NODE_ENV=production` on whatever gets
+ * pushed to Railway — but no phase ever collected `BASE_URL`. `assertProductionStartupInvariants`
+ * then refuses to start the deployed service, because production requires one canonical HTTPS
+ * `BASE_URL` (OAuth issuer identity + MCP resource metadata), so the wizard produced a
+ * configuration that could not boot unless the operator separately knew to add an undocumented
+ * value. This phase collects it before Railway is touched, so it is available to copy across in
+ * `setupRailway` below.
+ *
+ * Railway does not assign a domain until the first deploy, so this cannot be discovered
+ * automatically — the operator must supply the URL they intend to serve from (a Railway-generated
+ * `*.up.railway.app` domain reserved via `railway domain`, or a custom domain already pointed at
+ * the service). Required, not optional: skipping it here only defers the identical failure to a
+ * point after Railway has already been configured.
+ */
+async function setupBaseUrl() {
+	console.log('\n--- Production Base URL ---\n');
+
+	if (getEnvironmentValue('BASE_URL')) {
+		console.log('BASE_URL already exists in .env.local.');
+		return;
+	}
+
+	console.log('Production requires one canonical, HTTPS BASE_URL (OAuth issuer identity and MCP');
+	console.log('resource metadata are both derived from it). Reserve a Railway domain first with');
+	console.log('`railway domain`, or use a custom domain already pointed at this service.\n');
+
+	for (;;) {
+		const input = await prompt('BASE_URL (e.g. https://your-app.up.railway.app): ');
+		if (!input) {
+			console.warn(
+				'BASE_URL is required before Railway can be configured for production. Try again.',
+			);
+			continue;
+		}
+		if (!isValidProductionBaseUrl(input)) {
+			console.warn(
+				'BASE_URL must be a canonical https:// origin only (no path, query, fragment, or ' +
+					'embedded credentials). Try again.',
+			);
+			continue;
+		}
+		appendToEnvironmentFile('BASE_URL', input);
+		console.log('BASE_URL written to .env.local');
+		return;
+	}
+}
+
+/**
  * Environment keys that only ever describe *this* machine and must never be copied to Railway
  * verbatim, because Railway is a production deployment target by definition. Copying
  * `NODE_ENV=development` from a developer's `.env.local` overrides the image's baked-in
@@ -276,6 +348,20 @@ async function setupRailway() {
 
 	const shouldConfigure = await confirm('Configure Railway deployment? (y/N): ');
 	if (!shouldConfigure) return;
+
+	// `OAUTH-P1`: refuse to push a configuration that `assertProductionStartupInvariants` will
+	// reject at startup. `planRailwayVariables` always forces `NODE_ENV=production`, and
+	// production requires BASE_URL — failing the phase here (before `railway init` even runs) is
+	// cheaper than an operator discovering it only once the deployed service won't boot.
+	if (!getEnvironmentValue('BASE_URL')) {
+		console.error(
+			'BASE_URL is not set in .env.local. Production requires one canonical HTTPS BASE_URL ' +
+				'(assertProductionStartupInvariants rejects a deployment without it). Run ' +
+				'`bun scripts/setup.ts base-url` first, then re-run this phase.',
+		);
+		process.exitCode = 1;
+		return;
+	}
 
 	console.log('\nInitializing Railway project...');
 	try {
@@ -386,6 +472,7 @@ async function runFullSetup() {
 	await setupGoogle();
 	await setupRedis();
 	await setupMcpProtocolAndExtensions();
+	await setupBaseUrl();
 	await setupRailway();
 	await setupGithubSecrets(neonResult?.projectId);
 	await runInitialMigration();
@@ -421,6 +508,9 @@ const phases: Record<string, () => Promise<void>> = {
 	},
 	mcp: async () => {
 		await setupMcpProtocolAndExtensions();
+	},
+	'base-url': async () => {
+		await setupBaseUrl();
 	},
 	railway: async () => {
 		await setupRailway();

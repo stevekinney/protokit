@@ -20,6 +20,7 @@ declare module 'bun:test' {
 		toHaveLength: (expected: number) => void;
 		toThrow: (expected?: unknown) => void;
 		toBeInstanceOf: (expected: new (...arguments_: unknown[]) => unknown) => void;
+		toHaveBeenCalled: () => void;
 		rejects: AsyncExpectation;
 		not: {
 			toBe: (expected: unknown) => void;
@@ -28,7 +29,14 @@ declare module 'bun:test' {
 			toThrow: (expected?: unknown) => void;
 			toContain: (expected: unknown) => void;
 			toMatch: (expected: RegExp | string) => void;
+			toHaveBeenCalled: () => void;
 		};
+	};
+
+	/** Minimal shape of `bun:test`'s `Mock<T>` -- only the members this codebase's tests use. */
+	type MockFunction<T extends (...arguments_: never[]) => unknown> = T & {
+		mockClear: () => void;
+		mockReset: () => void;
 	};
 
 	export const describe: (name: string, fn: () => void | Promise<void>) => void;
@@ -43,6 +51,7 @@ declare module 'bun:test' {
 	export const beforeAll: (fn: () => void | Promise<void>) => void;
 	export const afterAll: (fn: () => void | Promise<void>) => void;
 	export const mock: {
+		<T extends (...arguments_: never[]) => unknown>(implementation?: T): MockFunction<T>;
 		module: (moduleName: string, factory: () => unknown) => void;
 	};
 }
