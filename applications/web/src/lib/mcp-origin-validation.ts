@@ -1,8 +1,14 @@
 import { environment } from '@web/env';
 
-function parseAllowedOrigins(): Set<string> {
-	const rawAllowedOrigins = environment.MCP_ALLOWED_ORIGINS ?? 'http://localhost:3000';
-	const values = rawAllowedOrigins
+/**
+ * SEC-002: pure and exported so unit tests can exercise every allow-list
+ * shape (empty, single origin, multiple, whitespace) directly, instead of
+ * `mock.module('@web/env', ...)` -- the pattern `OPEN-5` removed elsewhere
+ * on this branch for exactly this reason (a per-file module mock is easy
+ * to leak across files that share a module cache).
+ */
+export function parseAllowedOrigins(rawAllowedOrigins: string | undefined): Set<string> {
+	const values = (rawAllowedOrigins ?? 'http://localhost:3000')
 		.split(',')
 		.map((value) => value.trim())
 		.filter((value) => value.length > 0);
@@ -10,9 +16,21 @@ function parseAllowedOrigins(): Set<string> {
 	return new Set(values);
 }
 
-const allowedOrigins = parseAllowedOrigins();
+function currentAllowedOrigins(): Set<string> {
+	return parseAllowedOrigins(environment.MCP_ALLOWED_ORIGINS);
+}
 
-export function validateMcpRequestOrigin(request: Request): { allowed: true } | { allowed: false } {
+/**
+ * SEC-002: the browser cross-site request boundary for `/mcp`. Called
+ * before any request body is read (see `authenticateMcpUser` in
+ * `mcp-routes.ts`), so a disallowed origin is rejected without ever
+ * touching the database, the rate limiter's post-parse buckets, or the
+ * MCP SDK.
+ */
+export function validateMcpRequestOrigin(
+	request: Request,
+	allowedOrigins: Set<string> = currentAllowedOrigins(),
+): { allowed: true } | { allowed: false } {
 	const requestOrigin = request.headers.get('origin');
 
 	// Non-browser clients commonly omit Origin; allow by default.
@@ -32,7 +50,10 @@ export function validateMcpRequestOrigin(request: Request): { allowed: true } | 
 	return { allowed: true };
 }
 
-export function createMcpCorsHeaders(request: Request): Record<string, string> {
+export function createMcpCorsHeaders(
+	request: Request,
+	allowedOrigins: Set<string> = currentAllowedOrigins(),
+): Record<string, string> {
 	const requestOrigin = request.headers.get('origin');
 	if (!requestOrigin || requestOrigin === 'null' || !allowedOrigins.has(requestOrigin)) {
 		return {};

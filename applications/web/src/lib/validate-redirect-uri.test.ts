@@ -33,4 +33,24 @@ describe('isValidRedirectUri', () => {
 	it('rejects empty string', () => {
 		expect(isValidRedirectUri('')).toBe(false);
 	});
+
+	it('rejects a redirect URI carrying a fragment', () => {
+		expect(isValidRedirectUri('https://example.com/callback#fragment')).toBe(false);
+	});
+
+	it('rejects embedded userinfo used to spoof the authority', () => {
+		expect(isValidRedirectUri('https://trusted.example.com@evil.com/callback')).toBe(false);
+	});
+
+	it('rejects a password-only userinfo form', () => {
+		expect(isValidRedirectUri('https://:secret@evil.com/callback')).toBe(false);
+	});
+
+	it('rejects a wildcard host', () => {
+		expect(isValidRedirectUri('https://*.example.com/callback')).toBe(false);
+	});
+
+	it('rejects a wildcard embedded in a subdomain label', () => {
+		expect(isValidRedirectUri('https://evil.*.example.com/callback')).toBe(false);
+	});
 });

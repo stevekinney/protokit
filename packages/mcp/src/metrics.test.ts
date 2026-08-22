@@ -34,26 +34,9 @@ describe('metricsCollector', () => {
 		expect(second.tools.clear_test.p50).toBe(0);
 	});
 
-	it('tracks active sessions', () => {
-		metricsCollector.incrementActiveSessions();
-		metricsCollector.incrementActiveSessions();
-		metricsCollector.decrementActiveSessions();
-
-		const snapshot = metricsCollector.snapshot();
-		expect(snapshot.activeSessions).toBe(1);
-	});
-
-	it('does not decrement below zero', () => {
-		metricsCollector.decrementActiveSessions();
-		metricsCollector.decrementActiveSessions();
-		const snapshot = metricsCollector.snapshot();
-		expect(snapshot.activeSessions).toBe(0);
-	});
-
 	it('returns the expected snapshot shape', () => {
 		const snapshot = metricsCollector.snapshot();
 		expect(snapshot).toHaveProperty('tools');
-		expect(snapshot).toHaveProperty('activeSessions');
 		expect(snapshot).toHaveProperty('uptimeSeconds');
 		expect(snapshot).toHaveProperty('collectedAt');
 		expect(typeof snapshot.collectedAt).toBe('string');
@@ -61,11 +44,9 @@ describe('metricsCollector', () => {
 
 	it('resets all state', () => {
 		metricsCollector.recordToolInvocation('reset_test', 10, false);
-		metricsCollector.incrementActiveSessions();
 		metricsCollector.reset();
 
 		const snapshot = metricsCollector.snapshot();
 		expect(Object.keys(snapshot.tools)).toHaveLength(0);
-		expect(snapshot.activeSessions).toBe(0);
 	});
 });

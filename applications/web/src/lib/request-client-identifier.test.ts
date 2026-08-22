@@ -1,54 +1,93 @@
-import { describe, expect, it } from 'bun:test';
-import { getRequestClientIdentifier } from '@web/lib/request-client-identifier';
+import { describe, expect, it, mock } from 'bun:test';
+
+const mockEnvironment: Record<string, unknown> = {
+	TRUSTED_PROXY_CIDRS: undefined,
+	TRUSTED_PROXY_HEADER: undefined,
+	TRUSTED_PROXY_HOP_COUNT: 1,
+};
+
+mock.module('@web/env', () => ({
+	environment: mockEnvironment,
+}));
+
+const { getRequestClientIdentifier } = await import('@web/lib/request-client-identifier');
 
 function requestWithHeaders(headers: Record<string, string>): Request {
 	return new Request('http://localhost/', { headers });
 }
 
 describe('getRequestClientIdentifier', () => {
-	it('returns the first x-forwarded-for value', () => {
+	it('uses the socket address and ignores x-forwarded-for when nothing is trusted', () => {
+		mockEnvironment.TRUSTED_PROXY_CIDRS = undefined;
+		mockEnvironment.TRUSTED_PROXY_HEADER = undefined;
+
 		const result = getRequestClientIdentifier({
 			request: requestWithHeaders({ 'x-forwarded-for': '1.2.3.4' }),
+			socketAddress: '203.0.113.9',
 		});
-		expect(result).toBe('1.2.3.4');
+		expect(result).toBe('203.0.113.9');
 	});
 
-	it('returns only the first IP from a multi-value x-forwarded-for', () => {
-		const result = getRequestClientIdentifier({
-			request: requestWithHeaders({ 'x-forwarded-for': '10.0.0.1, 10.0.0.2, 10.0.0.3' }),
+	it('changing x-forwarded-for from an untrusted peer does not change the identity', () => {
+		mockEnvironment.TRUSTED_PROXY_CIDRS = undefined;
+		mockEnvironment.TRUSTED_PROXY_HEADER = undefined;
+
+		const first = getRequestClientIdentifier({
+			request: requestWithHeaders({ 'x-forwarded-for': '1.2.3.4' }),
+			socketAddress: '203.0.113.9',
 		});
-		expect(result).toBe('10.0.0.1');
+		const second = getRequestClientIdentifier({
+			request: requestWithHeaders({ 'x-forwarded-for': '9.9.9.9' }),
+			socketAddress: '203.0.113.9',
+		});
+		expect(first).toBe(second);
 	});
 
-	it('falls back to cf-connecting-ip when x-forwarded-for is absent', () => {
+	it('trusts x-forwarded-for once the peer and header are configured as trusted', () => {
+		mockEnvironment.TRUSTED_PROXY_CIDRS = '10.0.0.0/8';
+		mockEnvironment.TRUSTED_PROXY_HEADER = 'x-forwarded-for';
+		mockEnvironment.TRUSTED_PROXY_HOP_COUNT = 1;
+
 		const result = getRequestClientIdentifier({
-			request: requestWithHeaders({ 'cf-connecting-ip': '5.6.7.8' }),
+			request: requestWithHeaders({ 'x-forwarded-for': '5.6.7.8' }),
+			socketAddress: '10.1.1.1',
 		});
 		expect(result).toBe('5.6.7.8');
 	});
 
-	it('prefers x-forwarded-for over cf-connecting-ip', () => {
-		const result = getRequestClientIdentifier({
-			request: requestWithHeaders({
-				'x-forwarded-for': '1.1.1.1',
-				'cf-connecting-ip': '2.2.2.2',
-			}),
-		});
-		expect(result).toBe('1.1.1.1');
-	});
+	it('falls back to the socket address when the trusted header is absent', () => {
+		mockEnvironment.TRUSTED_PROXY_CIDRS = '10.0.0.0/8';
+		mockEnvironment.TRUSTED_PROXY_HEADER = 'x-forwarded-for';
 
-	it('falls back to the provided fallback client address', () => {
 		const result = getRequestClientIdentifier({
 			request: requestWithHeaders({}),
-			fallbackClientAddress: '192.168.1.1',
+			socketAddress: '10.1.1.1',
 		});
-		expect(result).toBe('192.168.1.1');
+		expect(result).toBe('10.1.1.1');
 	});
 
-	it('returns unknown-client when no identifier is available', () => {
+	it('returns unknown-client when no socket address is available and nothing is trusted', () => {
+		mockEnvironment.TRUSTED_PROXY_CIDRS = undefined;
+		mockEnvironment.TRUSTED_PROXY_HEADER = undefined;
+
 		const result = getRequestClientIdentifier({
 			request: requestWithHeaders({}),
 		});
 		expect(result).toBe('unknown-client');
+	});
+
+	it('canonicalizes an IPv4-mapped IPv6 socket address to the same identity as plain IPv4', () => {
+		mockEnvironment.TRUSTED_PROXY_CIDRS = undefined;
+		mockEnvironment.TRUSTED_PROXY_HEADER = undefined;
+
+		const mapped = getRequestClientIdentifier({
+			request: requestWithHeaders({}),
+			socketAddress: '::ffff:203.0.113.9',
+		});
+		const plain = getRequestClientIdentifier({
+			request: requestWithHeaders({}),
+			socketAddress: '203.0.113.9',
+		});
+		expect(mapped).toBe(plain);
 	});
 });

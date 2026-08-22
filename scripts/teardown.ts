@@ -21,7 +21,7 @@ async function teardownGithubSecrets() {
 
 	let secretList: string;
 	try {
-		secretList = execute('gh secret list');
+		secretList = execute('gh', ['secret', 'list']);
 	} catch {
 		console.log('Could not list GitHub secrets (not authenticated or no repo). Nothing to do.');
 		return;
@@ -44,7 +44,7 @@ async function teardownGithubSecrets() {
 
 	for (const secret of existing) {
 		try {
-			execute(`gh secret delete ${secret}`);
+			execute('gh', ['secret', 'delete', secret]);
 			console.log(`  Deleted: ${secret}`);
 		} catch {
 			console.warn(`  Failed to delete: ${secret}`);
@@ -61,7 +61,7 @@ async function teardownRailway() {
 	}
 
 	try {
-		execute('railway status');
+		execute('railway', ['status']);
 	} catch {
 		console.log('No Railway project linked. Nothing to do.');
 		return;
@@ -75,7 +75,7 @@ async function teardownRailway() {
 	}
 
 	try {
-		execute('railway unlink');
+		execute('railway', ['unlink']);
 		console.log('Railway project unlinked.');
 	} catch {
 		console.warn('Failed to unlink Railway project.');
@@ -111,7 +111,7 @@ async function teardownNeon() {
 
 	let projects: Array<{ id: string; name: string }>;
 	try {
-		const output = execute('neonctl projects list --output json');
+		const output = execute('neonctl', ['projects', 'list', '--output', 'json']);
 		const parsed = JSON.parse(output);
 		projects = Array.isArray(parsed) ? parsed : parsed.projects || [];
 	} catch {
@@ -180,7 +180,7 @@ async function teardownNeon() {
 	}
 
 	try {
-		execute(`neonctl projects delete ${project.id}`);
+		execute('neonctl', ['projects', 'delete', project.id]);
 		console.log(`Neon project "${project.name}" deleted.`);
 	} catch {
 		console.warn('Failed to delete Neon project.');

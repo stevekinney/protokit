@@ -18,21 +18,30 @@ The standalone script at `scripts/teardown.ts` remains available for terminal us
 ### With gh CLI
 
 1. Run `gh secret list` to find which managed secrets exist
-2. Managed secrets (from `scripts/utilities.ts`):
+2. Managed secrets — read `MANAGED_GITHUB_SECRETS` in `scripts/utilities.ts` directly rather than
+   trusting this list, since it is the authoritative source both `scripts/setup.ts github` and
+   `scripts/teardown.ts github` already read. As of this writing:
    - `NEON_PROJECT_ID`
    - `NEON_API_KEY`
    - `DATABASE_URL`
    - `DATABASE_URL_UNPOOLED`
    - `SESSION_SIGNING_SECRET`
-   - `SKIP_ENV_VALIDATION`
+
+   `SKIP_ENV_VALIDATION` is not a managed secret and does not exist in this codebase (`CONFIG-001`)
+   — every `env.ts` throws immediately if it is set anywhere, including CI. If a `gh secret list`
+   turns one up from before this control landed, delete it; it is dead configuration, not something
+   any workflow reads.
+
 3. Report which managed secrets are present
 4. Ask for confirmation before deleting
-5. For each confirmed secret: run `gh secret delete <NAME>`
+5. For each confirmed secret: run `gh secret delete <NAME>` — or prefer
+   `bun scripts/teardown.ts github`, which already lists every managed secret present and deletes
+   only after explicit confirmation.
 
 ### Without gh CLI (manual)
 
 1. Tell the user to remove these secrets from their GitHub repository's Settings > Secrets and variables > Actions:
-   - `NEON_PROJECT_ID`, `NEON_API_KEY`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SESSION_SIGNING_SECRET`, `SKIP_ENV_VALIDATION`
+   - `NEON_PROJECT_ID`, `NEON_API_KEY`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SESSION_SIGNING_SECRET`
 
 ## Phase 2: Railway
 

@@ -1,6 +1,12 @@
 # MCP Development Guide
 
 Comprehensive reference for building tools, resources, and prompts in the `@template/mcp` package.
+`packages/mcp/CLAUDE.md` is the canonical, actively-maintained step list — required `title`,
+`description`, `annotations` (all four hints), `outputSchema`/`structuredContent`, and `requiredScope`
+(`AUTHZ-001`'s scope enforcement, checked before every tool/resource/prompt invocation) are all
+compile-time-required fields on `McpToolDefinition`/`McpResourceDefinition`/`McpPromptDefinition`
+today. Read that file first; this guide is deeper background on patterns not required, but not the
+authoritative field list.
 
 ## Tool Development Best Practices
 

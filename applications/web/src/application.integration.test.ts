@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 
-process.env.SKIP_ENV_VALIDATION = 'true';
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
 process.env.SESSION_SIGNING_SECRET =
@@ -19,6 +18,18 @@ try {
 	]);
 } catch {
 	redisAvailable = false;
+}
+
+// OPEN-3: rate-limit state (register/token/revoke/google-auth/mcp/health)
+// is keyed by network identity, which is the loopback address for every
+// test in this file, and that state persists in Redis across process
+// runs. Flush every `rate_limit:*` key before this file's Redis-backed
+// tests run so a prior run's accumulated counts can never flip a test that
+// expects success into a stale 429. See `oauth-routes.integration.test.tsx`
+// for the sibling copy of this reset.
+if (redisAvailable) {
+	const { resetRateLimitState } = await import('@web/test-support/reset-rate-limit-state');
+	await resetRateLimitState();
 }
 
 const describeWithRedis = redisAvailable
@@ -55,16 +66,26 @@ describe('application request routing', () => {
 		expect(body).toContain('/auth/google/start');
 	});
 
-	it('redirects to Google OAuth and sets state cookie', async () => {
-		const port = startServer();
-		const response = await fetch(
-			`http://127.0.0.1:${port}/auth/google/start?callback_path=%2Foauth%2Fauthorize`,
-			{ redirect: 'manual' },
-		);
+	// Google sign-in is now rate-limited (SEC-003), which requires the
+	// shared Redis-backed limiter.
+	describeWithRedis('with Redis', () => {
+		it('redirects to Google OAuth and sets state cookie', async () => {
+			const port = startServer();
+			const response = await fetch(
+				`http://127.0.0.1:${port}/auth/google/start?callback_path=%2Foauth%2Fauthorize`,
+				{ redirect: 'manual' },
+			);
 
-		expect(response.status).toBe(302);
-		expect(response.headers.get('location')).toContain('accounts.google.com/o/oauth2/v2/auth');
-		expect(response.headers.get('set-cookie')).toContain('google_oauth_state=');
+			expect(response.status).toBe(302);
+			expect(response.headers.get('location')).toContain('accounts.google.com/o/oauth2/v2/auth');
+
+			// FEDAUTH-001 gives each sign-in attempt its own state cookie,
+			// `google_oauth_state_<suffix>`, so concurrent attempts in one browser
+			// cannot overwrite each other's state. Assert the per-attempt shape
+			// rather than a bare prefix — matching `google_oauth_state_` alone would
+			// still pass if the suffix were dropped and the fixed name came back.
+			expect(response.headers.get('set-cookie')).toMatch(/google_oauth_state_[0-9a-f]+=/);
+		});
 	});
 
 	it('returns OAuth authorization metadata with redesigned endpoint paths', async () => {
@@ -120,13 +141,17 @@ describe('security headers', () => {
 		expect(csp).toContain("script-src 'self'");
 	});
 
-	it('sets script-src self on non-oauth HTML pages', async () => {
-		const port = startServer();
-		const response = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?error=access_denied`,
-		);
-		const csp = response.headers.get('content-security-policy');
-		expect(csp).toContain("script-src 'self'");
+	// The Google callback is now rate-limited (SEC-003), which requires the
+	// shared Redis-backed limiter.
+	describeWithRedis('with Redis', () => {
+		it('sets script-src self on non-oauth HTML pages', async () => {
+			const port = startServer();
+			const response = await fetch(
+				`http://127.0.0.1:${port}/auth/google/callback?error=access_denied`,
+			);
+			const csp = response.headers.get('content-security-policy');
+			expect(csp).toContain("script-src 'self'");
+		});
 	});
 
 	it('does not set Content-Security-Policy on JSON responses', async () => {
@@ -186,31 +211,34 @@ describe('error handling', () => {
 });
 
 describe('MCP endpoint authentication', () => {
-	it('returns 401 when no authorization header is provided', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				Accept: 'application/json, text/event-stream',
-			},
-			body: JSON.stringify({
-				jsonrpc: '2.0',
-				method: 'initialize',
-				id: 1,
-				params: {
-					protocolVersion: '2025-11-25',
-					capabilities: {},
-					clientInfo: { name: 'test', version: '0.1.0' },
-				},
-			}),
-		});
-		expect(response.status).toBe(401);
-		const body = (await response.json()) as Record<string, string>;
-		expect(body.error).toBe('unauthorized');
-	});
-
+	// Every MCP request is now rate-limited by network identity before
+	// authentication (SEC-003), which requires the shared Redis-backed
+	// limiter.
 	describeWithRedis('with Redis', () => {
+		it('returns 401 when no authorization header is provided', async () => {
+			const port = startServer();
+			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					method: 'initialize',
+					id: 1,
+					params: {
+						protocolVersion: '2025-11-25',
+						capabilities: {},
+						clientInfo: { name: 'test', version: '0.1.0' },
+					},
+				}),
+			});
+			expect(response.status).toBe(401);
+			const body = (await response.json()) as Record<string, string>;
+			expect(body.error).toBe('unauthorized');
+		});
+
 		it('returns 401 for invalid bearer token', async () => {
 			const port = startServer();
 			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -287,12 +315,36 @@ describeWithRedis('OAuth token endpoint (requires Redis)', () => {
 });
 
 describeWithRedis('OAuth token revocation (requires Redis)', () => {
+	// OAUTH-003 / S-02: `/oauth/revoke` now authenticates the caller as a
+	// registered OAuth client before it will touch any token row (see
+	// `handleOauthRevokePostInner` in `oauth-routes.tsx`). A real, public
+	// (`token_endpoint_auth_method: none`) client is registered through the
+	// live `/oauth/register` endpoint so this file keeps proving RFC 7009's
+	// "200 even for an unknown token" contract against an *authenticated*
+	// request -- the only kind `/oauth/revoke` accepts now -- rather than an
+	// unauthenticated one the endpoint no longer allows.
+	async function registerPublicClient(port: number): Promise<string> {
+		const response = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				client_name: 'Revocation RFC 7009 Test Client',
+				redirect_uris: ['https://example.com/callback'],
+				token_endpoint_auth_method: 'none',
+			}),
+		});
+		expect(response.status).toBe(201);
+		const body = (await response.json()) as { client_id: string };
+		return body.client_id;
+	}
+
 	it('returns 200 for revocation of unknown token per RFC 7009', async () => {
 		const port = startServer();
+		const clientId = await registerPublicClient(port);
 		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: 'token=nonexistent-token',
+			body: new URLSearchParams({ token: 'nonexistent-token', client_id: clientId }).toString(),
 		});
 		expect(response.status).toBe(200);
 	});
@@ -305,5 +357,28 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 			body: '',
 		});
 		expect(response.status).toBe(400);
+	});
+
+	it('rejects revocation with no client_id (OAUTH-003 / S-02: revocation is now client-bound)', async () => {
+		const port = startServer();
+		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ token: 'nonexistent-token' }).toString(),
+		});
+		expect(response.status).toBe(400);
+	});
+
+	it('rejects revocation from an unregistered client', async () => {
+		const port = startServer();
+		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				token: 'nonexistent-token',
+				client_id: 'never-registered-client',
+			}).toString(),
+		});
+		expect(response.status).toBe(401);
 	});
 });

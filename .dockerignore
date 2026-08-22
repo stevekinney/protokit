@@ -4,9 +4,32 @@ build
 dist
 .turbo
 .git
-.env.local
-.env.*.local
 *.md
 .vscode
 .claude
 documentation
+applications/web/public/assets
+coverage
+test-results
+.roadmap-progress
+
+# SECRETS-001 (S-12): a pattern with no leading "**/" only matches at the context root, unlike
+# .gitignore's equivalent syntax — confirmed empirically with `docker build` against a scratch
+# context containing a nested `sub/.env.local` and `sub/foo.pem`, both of which leaked into the
+# build context under the previous root-only patterns. Every pattern below is anchored with
+# "**/" so it matches at any depth, and both the root and nested forms are listed explicitly so
+# this stays correct even if Docker's globbing semantics change.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/.aws
+**/.ssh
+**/.env.local.seed-client-secret

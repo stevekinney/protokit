@@ -14,6 +14,10 @@ The standalone script at `scripts/setup.ts` remains available for terminal use. 
 - Before each phase, read `.env.local` to check for existing values — skip or confirm before overwriting
 - Track the Neon project ID across phases (needed for GitHub secrets and migration)
 
+## Phase 0: Environment Mode
+
+`NODE_ENV` has no default — every environment must set it explicitly, or the server refuses to start (this is what keeps a host that forgets to set it from silently running as `development`, which is what makes `/auth/dev/login` reachable). Write `NODE_ENV=development` to `.env.local` if not already set.
+
 ## Phase 1: Neon Database
 
 ### With neonctl
@@ -82,19 +86,9 @@ Always manual — no CLI or MCP automation available.
 
 Write defaults to `.env.local` if not already set:
 
-- `MCP_PROTOCOL_VERSION=2025-11-25`
 - `MCP_ALLOWED_ORIGINS=http://localhost:3000` (ask user if they want a different value)
 - `MCP_ENABLE_UI_EXTENSION=true`
-- `MCP_ENABLE_CLIENT_CREDENTIALS=true`
-- `MCP_ENABLE_ENTERPRISE_AUTH=true`
 - `MCP_CONFORMANCE_MODE=false`
-- Enterprise auth placeholders (empty values):
-  - `ENTERPRISE_AUTH_PROVIDER_URL`
-  - `ENTERPRISE_AUTH_TENANT`
-  - `ENTERPRISE_AUTH_AUDIENCE`
-  - `ENTERPRISE_AUTH_CLIENT_ID`
-  - `ENTERPRISE_AUTH_CLIENT_SECRET`
-  - `ENTERPRISE_AUTH_ALLOWED_CLIENT_IDS`
 
 ## Phase 6: Railway
 
@@ -116,24 +110,28 @@ Write defaults to `.env.local` if not already set:
 
 ### With gh CLI
 
-1. Ask user if they want to set GitHub secrets for CI/CD
-2. For each of these, pipe the value to `gh secret set NAME`:
-   - `NEON_PROJECT_ID` — from the project ID saved in Phase 1
-   - `DATABASE_URL` — from `.env.local`
-   - `DATABASE_URL_UNPOOLED` — from `.env.local`
-   - `SKIP_ENV_VALIDATION=true`
-3. Ask the user for `NEON_API_KEY` (needed for the PR workflow Neon branch creation) — allow skipping
-4. If provided, set it as `gh secret set NEON_API_KEY`
+The authoritative list is `scripts/utilities.ts`'s exported `MANAGED_GITHUB_SECRETS` — read it
+before hand-listing secrets here, since it is the single source of truth `bun scripts/setup.ts
+github` and `bun scripts/teardown.ts github` both already use. As of this writing it is
+`NEON_PROJECT_ID`, `NEON_API_KEY`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, and
+`SESSION_SIGNING_SECRET`.
+
+1. Ask the user if they want to set GitHub secrets for CI/CD.
+2. Prefer running `bun scripts/setup.ts github` directly — it sets every managed secret from
+   `.env.local`, always piping the value over stdin to `gh secret set` rather than passing it as an
+   argv element. Do not construct a manual `gh secret set NAME <<< "$VALUE"` loop when this command
+   already exists; use it.
+3. Ask the user for `NEON_API_KEY` (needed for the pull-request workflow's Neon branch creation) if
+   it is not already set — allow skipping.
+4. `SKIP_ENV_VALIDATION` does not exist in this codebase (`CONFIG-001`) and must never be set as a
+   secret or an environment variable anywhere, including CI — every `env.ts` throws immediately if
+   it is present.
 
 ### Without gh CLI (manual guidance)
 
-1. Tell the user to configure secrets at their GitHub repository's Settings > Secrets and variables > Actions
-2. List the secrets they need to set:
-   - `NEON_PROJECT_ID`
-   - `NEON_API_KEY`
-   - `DATABASE_URL`
-   - `DATABASE_URL_UNPOOLED`
-   - `SKIP_ENV_VALIDATION=true`
+1. Tell the user to configure secrets at their GitHub repository's Settings > Secrets and variables > Actions.
+2. List the secrets from `MANAGED_GITHUB_SECRETS` (see above) that this deployment target needs:
+   `NEON_PROJECT_ID`, `NEON_API_KEY`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SESSION_SIGNING_SECRET`.
 
 ## Phase 8: Database Migration
 

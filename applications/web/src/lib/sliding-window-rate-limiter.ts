@@ -6,6 +6,38 @@ export type SlidingWindowRateLimiterResult = {
 	remainingRequests: number;
 };
 
+/**
+ * A single atomic admission decision over a sliding window: prune expired
+ * members, count what remains, and — only if under the limit — admit the
+ * new member, all as one indivisible operation. Implementations must not
+ * split this into separate remove/count/add round trips, since that reopens
+ * the race the interface exists to close.
+ */
+export type AtomicSlidingWindowStore = {
+	consume: (input: {
+		key: string;
+		nowMilliseconds: number;
+		windowMilliseconds: number;
+		maximumRequests: number;
+		member: string;
+	}) => Promise<{
+		allowed: boolean;
+		retryAfterMilliseconds: number;
+		remainingRequests: number;
+	}>;
+	/**
+	 * A best-effort, non-atomic read of the current member count after
+	 * pruning expired entries. Suitable only for advisory checks (such as a
+	 * failed-authentication lockout pre-check) that tolerate an off-by-one
+	 * race — never for admission control.
+	 */
+	peek: (input: {
+		key: string;
+		nowMilliseconds: number;
+		windowMilliseconds: number;
+	}) => Promise<number>;
+};
+
 export class SlidingWindowRateLimiter {
 	constructor(private readonly nowProvider: () => number = () => Date.now()) {}
 
@@ -13,46 +45,39 @@ export class SlidingWindowRateLimiter {
 		key: string;
 		maximumRequests: number;
 		windowSeconds: number;
-		sortedSetStore: {
-			removeRangeByScore: (
-				key: string,
-				minimumScore: number,
-				maximumScore: number,
-			) => Promise<void>;
-			count: (key: string) => Promise<number>;
-			add: (key: string, score: number, member: string) => Promise<void>;
-			getOldestScore: (key: string) => Promise<number | null>;
-			expire: (key: string, seconds: number) => Promise<void>;
-		};
+		atomicStore: AtomicSlidingWindowStore;
 	}): Promise<SlidingWindowRateLimiterResult> {
 		const now = this.nowProvider();
 		const windowMilliseconds = input.windowSeconds * 1000;
-		const cutoffTimestamp = now - windowMilliseconds;
-
-		await input.sortedSetStore.removeRangeByScore(input.key, 0, cutoffTimestamp);
-		const requestCount = await input.sortedSetStore.count(input.key);
-
-		if (requestCount >= input.maximumRequests) {
-			const oldestScore = await input.sortedSetStore.getOldestScore(input.key);
-			const retryAfterSeconds = oldestScore
-				? Math.max(1, Math.ceil((oldestScore + windowMilliseconds - now) / 1000))
-				: input.windowSeconds;
-
-			return {
-				allowed: false,
-				retryAfterSeconds,
-				remainingRequests: 0,
-			};
-		}
-
 		const member = `${now}-${randomUUID()}`;
-		await input.sortedSetStore.add(input.key, now, member);
-		await input.sortedSetStore.expire(input.key, input.windowSeconds);
+
+		const result = await input.atomicStore.consume({
+			key: input.key,
+			nowMilliseconds: now,
+			windowMilliseconds,
+			maximumRequests: input.maximumRequests,
+			member,
+		});
 
 		return {
-			allowed: true,
-			retryAfterSeconds: 0,
-			remainingRequests: Math.max(0, input.maximumRequests - requestCount - 1),
+			allowed: result.allowed,
+			retryAfterSeconds: result.allowed
+				? 0
+				: Math.max(1, Math.ceil(result.retryAfterMilliseconds / 1000)),
+			remainingRequests: result.remainingRequests,
 		};
+	}
+
+	async peek(input: {
+		key: string;
+		windowSeconds: number;
+		atomicStore: AtomicSlidingWindowStore;
+	}): Promise<number> {
+		const now = this.nowProvider();
+		return input.atomicStore.peek({
+			key: input.key,
+			nowMilliseconds: now,
+			windowMilliseconds: input.windowSeconds * 1000,
+		});
 	}
 }

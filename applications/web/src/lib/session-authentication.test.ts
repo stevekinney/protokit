@@ -4,12 +4,14 @@ let insertCalled = false;
 let updateCalled = false;
 const mockSelectResult: unknown[] = [];
 
+const mockEnvironment = {
+	SESSION_COOKIE_NAME: 'test_session',
+	SESSION_TIME_TO_LIVE_SECONDS: 3600,
+	NODE_ENV: 'test' as 'test' | 'production',
+};
+
 mock.module('@web/env', () => ({
-	environment: {
-		SESSION_COOKIE_NAME: 'test_session',
-		SESSION_TIME_TO_LIVE_SECONDS: 3600,
-		NODE_ENV: 'test',
-	},
+	environment: mockEnvironment,
 }));
 
 mock.module('@template/database', () => ({
@@ -173,5 +175,25 @@ describe('createExpiredSessionCookie', () => {
 		const cookie = createExpiredSessionCookie(new Request('http://localhost:3000/'));
 		expect(cookie).toContain('Max-Age=0');
 		expect(cookie).toContain('Path=/');
+	});
+});
+
+describe('session cookie name in production', () => {
+	it('uses the __Host- prefix, Secure, and Path=/ with no Domain', async () => {
+		mockEnvironment.NODE_ENV = 'production';
+		try {
+			const cookie = createExpiredSessionCookie(new Request('https://app.example.com/'));
+			expect(cookie.startsWith('__Host-test_session=')).toBe(true);
+			expect(cookie).toContain('Secure');
+			expect(cookie).toContain('Path=/');
+			expect(cookie).not.toContain('Domain=');
+		} finally {
+			mockEnvironment.NODE_ENV = 'test';
+		}
+	});
+
+	it('does not use the __Host- prefix outside production', () => {
+		const cookie = createExpiredSessionCookie(new Request('http://localhost:3000/'));
+		expect(cookie.startsWith('test_session=')).toBe(true);
 	});
 });

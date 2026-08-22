@@ -1,0 +1,1 @@
+ALTER TABLE "oauth_authorization_transactions" ADD COLUMN "scope" text DEFAULT '' NOT NULL;

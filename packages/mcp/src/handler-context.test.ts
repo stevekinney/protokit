@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import {
 	readProgressToken,
 	readSessionIdentifier,
@@ -23,12 +23,12 @@ describe('readProgressToken', () => {
 		expect(readProgressToken('string')).toBeUndefined();
 	});
 
-	it('returns the progressToken from _meta', () => {
-		expect(readProgressToken({ _meta: { progressToken: 'tok-1' } })).toBe('tok-1');
+	it('returns the progressToken from mcpReq._meta', () => {
+		expect(readProgressToken({ mcpReq: { _meta: { progressToken: 'tok-1' } } })).toBe('tok-1');
 	});
 
 	it('returns a numeric progressToken', () => {
-		expect(readProgressToken({ _meta: { progressToken: 42 } })).toBe(42);
+		expect(readProgressToken({ mcpReq: { _meta: { progressToken: 42 } } })).toBe(42);
 	});
 });
 
@@ -43,32 +43,32 @@ describe('readSessionIdentifier', () => {
 });
 
 describe('readNotificationSender', () => {
-	it('returns undefined when extra is undefined', () => {
+	it('returns undefined when ctx is undefined', () => {
 		expect(readNotificationSender(undefined)).toBeUndefined();
 	});
 
-	it('returns undefined when sendNotification is not a function', () => {
-		expect(readNotificationSender({ sendNotification: 'not-a-function' })).toBeUndefined();
+	it('returns undefined when mcpReq.notify is not a function', () => {
+		expect(readNotificationSender({ mcpReq: { notify: 'not-a-function' } })).toBeUndefined();
 	});
 
-	it('returns the function when sendNotification is a function', () => {
+	it('returns the function when mcpReq.notify is a function', () => {
 		const sender = async () => {};
-		expect(readNotificationSender({ sendNotification: sender })).toBe(sender);
+		expect(readNotificationSender({ mcpReq: { notify: sender } })).toBe(sender);
 	});
 });
 
 describe('readRequestSender', () => {
-	it('returns undefined when extra is undefined', () => {
+	it('returns undefined when ctx is undefined', () => {
 		expect(readRequestSender(undefined)).toBeUndefined();
 	});
 
-	it('returns undefined when sendRequest is not a function', () => {
-		expect(readRequestSender({ sendRequest: 123 })).toBeUndefined();
+	it('returns undefined when mcpReq.send is not a function', () => {
+		expect(readRequestSender({ mcpReq: { send: 123 } })).toBeUndefined();
 	});
 
-	it('returns the function when sendRequest is a function', () => {
+	it('returns the function when mcpReq.send is a function', () => {
 		const sender = async () => ({});
-		expect(readRequestSender({ sendRequest: sender })).toBe(sender);
+		expect(readRequestSender({ mcpReq: { send: sender } })).toBe(sender);
 	});
 });
 
@@ -106,17 +106,17 @@ describe('parseSampledText', () => {
 });
 
 describe('assertSamplingSupport', () => {
-	it('does not throw when sendRequest is present', () => {
-		expect(() => assertSamplingSupport({ sendRequest: async () => ({}) })).not.toThrow();
+	it('does not throw when mcpReq.send is present', () => {
+		expect(() => assertSamplingSupport({ mcpReq: { send: async () => ({}) } })).not.toThrow();
 	});
 
-	it('throws McpError when sendRequest is absent', () => {
-		expect(() => assertSamplingSupport({})).toThrow(McpError);
+	it('throws ProtocolError when mcpReq.send is absent', () => {
+		expect(() => assertSamplingSupport({})).toThrow(ProtocolError);
 		try {
 			assertSamplingSupport({});
 		} catch (error) {
-			expect(error).toBeInstanceOf(McpError);
-			expect((error as McpError).code).toBe(ErrorCode.InvalidRequest);
+			expect(error).toBeInstanceOf(ProtocolError);
+			expect((error as ProtocolError).code).toBe(ProtocolErrorCode.InvalidRequest);
 		}
 	});
 });

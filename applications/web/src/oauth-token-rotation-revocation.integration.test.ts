@@ -1,0 +1,519 @@
+import { randomBytes, randomUUID } from 'node:crypto';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { eq } from 'drizzle-orm';
+import { database, schema } from '@template/database';
+import { hashCredential } from '@web/lib/hash-credential';
+import { runScheduledCleanup } from '@web/lib/scheduled-cleanup';
+import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
+
+process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
+process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
+process.env.SESSION_SIGNING_SECRET =
+	process.env.SESSION_SIGNING_SECRET ?? 'development-session-secret-with-at-least-32-characters';
+process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
+process.env.MCP_ALLOWED_ORIGINS = process.env.MCP_ALLOWED_ORIGINS ?? 'http://localhost:3000';
+
+const { handleApplicationRequest } = await import('@web/application');
+
+/**
+ * OAUTH-003: end-to-end proof, against the real dispatcher, real Postgres,
+ * and real Redis rate limiter, that refresh-token rotation and revocation
+ * are both client-bound and atomic. Finding S-02: `/oauth/revoke`
+ * previously authenticated no client at all, and refresh-token rotation
+ * mutated (revoked) the presented token before comparing its owning
+ * client, so a party holding another client's refresh token could burn it
+ * even though its own request was then rejected.
+ *
+ * `oauth-routes.test.tsx` proves each individual response-shape branch
+ * against a mocked database (which cannot evaluate a real `WHERE`
+ * predicate, so it cannot prove atomicity or cross-client binding by
+ * itself); this file proves the real predicate holds against a real
+ * database, the same relationship `oauth-mcp-resource-binding.integration.test.ts`
+ * has to its own mocked sibling for `OAUTH-001`.
+ *
+ * Token pairs are seeded directly into the database rather than obtained
+ * through a full authorize -> approve -> code-exchange HTTP round trip --
+ * that flow is already proved end to end by
+ * `oauth-mcp-resource-binding.integration.test.ts` and
+ * `oauth-connector-registration.integration.test.ts`. What this file needs
+ * is only "a real, client-bound refresh/access token pair exists", and
+ * seeding it directly keeps each test to the one or two HTTP round trips
+ * its own assertion actually needs -- material under the concurrency test
+ * below, where two requests must land inside the same 5-second test
+ * timeout as each other even when the shared local Neon HTTP proxy is
+ * under load from the rest of the suite running in parallel.
+ */
+
+let redisAvailable: boolean;
+try {
+	const { isRedisHealthy } = await import('@web/lib/redis-client');
+	redisAvailable = await Promise.race([
+		isRedisHealthy(),
+		new Promise<false>((resolve) => setTimeout(() => resolve(false), 2000)),
+	]);
+} catch {
+	redisAvailable = false;
+}
+
+// OPEN-3: this file's tests key rate-limit state (token, revoke) by
+// network identity (loopback, in this suite), and that state persists in
+// Redis across every other file in the same test run. Flush every
+// `rate_limit:*` key before this file's Redis-backed tests run, exactly
+// like `oauth-mcp-resource-binding.integration.test.ts` does.
+if (redisAvailable) {
+	const { resetRateLimitState } = await import('@web/test-support/reset-rate-limit-state');
+	await resetRateLimitState();
+}
+
+const describeWithRedis = redisAvailable
+	? describe
+	: (describe as unknown as { skip: typeof describe }).skip;
+
+let server: Bun.Server | null = null;
+
+afterEach(() => {
+	server?.stop(true);
+	server = null;
+});
+
+function startServer(): number {
+	server = Bun.serve({
+		port: 0,
+		fetch(request, bunServer) {
+			return handleApplicationRequest(request, {
+				clientAddress: bunServer.requestIP(request)?.address,
+			});
+		},
+	});
+	return server.port;
+}
+
+const testRunId = randomUUID();
+const userId = randomUUID();
+const clientAId = `rotation-revocation-test-client-a-${testRunId}`;
+const clientASecret = 'test-client-a-secret';
+const clientBId = `rotation-revocation-test-client-b-${testRunId}`;
+const clientBSecret = 'test-client-b-secret';
+
+beforeAll(async () => {
+	await database.insert(schema.users).values({
+		id: userId,
+		email: `rotation-revocation-test-${testRunId}@example.com`,
+		name: 'Rotation Revocation Test User',
+		image: null,
+		emailVerified: true,
+		role: 'user',
+	});
+	for (const [clientId, clientSecret] of [
+		[clientAId, clientASecret],
+		[clientBId, clientBSecret],
+	] as const) {
+		await database.insert(schema.oauthClients).values({
+			clientId,
+			clientSecret: hashCredential(clientSecret),
+			clientName: `Rotation Revocation Test Client (${clientId})`,
+			clientType: 'confidential',
+			tokenEndpointAuthMethod: 'client_secret_post',
+			redirectUris: ['https://example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+		});
+	}
+});
+
+afterAll(async () => {
+	// One statement per entity instead of one per table: `DATA-001` cascades
+	// every child row from `users` and `oauth_clients`, and each extra statement
+	// is an HTTP round trip through the local Neon proxy — enough of them
+	// overran the 5s hook budget on a continuous-integration runner. See
+	// `test-support/delete-test-accounts.ts`.
+	await deleteTestAccounts({ clientIds: [clientAId, clientBId], userIds: [userId] });
+});
+
+describeWithRedis('client-bound, atomic refresh rotation and revocation (requires Redis)', () => {
+	async function seedTokenPair(
+		port: number,
+		clientId: string,
+		scope = '',
+	): Promise<{ accessToken: string; refreshToken: string; resource: string }> {
+		const resource = `http://127.0.0.1:${port}/mcp`;
+		const accessToken = randomBytes(48).toString('hex');
+		const refreshToken = randomBytes(48).toString('hex');
+		const oneHourFromNow = new Date(Date.now() + 60 * 60 * 1000);
+		const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+		await database.insert(schema.oauthTokens).values({
+			accessToken: hashCredential(accessToken),
+			clientId,
+			userId,
+			scope,
+			resource,
+			expiresAt: oneHourFromNow,
+		});
+		await database.insert(schema.oauthRefreshTokens).values({
+			refreshToken: hashCredential(refreshToken),
+			clientId,
+			userId,
+			scope,
+			resource,
+			accessTokenHash: hashCredential(accessToken),
+			familyId: randomUUID(),
+			expiresAt: thirtyDaysFromNow,
+		});
+
+		return { accessToken, refreshToken, resource };
+	}
+
+	async function callMcpToolsList(port: number, accessToken: string): Promise<Response> {
+		return fetch(`http://127.0.0.1:${port}/mcp`, {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${accessToken}`,
+				'content-type': 'application/json',
+				accept: 'application/json, text/event-stream',
+			},
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+		});
+	}
+
+	function refreshRequest(
+		port: number,
+		refreshToken: string,
+		clientId: string,
+		clientSecret: string,
+		resource: string,
+		scope?: string,
+	): Promise<Response> {
+		return fetch(`http://127.0.0.1:${port}/oauth/token`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				refresh_token: refreshToken,
+				client_id: clientId,
+				client_secret: clientSecret,
+				resource,
+				...(scope !== undefined ? { scope } : {}),
+			}).toString(),
+		});
+	}
+
+	function revokeRequest(
+		port: number,
+		token: string,
+		clientId: string,
+		clientSecret: string,
+	): Promise<Response> {
+		return fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				token,
+				client_id: clientId,
+				client_secret: clientSecret,
+			}).toString(),
+		});
+	}
+
+	it('a failed client-authentication attempt does not mutate the refresh token', async () => {
+		const port = startServer();
+		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		const wrongSecretResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientAId,
+			'wrong-secret',
+			resource,
+		);
+		expect(wrongSecretResponse.status).toBe(401);
+
+		// The refresh token must still be usable: a failed authentication
+		// attempt reaches no token row and performs no write.
+		const legitimateResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(legitimateResponse.status).toBe(200);
+	});
+
+	it("one client cannot redeem another client's refresh token, and the victim token survives the attempt", async () => {
+		const port = startServer();
+		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		// Client B presents client A's real refresh token value, but
+		// authenticates as itself.
+		const crossClientResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientBId,
+			clientBSecret,
+			resource,
+		);
+		expect(crossClientResponse.status).toBe(400);
+		const crossClientBody = (await crossClientResponse.json()) as { error: string };
+		expect(crossClientBody.error).toBe('invalid_grant');
+
+		// Client A's own refresh token must not have been burned by client
+		// B's attempt: a legitimate rotation by its real owner still works.
+		const legitimateResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(legitimateResponse.status).toBe(200);
+	});
+
+	it('at most one of two concurrent refresh attempts for the same token succeeds', async () => {
+		const port = startServer();
+		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		const [first, second] = await Promise.all([
+			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
+			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
+		]);
+		const statuses = [first.status, second.status].sort();
+		expect(statuses).toEqual([200, 400]);
+	});
+
+	it('reuse of a rotated refresh token revokes its whole token family', async () => {
+		const port = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		const rotateResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(rotateResponse.status).toBe(200);
+		const rotatedBody = (await rotateResponse.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
+
+		// Replay the now-dead original refresh token.
+		const replayResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(replayResponse.status).toBe(400);
+
+		// The family -- including the token the replay's own rotation had
+		// produced -- must now be dead too: the live descendant refresh
+		// token can no longer rotate...
+		const descendantRefreshResponse = await refreshRequest(
+			port,
+			rotatedBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(descendantRefreshResponse.status).toBe(400);
+
+		// ...and its access token can no longer authenticate at /mcp.
+		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		expect(mcpResponse.status).toBe(401);
+	});
+
+	it('rejecting a refresh-time scope escalation does not consume the refresh token, and a corrected retry still succeeds', async () => {
+		const port = startServer();
+		const { refreshToken, resource } = await seedTokenPair(port, clientAId, 'profile:read');
+
+		// Requests a scope this refresh token was never granted. Must be
+		// rejected *without* burning the refresh token: the atomic
+		// revoke-then-check rotation pattern that closes the S-02 race means
+		// a token consumed by the mutating UPDATE stays consumed even if a
+		// later check in the same request then fails -- so scope validity
+		// must be established before that UPDATE runs, not after.
+		const escalationResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+			'profile:read prompts:read',
+		);
+		expect(escalationResponse.status).toBe(400);
+		const escalationBody = (await escalationResponse.json()) as { error: string };
+		expect(escalationBody.error).toBe('invalid_scope');
+
+		// The exact same refresh token must still be live: a corrected retry
+		// (omitting the escalated scope) must succeed on the first attempt,
+		// not be rejected as a replay of an already-dead token.
+		const retryResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(retryResponse.status).toBe(200);
+	});
+
+	// A review finding on `scheduled-cleanup.ts` (P1): a revoked refresh
+	// token used to become eligible for the hourly sweep the instant it
+	// rotated, not when it actually expired weeks later. That deletes the
+	// exact row `handleOauthTokenRefreshGrant`'s replay-detection lookup
+	// depends on -- reads by hash, then checks `revokedAt` -- so a real
+	// scheduled sweep running between "attacker steals an old refresh
+	// token" and "attacker replays it" would have silently defeated
+	// OAUTH-003's rotation-reuse protection. This proves the fix by running
+	// the real sweep in between rotation and replay, not merely reading the
+	// cleanup predicate.
+	it('a scheduled cleanup sweep between rotation and replay does not defeat reuse detection', async () => {
+		const port = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		const rotateResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(rotateResponse.status).toBe(200);
+		const rotatedBody = (await rotateResponse.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
+
+		// Simulate the in-process hourly sweep firing between the legitimate
+		// rotation above and the attacker's replay below. The now-revoked
+		// original refresh token has weeks left on its own `expiresAt`
+		// (`seedTokenPair` mints it 30 days out), so a real sweep must leave
+		// it in place.
+		await runScheduledCleanup();
+
+		const stillPresent = await database
+			.select({ revokedAt: schema.oauthRefreshTokens.revokedAt })
+			.from(schema.oauthRefreshTokens)
+			.where(eq(schema.oauthRefreshTokens.refreshToken, hashCredential(originalRefreshToken)))
+			.limit(1);
+		expect(stillPresent).toHaveLength(1);
+		expect(stillPresent[0]?.revokedAt).not.toBeNull();
+
+		// Replay the now-dead original refresh token, after the sweep.
+		const replayResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(replayResponse.status).toBe(400);
+
+		// Reuse detection must still have fired: the live descendant refresh
+		// token can no longer rotate...
+		const descendantRefreshResponse = await refreshRequest(
+			port,
+			rotatedBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(descendantRefreshResponse.status).toBe(400);
+
+		// ...and its access token can no longer authenticate at /mcp.
+		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		expect(mcpResponse.status).toBe(401);
+	}, 30_000); // a real global cleanup sweep against the shared test database is slower than the 5s default.
+
+	it("a different client presenting client A's already-rotated-away refresh token cannot revoke client A's live token family", async () => {
+		const port = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		// Client A legitimately rotates. The original refresh token is now
+		// revoked (rotated-away) and a live descendant exists.
+		const rotateResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(rotateResponse.status).toBe(200);
+		const rotatedBody = (await rotateResponse.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
+
+		// Client B -- authenticated as itself, and with no relationship to
+		// client A's token family -- presents client A's now-dead original
+		// refresh token value. It must be rejected, and it must NOT be
+		// treated as a replay of client B's own family (there is no such
+		// family): client A's live descendant must be unaffected.
+		const crossClientReplay = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientBId,
+			clientBSecret,
+			resource,
+		);
+		expect(crossClientReplay.status).toBe(400);
+
+		// Client A's live access token must still authenticate at /mcp:
+		// client B's replay attempt must not have revoked client A's token
+		// family. Checked before rotating the descendant refresh token below,
+		// since a legitimate rotation would itself revoke this access token
+		// as an ordinary side effect and give a false negative.
+		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		expect(mcpResponse.status).not.toBe(401);
+
+		// ...and the live descendant refresh token must still be able to
+		// rotate.
+		const descendantRefreshResponse = await refreshRequest(
+			port,
+			rotatedBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(descendantRefreshResponse.status).toBe(200);
+	});
+
+	it("one client cannot revoke another client's token, and the victim token survives the attempt", async () => {
+		const port = startServer();
+		const { accessToken } = await seedTokenPair(port, clientAId);
+
+		const crossClientRevoke = await revokeRequest(port, accessToken, clientBId, clientBSecret);
+		// RFC 7009 §2.2: always 200, whether or not the caller actually owned
+		// (or could have revoked) the token -- never a signal a caller can
+		// use to learn anything about a token it doesn't own.
+		expect(crossClientRevoke.status).toBe(200);
+
+		const mcpResponse = await callMcpToolsList(port, accessToken);
+		expect(mcpResponse.status).not.toBe(401);
+	});
+
+	it('a client authenticated as its own owner can revoke its own token', async () => {
+		const port = startServer();
+		const { accessToken } = await seedTokenPair(port, clientAId);
+
+		const revokeResponse = await revokeRequest(port, accessToken, clientAId, clientASecret);
+		expect(revokeResponse.status).toBe(200);
+
+		const mcpResponse = await callMcpToolsList(port, accessToken);
+		expect(mcpResponse.status).toBe(401);
+	});
+
+	it('revocation with a wrong client secret is rejected and does not revoke the token', async () => {
+		const port = startServer();
+		const { accessToken } = await seedTokenPair(port, clientAId);
+
+		const revokeResponse = await revokeRequest(port, accessToken, clientAId, 'wrong-secret');
+		expect(revokeResponse.status).toBe(401);
+
+		const mcpResponse = await callMcpToolsList(port, accessToken);
+		expect(mcpResponse.status).not.toBe(401);
+	});
+});

@@ -6,7 +6,10 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./schema": "./src/schema.ts",
-		"./env": "./src/env.ts"
+		"./env": "./src/env.ts",
+		"./migrate": "./src/migrate.ts",
+		"./environment-schema": "./src/environment-schema.ts",
+		"./local-proxy": "./src/local-proxy.ts"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
@@ -25,6 +28,7 @@
 	"devDependencies": {
 		"@types/node": "^26.2.0",
 		"drizzle-kit": "^0.31.10",
+		"postgres": "^3.4.9",
 		"typescript": "6.0.3"
 	}
 }

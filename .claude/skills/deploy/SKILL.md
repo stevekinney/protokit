@@ -18,7 +18,8 @@ Run each check sequentially. Stop on the first failure.
 2. `bun turbo lint` — lint errors are a hard stop
 3. `bun turbo test` — test failures are a hard stop
 4. `bun turbo build` — build failures are a hard stop
-5. `bun scripts/doctor.ts` — warnings are reported but do not block; failures are a hard stop
+5. `bun scripts/doctor.ts --production` — checks the environment against production's fail-closed
+   requirements (the same ones `server.ts` enforces at startup); any failure is a hard stop
 
 If any check fails, report the error output and stop. Do not proceed to deployment.
 

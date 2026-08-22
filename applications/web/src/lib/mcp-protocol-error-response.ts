@@ -7,6 +7,7 @@ type McpProtocolErrorCode =
 	| 'unsupported_media_type'
 	| 'not_acceptable'
 	| 'rate_limited'
+	| 'payload_too_large'
 	| 'internal_error';
 
 export function createMcpProtocolErrorResponse(input: {

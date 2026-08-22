@@ -4,19 +4,70 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions: {}
+
+concurrency:
+  group: claude-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
+  # `pull_request` (never `pull_request_target`) means fork-authored PRs
+  # already run with a read-only GITHUB_TOKEN and no repository secrets by
+  # GitHub's own platform behavior. This gate adds a second, independent
+  # layer: it confirms the PR author's *current* collaborator permission
+  # through the API before the write-capable, secret-bearing review job
+  # runs at all, so an unaffiliated author's diff content is never handed
+  # to a job that holds the Anthropic API credential.
+  authorize:
+    name: Authorize
+    if: ${{ !github.event.repository.is_template }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Check PR author permission
+        id: check
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const author = context.payload.pull_request.user.login;
+            const authorType = context.payload.pull_request.user.type;
+            let permission = 'none';
+
+            if (authorType !== 'Bot' && !author.endsWith('[bot]')) {
+              try {
+                const response = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  username: author,
+                });
+                permission = response.data.permission;
+              } catch (error) {
+                core.warning(`Could not resolve permission for ${author}: ${error.message}`);
+              }
+            }
+
+            const authorized = permission === 'admin' || permission === 'write';
+            core.setOutput('authorized', authorized ? 'true' : 'false');
+            core.notice(`PR author ${author} resolved to permission "${permission}" (authorized=${authorized}).`);
+
   review:
-    if: !github.event.repository.is_template
+    name: Review
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           review_enabled: 'true'
