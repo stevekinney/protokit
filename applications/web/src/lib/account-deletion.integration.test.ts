@@ -53,55 +53,60 @@ async function seedFullAccount() {
 		responseTypes: ['code'],
 	});
 
-	await database.insert(schema.userGoogleAccounts).values({
-		googleSubject: `google-subject-${userId}`,
-		userId,
-		email: `account-deletion-${userId}@example.com`,
-	});
-
-	await database.insert(schema.userSessions).values({
-		sessionTokenHash: hashCredential(randomBytes(32).toString('hex')),
-		userId,
-		expiresAt: new Date(Date.now() + 60_000),
-	});
-
-	await database.insert(schema.oauthAuthorizationTransactions).values({
-		transactionId: randomUUID(),
-		csrfTokenHash: hashCredential(randomBytes(16).toString('hex')),
-		userId,
-		sessionTokenHash: hashCredential(randomBytes(32).toString('hex')),
-		clientId,
-		redirectUri: 'http://localhost:9999/callback',
-		codeChallenge: 'challenge',
-		issuer: 'http://localhost:3000',
-		expiresAt: new Date(Date.now() + 60_000),
-	});
-
-	await database.insert(schema.oauthCodes).values({
-		code: hashCredential(randomBytes(16).toString('hex')),
-		clientId,
-		userId,
-		redirectUri: 'http://localhost:9999/callback',
-		codeChallenge: 'challenge',
-		expiresAt: new Date(Date.now() + 60_000),
-	});
-
 	const accessToken = hashCredential(randomBytes(16).toString('hex'));
-	await database.insert(schema.oauthTokens).values({
-		accessToken,
-		clientId,
-		userId,
-		expiresAt: new Date(Date.now() + 60_000),
-	});
 
-	await database.insert(schema.oauthRefreshTokens).values({
-		refreshToken: hashCredential(randomBytes(16).toString('hex')),
-		clientId,
-		userId,
-		accessTokenHash: accessToken,
-		familyId: randomUUID(),
-		expiresAt: new Date(Date.now() + 60_000),
-	});
+	// `users` and `oauth_clients` above are foreign-key parents and must land
+	// first. These six are independent of one another, so they go out together.
+	// Every statement is an HTTP round trip through the local Neon proxy, and
+	// eight sequential trips per seeded account pushed this file past bun's 5s
+	// per-test budget on a continuous-integration runner - the same suite takes
+	// about 10s here and about 160s there. Three round trips now instead of
+	// eight, doing identical work.
+	await Promise.all([
+		database.insert(schema.userGoogleAccounts).values({
+			googleSubject: `google-subject-${userId}`,
+			userId,
+			email: `account-deletion-${userId}@example.com`,
+		}),
+		database.insert(schema.userSessions).values({
+			sessionTokenHash: hashCredential(randomBytes(32).toString('hex')),
+			userId,
+			expiresAt: new Date(Date.now() + 60_000),
+		}),
+		database.insert(schema.oauthAuthorizationTransactions).values({
+			transactionId: randomUUID(),
+			csrfTokenHash: hashCredential(randomBytes(16).toString('hex')),
+			userId,
+			sessionTokenHash: hashCredential(randomBytes(32).toString('hex')),
+			clientId,
+			redirectUri: 'http://localhost:9999/callback',
+			codeChallenge: 'challenge',
+			issuer: 'http://localhost:3000',
+			expiresAt: new Date(Date.now() + 60_000),
+		}),
+		database.insert(schema.oauthCodes).values({
+			code: hashCredential(randomBytes(16).toString('hex')),
+			clientId,
+			userId,
+			redirectUri: 'http://localhost:9999/callback',
+			codeChallenge: 'challenge',
+			expiresAt: new Date(Date.now() + 60_000),
+		}),
+		database.insert(schema.oauthTokens).values({
+			accessToken,
+			clientId,
+			userId,
+			expiresAt: new Date(Date.now() + 60_000),
+		}),
+		database.insert(schema.oauthRefreshTokens).values({
+			refreshToken: hashCredential(randomBytes(16).toString('hex')),
+			clientId,
+			userId,
+			accessTokenHash: accessToken,
+			familyId: randomUUID(),
+			expiresAt: new Date(Date.now() + 60_000),
+		}),
+	]);
 
 	return { userId, clientId };
 }
@@ -122,47 +127,43 @@ describe('deleteUserAccount', () => {
 			deletedUser: true,
 		});
 
-		const [remainingUser] = await database
-			.select()
-			.from(schema.users)
-			.where(eq(schema.users.id, userId))
-			.limit(1);
-		expect(remainingUser).toBeUndefined();
+		// Seven independent reads, issued together rather than one after another.
+		// Each is an HTTP round trip through the local Neon proxy; sequentially they
+		// pushed this test past bun's 5s budget on a slower runner while proving
+		// exactly the same thing.
+		const [
+			remainingUsers,
+			remainingSessions,
+			remainingTokens,
+			remainingRefreshTokens,
+			remainingCodes,
+			remainingTransactions,
+			remainingGoogleAccounts,
+		] = await Promise.all([
+			database.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1),
+			database.select().from(schema.userSessions).where(eq(schema.userSessions.userId, userId)),
+			database.select().from(schema.oauthTokens).where(eq(schema.oauthTokens.userId, userId)),
+			database
+				.select()
+				.from(schema.oauthRefreshTokens)
+				.where(eq(schema.oauthRefreshTokens.userId, userId)),
+			database.select().from(schema.oauthCodes).where(eq(schema.oauthCodes.userId, userId)),
+			database
+				.select()
+				.from(schema.oauthAuthorizationTransactions)
+				.where(eq(schema.oauthAuthorizationTransactions.userId, userId)),
+			database
+				.select()
+				.from(schema.userGoogleAccounts)
+				.where(eq(schema.userGoogleAccounts.userId, userId)),
+		]);
 
-		const remainingSessions = await database
-			.select()
-			.from(schema.userSessions)
-			.where(eq(schema.userSessions.userId, userId));
+		expect(remainingUsers[0]).toBeUndefined();
 		expect(remainingSessions).toHaveLength(0);
-
-		const remainingTokens = await database
-			.select()
-			.from(schema.oauthTokens)
-			.where(eq(schema.oauthTokens.userId, userId));
 		expect(remainingTokens).toHaveLength(0);
-
-		const remainingRefreshTokens = await database
-			.select()
-			.from(schema.oauthRefreshTokens)
-			.where(eq(schema.oauthRefreshTokens.userId, userId));
 		expect(remainingRefreshTokens).toHaveLength(0);
-
-		const remainingCodes = await database
-			.select()
-			.from(schema.oauthCodes)
-			.where(eq(schema.oauthCodes.userId, userId));
 		expect(remainingCodes).toHaveLength(0);
-
-		const remainingTransactions = await database
-			.select()
-			.from(schema.oauthAuthorizationTransactions)
-			.where(eq(schema.oauthAuthorizationTransactions.userId, userId));
 		expect(remainingTransactions).toHaveLength(0);
-
-		const remainingGoogleAccounts = await database
-			.select()
-			.from(schema.userGoogleAccounts)
-			.where(eq(schema.userGoogleAccounts.userId, userId));
 		expect(remainingGoogleAccounts).toHaveLength(0);
 	});
 
