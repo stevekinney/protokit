@@ -199,6 +199,18 @@ describe('evaluateProductionReadiness', () => {
 		);
 	});
 
+	it('fails when SESSION_SIGNING_SECRET is absent even though every other production variable is valid (resolveSessionSigningSecrets() refuses to start production without it)', () => {
+		const variables = validVariables();
+		delete variables.SESSION_SIGNING_SECRET;
+		const results = evaluateProductionReadiness('production', variables);
+		expect(
+			results.some(
+				(entry) => entry.status === 'fail' && entry.detail.includes('SESSION_SIGNING_SECRET'),
+			),
+		).toBe(true);
+		expect(results.some((entry) => entry.detail === 'All satisfied')).toBe(false);
+	});
+
 	it('passes with no failures for a fully valid production configuration', () => {
 		const results = evaluateProductionReadiness('production', validVariables());
 		expect(results).toEqual([

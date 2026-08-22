@@ -26,6 +26,7 @@ const mockEnvironment: ProductionStartupInvariantSource['environment'] = {
 	TRUSTED_PROXY_CIDRS: undefined,
 	TRUSTED_PROXY_HEADER: undefined,
 	NODE_TLS_REJECT_UNAUTHORIZED: undefined,
+	SESSION_SIGNING_SECRET: undefined,
 };
 const mockDatabaseEnvironment: ProductionStartupInvariantSource['databaseEnvironment'] = {
 	DATABASE_URL:
@@ -53,6 +54,7 @@ function resetToValidProductionConfiguration(): void {
 	mockEnvironment.TRUSTED_PROXY_CIDRS = '10.0.0.0/8';
 	mockEnvironment.TRUSTED_PROXY_HEADER = 'x-forwarded-for';
 	mockEnvironment.NODE_TLS_REJECT_UNAUTHORIZED = undefined;
+	mockEnvironment.SESSION_SIGNING_SECRET = 'a'.repeat(32);
 	redisConfigured = true;
 	mockDatabaseEnvironment.DATABASE_URL =
 		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full';
@@ -143,6 +145,12 @@ describe('assertProductionStartupInvariants', () => {
 		expect(() => invoke()).toThrow(/NODE_TLS_REJECT_UNAUTHORIZED=0/);
 	});
 
+	it('throws in production when SESSION_SIGNING_SECRET is not set, matching resolveSessionSigningSecrets()', () => {
+		resetToValidProductionConfiguration();
+		mockEnvironment.SESSION_SIGNING_SECRET = undefined;
+		expect(() => invoke()).toThrow(/SESSION_SIGNING_SECRET is not set/);
+	});
+
 	it('throws in production when DATABASE_URL points at a local host', () => {
 		resetToValidProductionConfiguration();
 		mockDatabaseEnvironment.DATABASE_URL =
@@ -227,6 +235,7 @@ function validConfiguration(): ProductionStartupConfiguration {
 		googleClientSecret: 'client-secret',
 		trustedProxyCidrs: '10.0.0.0/8',
 		trustedProxyHeader: 'x-forwarded-for',
+		sessionSigningSecret: 'a'.repeat(32),
 	};
 }
 

@@ -155,6 +155,17 @@ export interface ProductionStartupConfiguration {
 	trustedProxyCidrs: string | undefined;
 	trustedProxyHeader: string | undefined;
 	/**
+	 * `session-signing-secret.ts`'s `resolveSessionSigningSecrets` throws at
+	 * module-import time when this is absent in production -- the real
+	 * server cannot start without it. Outside production it is optional: an
+	 * auto-generated fallback is used and sessions simply do not survive a
+	 * restart. Checked here (rather than relying only on that module-level
+	 * throw) so `scripts/doctor.ts` can report the same failure as a
+	 * readable diagnostic before deployment instead of only as an uncaught
+	 * exception during startup.
+	 */
+	sessionSigningSecret: string | undefined;
+	/**
 	 * The raw `NODE_TLS_REJECT_UNAUTHORIZED` value, unmodified. Setting it to
 	 * `"0"` disables TLS certificate validation process-wide — confirmed
 	 * directly against Bun's `fetch` (the Postgres transport, via
@@ -293,6 +304,15 @@ export function collectProductionStartupFailures(
 	if (configuration.databaseUrlUnpooled) {
 		failures.push(
 			...databaseUrlFailures('DATABASE_URL_UNPOOLED', configuration.databaseUrlUnpooled),
+		);
+	}
+
+	if (!configuration.sessionSigningSecret) {
+		failures.push(
+			'SESSION_SIGNING_SECRET is not set. Production requires it -- ' +
+				'resolveSessionSigningSecrets() refuses to auto-generate a fallback secret ' +
+				'in production, so the server cannot start without it. Generate one with: ' +
+				'openssl rand -hex 32',
 		);
 	}
 

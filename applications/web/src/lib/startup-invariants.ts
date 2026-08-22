@@ -22,6 +22,7 @@ type StartupWebEnvironment = Writable<
 		| 'TRUSTED_PROXY_CIDRS'
 		| 'TRUSTED_PROXY_HEADER'
 		| 'NODE_TLS_REJECT_UNAUTHORIZED'
+		| 'SESSION_SIGNING_SECRET'
 	>
 >;
 
@@ -90,6 +91,7 @@ export function assertProductionStartupInvariants(
 		trustedProxyCidrs: source.environment.TRUSTED_PROXY_CIDRS,
 		trustedProxyHeader: source.environment.TRUSTED_PROXY_HEADER,
 		nodeTlsRejectUnauthorized: source.environment.NODE_TLS_REJECT_UNAUTHORIZED,
+		sessionSigningSecret: source.environment.SESSION_SIGNING_SECRET,
 	});
 
 	if (failures.length > 0) {

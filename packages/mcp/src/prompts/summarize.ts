@@ -57,7 +57,7 @@ export const summarizePrompt = definePrompt({
 						role: 'user' as const,
 						content: {
 							type: 'text' as const,
-							text: `Please provide a concise summary of the following topic for user ${context.userId}: ${arguments_.topic}`,
+							text: `Please provide a concise summary of the following topic: ${arguments_.topic}`,
 						},
 					},
 				],

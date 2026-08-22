@@ -9,6 +9,12 @@ import { writeSecretFileAtomic, ROOT_DIRECTORY } from './utilities.ts';
 const DEVELOPMENT_USER_EMAIL = 'dev@localhost';
 const DEVELOPMENT_USER_NAME = 'Development User';
 const SEED_CLIENT_NAME = 'Seed Test Client';
+// A fixed, well-known clientId (rather than the freely chosen, non-unique
+// `clientName`) so idempotency is keyed off the actual unique primary key.
+// Real client registrations never collide with this: DCR (`oauth-routes.tsx`)
+// mints a bare `randomUUID()`, and a Client ID Metadata Document's clientId is
+// the HTTPS URL it was fetched from -- neither can ever equal this literal.
+export const SEED_CLIENT_ID = 'seed-client';
 
 function hashCredential(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
@@ -39,18 +45,30 @@ async function seedDevelopmentUser(): Promise<string> {
 	return userId;
 }
 
-async function seedOauthClient(): Promise<{
+/**
+ * `clientId` defaults to the fixed `SEED_CLIENT_ID` for the real `bun db:seed` path.
+ * Overridable purely so `seed.integration.test.ts` can prove the keying behavior with a
+ * per-run, `randomUUID()`-derived id instead of racing concurrent suites on the one shared
+ * `'seed-client'` primary-key row (concurrent full-suite runs are this branch's standing
+ * verification pattern -- see OPEN-7 in PROGRESS.local.md for what happens when a shared
+ * fixture row isn't isolated per run).
+ */
+export async function seedOauthClient(clientId: string = SEED_CLIENT_ID): Promise<{
 	clientId: string;
 	clientSecret: string;
 }> {
-	const clientId = `seed-client-${randomUUID()}`;
 	const clientSecret = randomBytes(32).toString('hex');
 	const clientSecretHash = hashCredential(clientSecret);
 
+	// Looked up by the fixed, unique clientId rather than the freely chosen
+	// `clientName` -- `clientName` is neither unique nor reserved, so an
+	// unrelated client (a coincidental registration, or an untrusted DCR
+	// caller deliberately choosing this display name) could otherwise be
+	// mistaken for the seed client and returned in its place.
 	const [existing] = await database
 		.select({ clientId: schema.oauthClients.clientId })
 		.from(schema.oauthClients)
-		.where(eq(schema.oauthClients.clientName, SEED_CLIENT_NAME))
+		.where(eq(schema.oauthClients.clientId, clientId))
 		.limit(1);
 
 	if (existing) {

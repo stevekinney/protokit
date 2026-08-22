@@ -155,6 +155,7 @@ export function evaluateProductionReadiness(
 		trustedProxyCidrs: variables.TRUSTED_PROXY_CIDRS,
 		trustedProxyHeader: variables.TRUSTED_PROXY_HEADER,
 		nodeTlsRejectUnauthorized: variables.NODE_TLS_REJECT_UNAUTHORIZED,
+		sessionSigningSecret: variables.SESSION_SIGNING_SECRET,
 	});
 
 	if (failureMessages.length === 0) {

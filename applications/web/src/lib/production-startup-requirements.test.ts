@@ -31,6 +31,7 @@ function validConfiguration(): ProductionStartupConfiguration {
 		trustedProxyCidrs: '10.0.0.0/8',
 		trustedProxyHeader: 'x-forwarded-for',
 		nodeTlsRejectUnauthorized: undefined,
+		sessionSigningSecret: 'a'.repeat(32),
 	};
 }
 
@@ -237,5 +238,20 @@ describe('collectProductionStartupFailures — non-origin BASE_URL', () => {
 			baseUrl: 'https://example.com:8443',
 		});
 		expect(failures.some((failure) => failure.includes('canonical origin'))).toBe(false);
+	});
+});
+
+describe('collectProductionStartupFailures — SESSION_SIGNING_SECRET', () => {
+	it('rejects an otherwise fully valid production configuration when SESSION_SIGNING_SECRET is absent (matches resolveSessionSigningSecrets(), which refuses to start without it)', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			sessionSigningSecret: undefined,
+		});
+		expect(failures.some((failure) => failure.includes('SESSION_SIGNING_SECRET'))).toBe(true);
+	});
+
+	it('accepts a configured SESSION_SIGNING_SECRET', () => {
+		const failures = collectProductionStartupFailures(validConfiguration());
+		expect(failures.some((failure) => failure.includes('SESSION_SIGNING_SECRET'))).toBe(false);
 	});
 });

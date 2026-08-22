@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { database as DatabaseInstance, schema } from '@template/database';
 import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@template/web/lib/credential-lifecycle-policy';
 
@@ -95,10 +95,37 @@ export async function rotateOauthClientSecret(
 ): Promise<{ newSecret: string; expiresAt: Date }> {
 	const newSecret = randomBytes(32).toString('hex');
 	const expiresAt = new Date(Date.now() + OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS);
-	await database
+	// `clientId` is the table's primary key, so this UPDATE can only ever affect zero or one
+	// row -- but zero is exactly what a mistyped or already-deleted `clientId` produces, and
+	// without checking `.returning()` this function would still hand back a freshly generated
+	// plaintext secret as though it had been persisted, while the real client's stored hash
+	// (if any) is untouched and its old secret keeps authenticating. Fail loudly instead of
+	// returning a credential that was never written anywhere.
+	//
+	// Also requires `clientType = 'confidential'`: a public client (OAUTH-002:
+	// `token_endpoint_auth_method: 'none'`, `clientSecret` always null) never reads
+	// `clientSecret` at all -- writing a hash onto that row and handing back a plaintext
+	// secret would be exactly the placeholder-data-with-no-reader this codebase's
+	// conventions forbid, and it would mislead an operator into thinking they delivered a
+	// working credential.
+	const updatedRows = await database
 		.update(oauthClientsTable)
 		.set({ clientSecret: hashCredential(newSecret), clientSecretExpiresAt: expiresAt })
-		.where(eq(oauthClientsTable.clientId, clientId));
+		.where(
+			and(
+				eq(oauthClientsTable.clientId, clientId),
+				eq(oauthClientsTable.clientType, 'confidential'),
+			),
+		)
+		.returning({ clientId: oauthClientsTable.clientId });
+	if (updatedRows.length !== 1) {
+		throw new Error(
+			`No confidential OAuth client with clientId "${clientId}" was found to rotate. Zero ` +
+				'rows were updated -- the secret was not generated or stored. Check the clientId (it ' +
+				'may be mistyped, deleted, or a public client, which has no secret to rotate) and try ' +
+				'again.',
+		);
+	}
 	return { newSecret, expiresAt };
 }
 

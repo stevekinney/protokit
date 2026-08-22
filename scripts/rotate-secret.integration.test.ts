@@ -60,4 +60,40 @@ describe('rotateOauthClientSecret', () => {
 		// ...while the newly issued secret authenticates successfully.
 		expect(afterRotation?.clientSecret).toBe(hashCredential(newSecret));
 	});
+
+	test('throws instead of returning a plaintext secret when the clientId does not exist (mistyped or deleted)', async () => {
+		const missingClientId = `rotation-test-missing-${randomUUID()}`;
+
+		await expect(
+			rotateOauthClientSecret(database, schema.oauthClients, missingClientId),
+		).rejects.toThrow(/No confidential OAuth client with clientId/);
+	});
+
+	test('throws instead of writing a secret onto a public client, which never reads clientSecret', async () => {
+		const publicClientId = `rotation-test-public-${randomUUID()}`;
+		createdClientIds.push(publicClientId);
+
+		await database.insert(schema.oauthClients).values({
+			clientId: publicClientId,
+			clientSecret: null,
+			clientName: 'Public Rotation Test Client',
+			clientType: 'public',
+			tokenEndpointAuthMethod: 'none',
+			redirectUris: ['http://localhost:9999/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+		});
+
+		await expect(
+			rotateOauthClientSecret(database, schema.oauthClients, publicClientId),
+		).rejects.toThrow(/No confidential OAuth client with clientId/);
+
+		const [row] = await database
+			.select({ clientSecret: schema.oauthClients.clientSecret })
+			.from(schema.oauthClients)
+			.where(eq(schema.oauthClients.clientId, publicClientId))
+			.limit(1);
+		// Untouched -- rejected before the UPDATE could ever apply to this row.
+		expect(row?.clientSecret).toBeNull();
+	});
 });

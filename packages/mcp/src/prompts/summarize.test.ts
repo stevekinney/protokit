@@ -55,10 +55,10 @@ describe('summarizePrompt', () => {
 		expect(result.messages[0].content.text).toContain('quantum computing');
 	});
 
-	it('includes the user ID in the message', async () => {
+	it('never leaks the user ID into the returned message (AUTHZ-001: userId is profile:read-protected, prompts:read must not expose it)', async () => {
 		const context = createTestContext({ userId: 'custom-user-id' });
 		const result = await summarizePrompt.handler({ topic: 'testing' }, context);
-		expect(result.messages[0].content.text).toContain('custom-user-id');
+		expect(result.messages[0].content.text).not.toContain('custom-user-id');
 	});
 });
 
