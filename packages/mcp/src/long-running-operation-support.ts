@@ -26,14 +26,26 @@ export async function runWithStandardizedTimeout<T>(input: {
 	const internalController = new AbortController();
 
 	let timeoutIdentifier: ReturnType<typeof setTimeout> | undefined;
+	// A single named handler both aborts the internal signal (so a
+	// cooperative `operation` stops) and rejects the race promise (so an
+	// uncooperative one doesn't leave the caller waiting for the timeout).
+	// Keeping this as one named listener — rather than a second anonymous
+	// `{ once: true }` listener that only self-removes if it ever fires —
+	// means `finally` can always remove it, so a long-lived `abortSignal`
+	// reused across many calls never accumulates listeners from calls whose
+	// signal never fired.
+	let rejectOnExternalAbort: ((reason: Error) => void) | undefined;
 	const onExternalAbort = () => {
-		internalController.abort(new Error('Operation cancelled by client.'));
+		const cancellationError = new Error('Operation cancelled by client.');
+		internalController.abort(cancellationError);
+		rejectOnExternalAbort?.(cancellationError);
 	};
 
 	try {
 		return await Promise.race([
 			input.operation(internalController.signal),
 			new Promise<T>((_, reject) => {
+				rejectOnExternalAbort = reject;
 				timeoutIdentifier = setTimeout(() => {
 					const timeoutError = new Error(`Operation timed out after ${timeoutMilliseconds}ms.`);
 					internalController.abort(timeoutError);
@@ -41,11 +53,6 @@ export async function runWithStandardizedTimeout<T>(input: {
 				}, timeoutMilliseconds);
 
 				input.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
-				input.abortSignal?.addEventListener(
-					'abort',
-					() => reject(new Error('Operation cancelled by client.')),
-					{ once: true },
-				);
 			}),
 		]);
 	} finally {

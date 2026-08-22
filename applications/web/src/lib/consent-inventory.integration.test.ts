@@ -73,6 +73,19 @@ async function seedUserWithConnection(clientName: string) {
 	return { userId, clientId, accessToken };
 }
 
+async function seedOutstandingAuthorizationCode(userId: string, clientId: string): Promise<string> {
+	const code = hashCredential(randomUUID());
+	await database.insert(schema.oauthCodes).values({
+		code,
+		clientId,
+		userId,
+		redirectUri: 'http://localhost:9999/callback',
+		codeChallenge: 'test-code-challenge',
+		expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+	});
+	return code;
+}
+
 describe('listUserConnections', () => {
 	it('lists a client with a live access token and omits one with none', async () => {
 		const { userId, clientId } = await seedUserWithConnection('Live Connection Client');
@@ -97,7 +110,11 @@ describe('revokeUserClientGrant', () => {
 		);
 
 		const result = await revokeUserClientGrant(userId, clientId);
-		expect(result).toEqual({ revokedAccessTokens: 1, revokedRefreshTokens: 1 });
+		expect(result).toEqual({
+			revokedAccessTokens: 1,
+			revokedRefreshTokens: 1,
+			consumedAuthorizationCodes: 0,
+		});
 
 		const [tokenRow] = await database
 			.select({ revokedAt: schema.oauthTokens.revokedAt })
@@ -131,6 +148,48 @@ describe('revokeUserClientGrant', () => {
 		expect(tokenRow?.revokedAt).toBeNull();
 		void clientBId;
 	});
+
+	// A review finding (P1): a code issued right before the user clicks
+	// "revoke" is a single-use credential that has not yet been exchanged --
+	// it has no `revokedAt` for the token-revoking updates above to have
+	// touched, and RFC 6749's 10-minute code lifetime is long enough for the
+	// client to redeem it AFTER revocation, minting a brand-new, fully live
+	// access/refresh pair the user was just told was revoked. This proves
+	// the fix against exactly the column `handleOauthTokenAuthorizationCodeGrant`
+	// checks (`isNull(usedAt)`) before allowing an exchange.
+	it('consumes an outstanding authorization code for that client so it cannot be redeemed after revocation', async () => {
+		const { userId, clientId } = await seedUserWithConnection('Outstanding Code Client');
+		const code = await seedOutstandingAuthorizationCode(userId, clientId);
+
+		const result = await revokeUserClientGrant(userId, clientId);
+		expect(result.consumedAuthorizationCodes).toBe(1);
+
+		const [codeRow] = await database
+			.select({ usedAt: schema.oauthCodes.usedAt })
+			.from(schema.oauthCodes)
+			.where(eq(schema.oauthCodes.code, code))
+			.limit(1);
+		// This is exactly the column `handleOauthTokenAuthorizationCodeGrant`
+		// requires `isNull(...)` on before it will exchange a code -- a
+		// non-null value here means redemption now fails identically to an
+		// already-used code.
+		expect(codeRow?.usedAt).not.toBeNull();
+	});
+
+	it('does not consume a different client’s outstanding authorization code for the same user', async () => {
+		const { userId, clientId: clientAId } = await seedUserWithConnection('Code Client A');
+		const { clientId: clientBId } = await seedUserWithConnection('Code Client B');
+		const clientBCode = await seedOutstandingAuthorizationCode(userId, clientBId);
+
+		await revokeUserClientGrant(userId, clientAId);
+
+		const [codeRow] = await database
+			.select({ usedAt: schema.oauthCodes.usedAt })
+			.from(schema.oauthCodes)
+			.where(eq(schema.oauthCodes.code, clientBCode))
+			.limit(1);
+		expect(codeRow?.usedAt).toBeNull();
+	});
 });
 
 describe('revokeAllUserGrants', () => {
@@ -145,9 +204,23 @@ describe('revokeAllUserGrants', () => {
 			.set({ userId })
 			.where(eq(schema.oauthTokens.accessToken, secondAccessToken));
 
+		const codeClientAId = (await seedUserWithConnection('Revoke-All Code Client')).clientId;
+		const outstandingCode = await seedOutstandingAuthorizationCode(userId, codeClientAId);
+		await database
+			.update(schema.oauthCodes)
+			.set({ userId })
+			.where(eq(schema.oauthCodes.code, outstandingCode));
+
 		await revokeAllUserGrants(userId);
 
 		const connections = await listUserConnections(userId);
 		expect(connections).toHaveLength(0);
+
+		const [codeRow] = await database
+			.select({ usedAt: schema.oauthCodes.usedAt })
+			.from(schema.oauthCodes)
+			.where(eq(schema.oauthCodes.code, outstandingCode))
+			.limit(1);
+		expect(codeRow?.usedAt).not.toBeNull();
 	});
 });

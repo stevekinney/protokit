@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import {
 	generateSessionSigningSecret,
 	hashCredential,
+	planSessionSecretRailwayCutover,
+	planSessionSecretRailwayRotation,
 	rotateSessionSigningSecretCutoverLocally,
 	rotateSessionSigningSecretLocally,
 } from './rotate-secret.ts';
@@ -115,6 +117,34 @@ describe('rotateSessionSigningSecretLocally', () => {
 			.digest('hex');
 
 		expect(tokenSignedWithOldSecret).not.toBe(expectedSignatureUnderNewSecret);
+	});
+});
+
+describe('planSessionSecretRailwayRotation', () => {
+	// Regression for a bot-reported P1: the pre-fix command only wrote `.env.local` and an
+	// unconsumed GitHub secret mirror, leaving the running Railway service's
+	// SESSION_SIGNING_SECRET stale and never installing SESSION_SIGNING_SECRET_PREVIOUS there —
+	// so the documented overlap-window restart would have restarted with the OLD key and no
+	// grace period, defeating the whole point of a rotation procedure.
+	test('always includes SESSION_SIGNING_SECRET, and includes SESSION_SIGNING_SECRET_PREVIOUS only when an overlap value exists', () => {
+		const withOverlap = planSessionSecretRailwayRotation('next-secret', 'previous-secret');
+		expect(withOverlap).toEqual([
+			{ action: 'set', key: 'SESSION_SIGNING_SECRET', value: 'next-secret' },
+			{ action: 'set', key: 'SESSION_SIGNING_SECRET_PREVIOUS', value: 'previous-secret' },
+		]);
+
+		const withoutOverlap = planSessionSecretRailwayRotation('next-secret', undefined);
+		expect(withoutOverlap).toEqual([
+			{ action: 'set', key: 'SESSION_SIGNING_SECRET', value: 'next-secret' },
+		]);
+	});
+});
+
+describe('planSessionSecretRailwayCutover', () => {
+	test('deletes SESSION_SIGNING_SECRET_PREVIOUS from Railway, ending the overlap remotely too', () => {
+		expect(planSessionSecretRailwayCutover()).toEqual([
+			{ action: 'delete', key: 'SESSION_SIGNING_SECRET_PREVIOUS' },
+		]);
 	});
 });
 

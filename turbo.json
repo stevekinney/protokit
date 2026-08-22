@@ -46,7 +46,8 @@
 		"LOG_LEVEL",
 		"SERVER_BIND_ADDRESS",
 		"NODE_ENV",
-		"PROTOKIT_TUNNEL_ACTIVE"
+		"PROTOKIT_TUNNEL_ACTIVE",
+		"BASE_URL"
 	],
 	"tasks": {
 		"build": {

@@ -107,6 +107,47 @@ describeWithRedis('RedisUserServerEventBus (requires Redis)', () => {
 	});
 });
 
+describeWithRedis('RedisUserServerEventBus subscribe/unsubscribe race (requires Redis)', () => {
+	// A review finding (P2): `subscribe()` must stay synchronous, so it
+	// kicks off the real Redis `SUBSCRIBE` in the background and returns a
+	// teardown function immediately. If the caller unsubscribes before that
+	// `SUBSCRIBE` round trip finishes, the teardown function found
+	// `redisSubscribed` still `false` and did nothing — the in-flight
+	// `SUBSCRIBE` then completed afterward and set `redisSubscribed = true`
+	// with zero listeners left, leaking the Redis channel subscription
+	// forever (nothing else ever calls `teardownRedisSubscription` again
+	// for a bus whose `listenerCount` never rises above zero afterward).
+	// Proven against real Redis's own bookkeeping (`PUBSUB CHANNELS`), not
+	// merely this bus's own internal state, so a fix that satisfies the
+	// bus's own flags without actually issuing `UNSUBSCRIBE` would not pass
+	// this test.
+	it('does not leak a Redis channel subscription when the last listener unsubscribes before SUBSCRIBE completes', async () => {
+		const bus = new RedisUserServerEventBus(`user-bus-race-${busRunId}`);
+		const channel = `mcp:events:user:user-bus-race-${busRunId}`;
+
+		const unsubscribe = bus.subscribe(() => {});
+		// Unsubscribe synchronously, in the same tick `subscribe()` returned
+		// in -- before the background `SUBSCRIBE` has any chance to finish.
+		unsubscribe();
+		expect(bus.listenerCount).toBe(0);
+
+		// Let the in-flight SUBSCRIBE (and this fix's post-subscribe
+		// teardown check) actually settle.
+		await bus.whenSubscribed();
+		// Give the teardown's own `UNSUBSCRIBE` round trip a moment to land.
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		const inspector = createClient({ url: process.env['REDIS_URL'] ?? 'redis://localhost:6379' });
+		await inspector.connect();
+		try {
+			const subscribedChannels = await inspector.pubSubChannels(channel);
+			expect(subscribedChannels).toEqual([]);
+		} finally {
+			await inspector.disconnect().catch(() => {});
+		}
+	});
+});
+
 describe('createUserServerEventBus', () => {
 	it('exposes listenerCount whether backed by Redis or the in-memory fallback', () => {
 		const bus = createUserServerEventBus(`user-factory-test-${busRunId}`);

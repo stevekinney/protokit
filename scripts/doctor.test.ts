@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { z } from 'zod';
+import { neonConfig } from '@neondatabase/serverless';
 
 import {
+	evaluateDatabaseConnection,
 	evaluateEnvironmentSchema,
 	evaluateEnvironmentSchemas,
 	evaluateProductionReadiness,
@@ -301,5 +303,43 @@ describe('loadCandidateVariables', () => {
 				process.env.DX_001_NON_EMPTY_TEST_VAR = originalValue;
 			}
 		}
+	});
+});
+
+describe('evaluateDatabaseConnection', () => {
+	const originalFetchEndpoint = neonConfig.fetchEndpoint;
+
+	afterEach(() => {
+		neonConfig.fetchEndpoint = originalFetchEndpoint;
+	});
+
+	// Regression for a bot-reported P2: doctor previously constructed the Neon client with the
+	// driver's default HTTPS endpoint resolution regardless of DATABASE_LOCAL_PROXY_URL, so
+	// against the Docker-backed local Postgres setup it probed an endpoint the real application
+	// (`packages/database/src/index.ts`) and migrator (`packages/database/src/migrate.ts`) never
+	// actually talk to — reporting a false connection failure. Asserting the resulting
+	// `neonConfig.fetchEndpoint` proves the same `applyLocalProxyFetchEndpoint` override those two
+	// call sites use is applied here too, before the connection attempt.
+	it('applies DATABASE_LOCAL_PROXY_URL to neonConfig.fetchEndpoint before connecting', async () => {
+		await evaluateDatabaseConnection({
+			DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+			DATABASE_LOCAL_PROXY_URL: 'http://db.localtest.me:4444/sql',
+		});
+
+		expect(neonConfig.fetchEndpoint).toBe('http://db.localtest.me:4444/sql');
+	});
+
+	it('leaves the driver default fetchEndpoint untouched when DATABASE_LOCAL_PROXY_URL is unset', async () => {
+		await evaluateDatabaseConnection({
+			DATABASE_URL: 'postgresql://user:pass@production-host.example.com:5432/db',
+		});
+
+		expect(neonConfig.fetchEndpoint).toBe(originalFetchEndpoint);
+	});
+
+	it('skips the connection attempt entirely (and never touches fetchEndpoint) when DATABASE_URL is unset', async () => {
+		const results = await evaluateDatabaseConnection({});
+		expect(results[0]?.status).toBe('skip');
+		expect(neonConfig.fetchEndpoint).toBe(originalFetchEndpoint);
 	});
 });

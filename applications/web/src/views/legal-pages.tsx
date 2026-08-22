@@ -106,7 +106,8 @@ export function PrivacyPolicyPage(props: SupportContactInput): JSX.Element {
 					Sessions, authorization codes, and access/refresh tokens expire on a fixed schedule and
 					are periodically purged once expired or revoked. A user can revoke any connected OAuth
 					client's access from their account page at any time, which immediately invalidates that
-					client's outstanding tokens. Deleting an account removes the account row and every
+					client's outstanding tokens. A user may also request deletion of their account by
+					contacting the operator at the address below; deletion removes the account row and every
 					session, OAuth grant, and consent record tied to it — no orphaned credential or service
 					identity is left usable afterward.
 				</p>
@@ -189,9 +190,9 @@ export function TermsOfServicePage(props: SupportContactInput): JSX.Element {
 				<h2>Termination</h2>
 				<p>
 					Either party may end this relationship at any time: a user may revoke a connected client's
-					access or delete their account from the account page, and the operator may revoke or
-					remove any OAuth client's registration, which immediately invalidates its outstanding
-					tokens.
+					access from the account page, or request deletion of their account by contacting the
+					operator (see Contact below), and the operator may revoke or remove any OAuth client's
+					registration, which immediately invalidates its outstanding tokens.
 				</p>
 
 				<h2>Contact</h2>

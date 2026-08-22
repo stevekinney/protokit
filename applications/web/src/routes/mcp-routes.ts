@@ -20,7 +20,10 @@ import {
 	getMcpResourceUrl,
 	readMcpRequestAuthExtra,
 } from '@web/lib/mcp-request-context';
-import { acquireMcpConcurrencySlot } from '@web/lib/mcp-concurrency-limiter';
+import {
+	acquireMcpConcurrencySlot,
+	attachConcurrencySlotToResponseLifetime,
+} from '@web/lib/mcp-concurrency-limiter';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import {
 	enforceMcpNetworkRateLimit,
@@ -303,13 +306,24 @@ export async function handleMcpRequestWithAuthentication(
 		});
 	}
 
+	let response: Response;
 	try {
-		const response = await handleMcpRequest(context.request, authenticationResult);
-		for (const [headerName, headerValue] of Object.entries(mcpCorsHeaders)) {
-			response.headers.set(headerName, headerValue);
-		}
-		return response;
-	} finally {
+		response = await handleMcpRequest(context.request, authenticationResult);
+	} catch (error) {
+		// A review finding (P2): the old `finally { await concurrencySlot.release() }`
+		// released the slot the instant `handleMcpRequest` resolved -- for a
+		// `subscriptions/listen` response, that is the moment the SSE stream
+		// is *opened*, not when it closes, so the concurrency cap was never
+		// actually enforced against a long-lived stream. The happy path now
+		// defers release to the response's own body-stream lifetime (below);
+		// this catch is the only remaining path where `handleMcpRequest`
+		// never produced a `Response` to attach that lifetime to, so the
+		// slot must be released here instead.
 		await concurrencySlot.release();
+		throw error;
 	}
+	for (const [headerName, headerValue] of Object.entries(mcpCorsHeaders)) {
+		response.headers.set(headerName, headerValue);
+	}
+	return attachConcurrencySlotToResponseLifetime(response, concurrencySlot);
 }

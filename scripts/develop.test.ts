@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+	buildDevelopmentServerEnvironment,
 	exposedRoutes,
 	formatExposedRoutesBanner,
 	parseTunnelUrl,
@@ -40,6 +41,44 @@ describe('parseTunnelUrl', () => {
 
 	it('returns null when no tunnel URL is present', () => {
 		expect(parseTunnelUrl('INF Starting tunnel...')).toBeNull();
+	});
+});
+
+describe('buildDevelopmentServerEnvironment', () => {
+	// Regression for a bot-reported P1: the dev server was previously spawned before the tunnel
+	// URL was known and never given BASE_URL afterward, so `getBaseUrl`
+	// (`applications/web/src/lib/base-url.ts`, which deliberately ignores forwarded host/proto
+	// headers) advertised `http://localhost:3000` in OAuth discovery documents, authorization
+	// redirects, and the resource audience instead of the printed HTTPS tunnel origin — a hosted
+	// connector following that metadata could never complete OAuth against the tunnel.
+	it('sets BASE_URL to the tunnel URL when one is known', () => {
+		const environment = buildDevelopmentServerEnvironment(
+			true,
+			{},
+			'https://example.trycloudflare.com',
+		);
+		expect(environment.BASE_URL).toBe('https://example.trycloudflare.com');
+	});
+
+	it('never sets BASE_URL when no tunnel URL is known, even with the tunnel enabled', () => {
+		const environment = buildDevelopmentServerEnvironment(true, {});
+		expect(environment.BASE_URL).toBeUndefined();
+	});
+
+	it('never sets BASE_URL when the tunnel is disabled', () => {
+		const environment = buildDevelopmentServerEnvironment(false, {});
+		expect(environment.BASE_URL).toBeUndefined();
+	});
+
+	it('sets PROTOKIT_TUNNEL_ACTIVE to true only when the tunnel is enabled', () => {
+		expect(buildDevelopmentServerEnvironment(true, {}).PROTOKIT_TUNNEL_ACTIVE).toBe('true');
+		expect(buildDevelopmentServerEnvironment(false, {}).PROTOKIT_TUNNEL_ACTIVE).toBe('false');
+	});
+
+	it('preserves every other variable from the base environment', () => {
+		const environment = buildDevelopmentServerEnvironment(false, { PATH: '/usr/bin', FOO: 'bar' });
+		expect(environment.PATH).toBe('/usr/bin');
+		expect(environment.FOO).toBe('bar');
 	});
 });
 

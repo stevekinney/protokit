@@ -5,6 +5,7 @@ import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@template/web/lib/cre
 
 import {
 	commandExists,
+	execute,
 	ENVIRONMENT_FILE_PATH,
 	setGithubSecret,
 	MANAGED_GITHUB_SECRETS,
@@ -101,6 +102,59 @@ export async function rotateOauthClientSecret(
 	return { newSecret, expiresAt };
 }
 
+export interface RailwayVariableOperation {
+	readonly action: 'set' | 'delete';
+	readonly key: string;
+	readonly value?: string;
+}
+
+/**
+ * Pure planner for what Railway needs after a session-secret rotation. `setGithubSecret` above
+ * only reaches a GitHub Actions secret that nothing in `production.yml`'s `deploy` job consumes —
+ * that workflow's only step is `railway up`, and Railway variables are otherwise set exactly once,
+ * during `scripts/setup.ts`'s `setupRailway`. Without pushing both keys here, the printed "restart
+ * the server" instruction restarts the *running* Railway service with its stale
+ * `SESSION_SIGNING_SECRET` untouched, and — because DATA-001's overlap window depends on
+ * `SESSION_SIGNING_SECRET_PREVIOUS` existing on the instance doing the verifying —
+ * `SESSION_SIGNING_SECRET_PREVIOUS` never reaches Railway at all, defeating the whole point of the
+ * overlap: it is a plan the running production service must receive, not only `.env.local`.
+ */
+export function planSessionSecretRailwayRotation(
+	nextValue: string,
+	previousValue: string | undefined,
+): RailwayVariableOperation[] {
+	const operations: RailwayVariableOperation[] = [
+		{ action: 'set', key: 'SESSION_SIGNING_SECRET', value: nextValue },
+	];
+	if (previousValue) {
+		operations.push({
+			action: 'set',
+			key: 'SESSION_SIGNING_SECRET_PREVIOUS',
+			value: previousValue,
+		});
+	}
+	return operations;
+}
+
+/** The cutover half: ending the overlap window must also stop Railway from accepting the retired key. */
+export function planSessionSecretRailwayCutover(): RailwayVariableOperation[] {
+	return [{ action: 'delete', key: 'SESSION_SIGNING_SECRET_PREVIOUS' }];
+}
+
+function applyRailwayOperations(operations: readonly RailwayVariableOperation[]): void {
+	for (const operation of operations) {
+		if (operation.action === 'set') {
+			// `--stdin` delivers the value over stdin rather than as an argv element, matching
+			// `setup.ts`'s `setupRailway` — a credential never appears in `ps` output.
+			execute('railway', ['variable', 'set', operation.key, '--stdin'], {
+				input: operation.value ?? '',
+			});
+		} else {
+			execute('railway', ['variable', 'delete', operation.key]);
+		}
+	}
+}
+
 async function rotateSessionSigningSecretCommand(): Promise<void> {
 	console.log('\n--- Rotating SESSION_SIGNING_SECRET ---\n');
 	const result = rotateSessionSigningSecretLocally(ENVIRONMENT_FILE_PATH);
@@ -131,6 +185,26 @@ async function rotateSessionSigningSecretCommand(): Promise<void> {
 			);
 		}
 	}
+
+	if (commandExists('railway')) {
+		const previousValue = result.previousValuePresent
+			? readEnvironmentEntriesFromFile(ENVIRONMENT_FILE_PATH)['SESSION_SIGNING_SECRET_PREVIOUS']
+			: undefined;
+		try {
+			applyRailwayOperations(planSessionSecretRailwayRotation(result.nextValue, previousValue));
+			console.log(
+				previousValue
+					? 'Also updated SESSION_SIGNING_SECRET and SESSION_SIGNING_SECRET_PREVIOUS on Railway.'
+					: 'Also updated SESSION_SIGNING_SECRET on Railway.',
+			);
+		} catch {
+			console.warn(
+				'Could not update Railway variables automatically. Set them manually: ' +
+					'railway variable set SESSION_SIGNING_SECRET --stdin' +
+					(previousValue ? ' (and SESSION_SIGNING_SECRET_PREVIOUS the same way)' : ''),
+			);
+		}
+	}
 }
 
 async function rotateSessionSigningSecretCutoverCommand(): Promise<void> {
@@ -140,6 +214,18 @@ async function rotateSessionSigningSecretCutoverCommand(): Promise<void> {
 		'Removed SESSION_SIGNING_SECRET_PREVIOUS from .env.local. Any session or CSRF token still',
 	);
 	console.log('signed under the retired secret is now rejected. Restart the server to apply.');
+
+	if (commandExists('railway')) {
+		try {
+			applyRailwayOperations(planSessionSecretRailwayCutover());
+			console.log('Also removed SESSION_SIGNING_SECRET_PREVIOUS from Railway.');
+		} catch {
+			console.warn(
+				'Could not remove SESSION_SIGNING_SECRET_PREVIOUS from Railway automatically. ' +
+					'Remove it manually: railway variable delete SESSION_SIGNING_SECRET_PREVIOUS',
+			);
+		}
+	}
 }
 
 async function revokeManagedGithubSecretCommand(name: string): Promise<void> {

@@ -1,7 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
+import { runScheduledCleanup } from '@web/lib/scheduled-cleanup';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
@@ -132,6 +134,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	async function seedTokenPair(
 		port: number,
 		clientId: string,
+		scope = '',
 	): Promise<{ accessToken: string; refreshToken: string; resource: string }> {
 		const resource = `http://127.0.0.1:${port}/mcp`;
 		const accessToken = randomBytes(48).toString('hex');
@@ -143,7 +146,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			accessToken: hashCredential(accessToken),
 			clientId,
 			userId,
-			scope: '',
+			scope,
 			resource,
 			expiresAt: oneHourFromNow,
 		});
@@ -151,7 +154,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			refreshToken: hashCredential(refreshToken),
 			clientId,
 			userId,
-			scope: '',
+			scope,
 			resource,
 			accessTokenHash: hashCredential(accessToken),
 			familyId: randomUUID(),
@@ -179,6 +182,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		clientId: string,
 		clientSecret: string,
 		resource: string,
+		scope?: string,
 	): Promise<Response> {
 		return fetch(`http://127.0.0.1:${port}/oauth/token`, {
 			method: 'POST',
@@ -189,6 +193,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 				client_id: clientId,
 				client_secret: clientSecret,
 				resource,
+				...(scope !== undefined ? { scope } : {}),
 			}).toString(),
 		});
 	}
@@ -318,6 +323,162 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// ...and its access token can no longer authenticate at /mcp.
 		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
 		expect(mcpResponse.status).toBe(401);
+	});
+
+	it('rejecting a refresh-time scope escalation does not consume the refresh token, and a corrected retry still succeeds', async () => {
+		const port = startServer();
+		const { refreshToken, resource } = await seedTokenPair(port, clientAId, 'profile:read');
+
+		// Requests a scope this refresh token was never granted. Must be
+		// rejected *without* burning the refresh token: the atomic
+		// revoke-then-check rotation pattern that closes the S-02 race means
+		// a token consumed by the mutating UPDATE stays consumed even if a
+		// later check in the same request then fails -- so scope validity
+		// must be established before that UPDATE runs, not after.
+		const escalationResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+			'profile:read prompts:read',
+		);
+		expect(escalationResponse.status).toBe(400);
+		const escalationBody = (await escalationResponse.json()) as { error: string };
+		expect(escalationBody.error).toBe('invalid_scope');
+
+		// The exact same refresh token must still be live: a corrected retry
+		// (omitting the escalated scope) must succeed on the first attempt,
+		// not be rejected as a replay of an already-dead token.
+		const retryResponse = await refreshRequest(
+			port,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(retryResponse.status).toBe(200);
+	});
+
+	// A review finding on `scheduled-cleanup.ts` (P1): a revoked refresh
+	// token used to become eligible for the hourly sweep the instant it
+	// rotated, not when it actually expired weeks later. That deletes the
+	// exact row `handleOauthTokenRefreshGrant`'s replay-detection lookup
+	// depends on -- reads by hash, then checks `revokedAt` -- so a real
+	// scheduled sweep running between "attacker steals an old refresh
+	// token" and "attacker replays it" would have silently defeated
+	// OAUTH-003's rotation-reuse protection. This proves the fix by running
+	// the real sweep in between rotation and replay, not merely reading the
+	// cleanup predicate.
+	it('a scheduled cleanup sweep between rotation and replay does not defeat reuse detection', async () => {
+		const port = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		const rotateResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(rotateResponse.status).toBe(200);
+		const rotatedBody = (await rotateResponse.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
+
+		// Simulate the in-process hourly sweep firing between the legitimate
+		// rotation above and the attacker's replay below. The now-revoked
+		// original refresh token has weeks left on its own `expiresAt`
+		// (`seedTokenPair` mints it 30 days out), so a real sweep must leave
+		// it in place.
+		await runScheduledCleanup();
+
+		const stillPresent = await database
+			.select({ revokedAt: schema.oauthRefreshTokens.revokedAt })
+			.from(schema.oauthRefreshTokens)
+			.where(eq(schema.oauthRefreshTokens.refreshToken, hashCredential(originalRefreshToken)))
+			.limit(1);
+		expect(stillPresent).toHaveLength(1);
+		expect(stillPresent[0]?.revokedAt).not.toBeNull();
+
+		// Replay the now-dead original refresh token, after the sweep.
+		const replayResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(replayResponse.status).toBe(400);
+
+		// Reuse detection must still have fired: the live descendant refresh
+		// token can no longer rotate...
+		const descendantRefreshResponse = await refreshRequest(
+			port,
+			rotatedBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(descendantRefreshResponse.status).toBe(400);
+
+		// ...and its access token can no longer authenticate at /mcp.
+		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		expect(mcpResponse.status).toBe(401);
+	}, 30_000); // a real global cleanup sweep against the shared test database is slower than the 5s default.
+
+	it("a different client presenting client A's already-rotated-away refresh token cannot revoke client A's live token family", async () => {
+		const port = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		// Client A legitimately rotates. The original refresh token is now
+		// revoked (rotated-away) and a live descendant exists.
+		const rotateResponse = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(rotateResponse.status).toBe(200);
+		const rotatedBody = (await rotateResponse.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
+
+		// Client B -- authenticated as itself, and with no relationship to
+		// client A's token family -- presents client A's now-dead original
+		// refresh token value. It must be rejected, and it must NOT be
+		// treated as a replay of client B's own family (there is no such
+		// family): client A's live descendant must be unaffected.
+		const crossClientReplay = await refreshRequest(
+			port,
+			originalRefreshToken,
+			clientBId,
+			clientBSecret,
+			resource,
+		);
+		expect(crossClientReplay.status).toBe(400);
+
+		// Client A's live access token must still authenticate at /mcp:
+		// client B's replay attempt must not have revoked client A's token
+		// family. Checked before rotating the descendant refresh token below,
+		// since a legitimate rotation would itself revoke this access token
+		// as an ordinary side effect and give a false negative.
+		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		expect(mcpResponse.status).not.toBe(401);
+
+		// ...and the live descendant refresh token must still be able to
+		// rotate.
+		const descendantRefreshResponse = await refreshRequest(
+			port,
+			rotatedBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(descendantRefreshResponse.status).toBe(200);
 	});
 
 	it("one client cannot revoke another client's token, and the victim token survives the attempt", async () => {

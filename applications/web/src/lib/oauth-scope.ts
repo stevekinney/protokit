@@ -33,8 +33,18 @@ export function splitScopeString(scope: string): string[] {
 export function parseRequestedScope(rawScope: string | null): ParsedScopeRequest {
 	const supportedScopes = getSupportedScopes();
 
-	if (!rawScope || rawScope.trim().length === 0) {
+	if (rawScope === null) {
 		return { ok: true, scopes: supportedScopes };
+	}
+
+	// An explicitly empty (or whitespace-only) `scope=` parameter is not the
+	// same as an omitted one: RFC 6749's ABNF for `scope` requires at least
+	// one scope-token, so a present-but-empty value is syntactically invalid,
+	// not a request for "the default." Treating it as omission would let a
+	// client that asked for nothing receive every supported scope, which
+	// violates the least-privilege behavior the rest of this module documents.
+	if (rawScope.trim().length === 0) {
+		return { ok: false, error: 'invalid_scope', unknownScopes: [] };
 	}
 
 	const requestedScopes = splitScopeString(rawScope);

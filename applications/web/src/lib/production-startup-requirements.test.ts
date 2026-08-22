@@ -122,3 +122,120 @@ describe('collectProductionStartupFailures — certificate validation (OPEN-2)',
 		);
 	});
 });
+
+describe('collectProductionStartupFailures — bracketed IPv6 loopback hosts', () => {
+	it('rejects a bracketed IPv6 loopback Redis host (rediss://[::1]:6380)', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			redisUrl: 'rediss://[::1]:6380',
+		});
+		expect(failures.some((failure) => failure.includes('local host (::1)'))).toBe(true);
+	});
+
+	it('rejects a bracketed IPv6 loopback DATABASE_URL host', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			databaseUrl: 'postgresql://produser:realsecret@[::1]:5432/app?sslmode=verify-full',
+		});
+		expect(failures.some((failure) => failure.includes('local host (::1)'))).toBe(true);
+	});
+
+	it('still accepts a real, non-loopback bracketed IPv6 Redis host', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			redisUrl: 'rediss://[2001:db8::1]:6380',
+		});
+		expect(failures.some((failure) => failure.includes('local host'))).toBe(false);
+	});
+});
+
+describe('collectProductionStartupFailures — malformed TRUSTED_PROXY_CIDRS', () => {
+	it('rejects a syntactically invalid CIDR entry', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			trustedProxyCidrs: 'not-a-cidr',
+		});
+		expect(
+			failures.some(
+				(failure) => failure.includes('TRUSTED_PROXY_CIDRS') && failure.includes('not-a-cidr'),
+			),
+		).toBe(true);
+	});
+
+	it('rejects a CIDR with a prefix length that exceeds the address family width', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			trustedProxyCidrs: '10.0.0.0/40',
+		});
+		expect(failures.some((failure) => failure.includes('TRUSTED_PROXY_CIDRS'))).toBe(true);
+	});
+
+	it('accepts multiple valid, comma-separated CIDR entries of mixed families', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			trustedProxyCidrs: '10.0.0.0/8, 2001:db8::/32',
+		});
+		expect(failures.some((failure) => failure.includes('TRUSTED_PROXY_CIDRS'))).toBe(false);
+	});
+
+	it('names every malformed entry when more than one is present', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			trustedProxyCidrs: '10.0.0.0/8, not-a-cidr, also-bad',
+		});
+		const failure = failures.find((entry) => entry.includes('TRUSTED_PROXY_CIDRS'));
+		expect(failure).toBeDefined();
+		expect(failure).toContain('not-a-cidr');
+		expect(failure).toContain('also-bad');
+	});
+});
+
+describe('collectProductionStartupFailures — non-origin BASE_URL', () => {
+	it('rejects a BASE_URL with a path', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			baseUrl: 'https://example.com/app',
+		});
+		expect(failures.some((failure) => failure.includes('canonical origin'))).toBe(true);
+	});
+
+	it('rejects a BASE_URL with a query string', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			baseUrl: 'https://example.com?foo=bar',
+		});
+		expect(failures.some((failure) => failure.includes('canonical origin'))).toBe(true);
+	});
+
+	it('rejects a BASE_URL with a fragment', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			baseUrl: 'https://example.com#section',
+		});
+		expect(failures.some((failure) => failure.includes('canonical origin'))).toBe(true);
+	});
+
+	it('rejects a BASE_URL with embedded userinfo', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			baseUrl: 'https://user:pass@example.com',
+		});
+		expect(failures.some((failure) => failure.includes('canonical origin'))).toBe(true);
+	});
+
+	it('rejects a BASE_URL that could not be parsed as a URL', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			baseUrl: 'https://',
+		});
+		expect(failures.some((failure) => failure.includes('BASE_URL'))).toBe(true);
+	});
+
+	it('accepts a canonical origin with an explicit port', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			baseUrl: 'https://example.com:8443',
+		});
+		expect(failures.some((failure) => failure.includes('canonical origin'))).toBe(false);
+	});
+});

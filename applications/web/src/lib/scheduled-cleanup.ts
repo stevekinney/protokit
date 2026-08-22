@@ -1,6 +1,9 @@
-import { count, inArray, isNotNull, lt, or } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { inArray, isNotNull, lt, or } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
+import { environment } from '@web/env';
+import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 
 const cleanupLogger = logger.child({ module: 'scheduled-cleanup' });
 
@@ -68,8 +71,17 @@ export type CleanupTableResult = {
 	deleted: number;
 	iterations: number;
 	exhaustedIterationCap: boolean;
-	/** DATA-001: "monitor lag" -- how many still-eligible rows remain after this sweep, so an operator can see a growing backlog before it becomes an incident. */
+	/**
+	 * DATA-001: "monitor lag" -- how many still-eligible rows remain after
+	 * this sweep, so an operator can see a growing backlog before it becomes
+	 * an incident. Bounded at `remainingLagSampleCap`: this is a monitoring
+	 * signal, not an exact audit count, so once a backlog is that large the
+	 * precise number stops mattering and `remainingLagCapped` says so instead
+	 * of paying for a full index scan to report it precisely.
+	 */
 	remainingLag: number;
+	/** True when `remainingLag` hit `remainingLagSampleCap` -- the real backlog may be larger than the number reported. */
+	remainingLagCapped: boolean;
 };
 
 export type CleanupResult = {
@@ -84,6 +96,27 @@ const defaultBatchSize = 500;
 const defaultMaxIterationsPerTable = 20;
 
 /**
+ * DATA-001 / a review finding on this same file: an unbounded `count()`
+ * aggregate scans every eligible index entry to report an exact lag number,
+ * which means the supposedly bounded hourly sweep could still perform work
+ * proportional to an entire backlog just to measure it. Reusing each
+ * table's own `selectIds` (the exact same primary-key-only, indexed query
+ * the deletion loop already uses) with this cap turns "how many rows are
+ * left" into a single indexed scan that stops as soon as it has read this
+ * many rows -- Postgres can satisfy a `LIMIT` without visiting the rest of
+ * the index. Large enough to make "capped" itself a meaningful alert (a
+ * five-figure backlog is worth paging on regardless of its exact size).
+ */
+const remainingLagSampleCap = 10_000;
+
+async function measureBoundedRemainingLag(
+	selectIds: (limit: number) => Promise<{ id: string }[]>,
+): Promise<{ remainingLag: number; remainingLagCapped: boolean }> {
+	const rows = await selectIds(remainingLagSampleCap);
+	return { remainingLag: rows.length, remainingLagCapped: rows.length >= remainingLagSampleCap };
+}
+
+/**
  * Runs one bounded cleanup sweep across every table this server accumulates
  * expired or revoked credential-lifecycle rows in. Safe to call repeatedly
  * and concurrently with itself (each batch's `DELETE ... WHERE id IN (...)`
@@ -96,16 +129,17 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 	const maxIterationsPerTable = options.maxIterationsPerTable ?? defaultMaxIterationsPerTable;
 	const now = options.now ?? new Date();
 
+	const selectOauthCodeIds = (limit: number) =>
+		database
+			.select({ id: schema.oauthCodes.code })
+			.from(schema.oauthCodes)
+			.where(or(lt(schema.oauthCodes.expiresAt, now), isNotNull(schema.oauthCodes.usedAt)))
+			.limit(limit);
 	const oauthCodes = await deleteAsPrimaryKeyBatches({
 		label: 'oauth_codes',
 		batchSize,
 		maxIterations: maxIterationsPerTable,
-		selectIds: (limit) =>
-			database
-				.select({ id: schema.oauthCodes.code })
-				.from(schema.oauthCodes)
-				.where(or(lt(schema.oauthCodes.expiresAt, now), isNotNull(schema.oauthCodes.usedAt)))
-				.limit(limit),
+		selectIds: selectOauthCodeIds,
 		deleteByIds: async (ids) => {
 			const rows = await database
 				.delete(schema.oauthCodes)
@@ -115,16 +149,17 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 		},
 	});
 
+	const selectOauthTokenIds = (limit: number) =>
+		database
+			.select({ id: schema.oauthTokens.accessToken })
+			.from(schema.oauthTokens)
+			.where(or(isNotNull(schema.oauthTokens.revokedAt), lt(schema.oauthTokens.expiresAt, now)))
+			.limit(limit);
 	const oauthTokens = await deleteAsPrimaryKeyBatches({
 		label: 'oauth_tokens',
 		batchSize,
 		maxIterations: maxIterationsPerTable,
-		selectIds: (limit) =>
-			database
-				.select({ id: schema.oauthTokens.accessToken })
-				.from(schema.oauthTokens)
-				.where(or(isNotNull(schema.oauthTokens.revokedAt), lt(schema.oauthTokens.expiresAt, now)))
-				.limit(limit),
+		selectIds: selectOauthTokenIds,
 		deleteByIds: async (ids) => {
 			const rows = await database
 				.delete(schema.oauthTokens)
@@ -134,21 +169,32 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 		},
 	});
 
+	const selectOauthRefreshTokenIds = (limit: number) =>
+		database
+			.select({ id: schema.oauthRefreshTokens.refreshToken })
+			.from(schema.oauthRefreshTokens)
+			.where(lt(schema.oauthRefreshTokens.expiresAt, now))
+			.limit(limit);
 	const oauthRefreshTokens = await deleteAsPrimaryKeyBatches({
 		label: 'oauth_refresh_tokens',
 		batchSize,
 		maxIterations: maxIterationsPerTable,
-		selectIds: (limit) =>
-			database
-				.select({ id: schema.oauthRefreshTokens.refreshToken })
-				.from(schema.oauthRefreshTokens)
-				.where(
-					or(
-						isNotNull(schema.oauthRefreshTokens.revokedAt),
-						lt(schema.oauthRefreshTokens.expiresAt, now),
-					),
-				)
-				.limit(limit),
+		// OAUTH-003's rotation-reuse detection (oauth-routes.tsx,
+		// `handleOauthTokenRefreshGrant`) reads a revoked refresh-token row
+		// back BY HASH to tell "this exact token was already rotated" (a
+		// replay -- revoke the whole family) apart from "never existed". A
+		// refresh token is marked `revokedAt` the instant it rotates, but its
+		// `expiresAt` reflects the token's real, weeks-long configured
+		// lifetime (`MCP_REFRESH_TOKEN_TTL_SECONDS`) -- an attacker who stole
+		// it can still replay it at any point up to that expiry. Deleting a
+		// revoked-but-not-yet-expired row (as this used to do, on the very
+		// next hourly sweep after every rotation) erases the evidence replay
+		// detection depends on, silently turning a replay into an
+		// indistinguishable "unknown token" for the rest of the token's
+		// intended lifetime. Retention is therefore bounded by `expiresAt`
+		// alone, matching every other table's own designed lifetime rather
+		// than the moment of revocation.
+		selectIds: selectOauthRefreshTokenIds,
 		deleteByIds: async (ids) => {
 			const rows = await database
 				.delete(schema.oauthRefreshTokens)
@@ -158,21 +204,22 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 		},
 	});
 
+	const selectOauthAuthorizationTransactionIds = (limit: number) =>
+		database
+			.select({ id: schema.oauthAuthorizationTransactions.transactionId })
+			.from(schema.oauthAuthorizationTransactions)
+			.where(
+				or(
+					lt(schema.oauthAuthorizationTransactions.expiresAt, now),
+					isNotNull(schema.oauthAuthorizationTransactions.consumedAt),
+				),
+			)
+			.limit(limit);
 	const oauthAuthorizationTransactions = await deleteAsPrimaryKeyBatches({
 		label: 'oauth_authorization_transactions',
 		batchSize,
 		maxIterations: maxIterationsPerTable,
-		selectIds: (limit) =>
-			database
-				.select({ id: schema.oauthAuthorizationTransactions.transactionId })
-				.from(schema.oauthAuthorizationTransactions)
-				.where(
-					or(
-						lt(schema.oauthAuthorizationTransactions.expiresAt, now),
-						isNotNull(schema.oauthAuthorizationTransactions.consumedAt),
-					),
-				)
-				.limit(limit),
+		selectIds: selectOauthAuthorizationTransactionIds,
 		deleteByIds: async (ids) => {
 			const rows = await database
 				.delete(schema.oauthAuthorizationTransactions)
@@ -182,16 +229,17 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 		},
 	});
 
+	const selectUserSessionIds = (limit: number) =>
+		database
+			.select({ id: schema.userSessions.sessionTokenHash })
+			.from(schema.userSessions)
+			.where(or(isNotNull(schema.userSessions.revokedAt), lt(schema.userSessions.expiresAt, now)))
+			.limit(limit);
 	const userSessions = await deleteAsPrimaryKeyBatches({
 		label: 'user_sessions',
 		batchSize,
 		maxIterations: maxIterationsPerTable,
-		selectIds: (limit) =>
-			database
-				.select({ id: schema.userSessions.sessionTokenHash })
-				.from(schema.userSessions)
-				.where(or(isNotNull(schema.userSessions.revokedAt), lt(schema.userSessions.expiresAt, now)))
-				.limit(limit),
+		selectIds: selectUserSessionIds,
 		deleteByIds: async (ids) => {
 			const rows = await database
 				.delete(schema.userSessions)
@@ -208,50 +256,22 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 		remainingTransactions,
 		remainingSessions,
 	] = await Promise.all([
-		database
-			.select({ value: count() })
-			.from(schema.oauthCodes)
-			.where(or(lt(schema.oauthCodes.expiresAt, now), isNotNull(schema.oauthCodes.usedAt))),
-		database
-			.select({ value: count() })
-			.from(schema.oauthTokens)
-			.where(or(isNotNull(schema.oauthTokens.revokedAt), lt(schema.oauthTokens.expiresAt, now))),
-		database
-			.select({ value: count() })
-			.from(schema.oauthRefreshTokens)
-			.where(
-				or(
-					isNotNull(schema.oauthRefreshTokens.revokedAt),
-					lt(schema.oauthRefreshTokens.expiresAt, now),
-				),
-			),
-		database
-			.select({ value: count() })
-			.from(schema.oauthAuthorizationTransactions)
-			.where(
-				or(
-					lt(schema.oauthAuthorizationTransactions.expiresAt, now),
-					isNotNull(schema.oauthAuthorizationTransactions.consumedAt),
-				),
-			),
-		database
-			.select({ value: count() })
-			.from(schema.userSessions)
-			.where(or(isNotNull(schema.userSessions.revokedAt), lt(schema.userSessions.expiresAt, now))),
+		measureBoundedRemainingLag(selectOauthCodeIds),
+		measureBoundedRemainingLag(selectOauthTokenIds),
+		measureBoundedRemainingLag(selectOauthRefreshTokenIds),
+		measureBoundedRemainingLag(selectOauthAuthorizationTransactionIds),
+		measureBoundedRemainingLag(selectUserSessionIds),
 	]);
 
 	const result: CleanupResult = {
-		oauthCodes: { ...oauthCodes, remainingLag: remainingCodes[0]?.value ?? 0 },
-		oauthTokens: { ...oauthTokens, remainingLag: remainingTokens[0]?.value ?? 0 },
-		oauthRefreshTokens: {
-			...oauthRefreshTokens,
-			remainingLag: remainingRefreshTokens[0]?.value ?? 0,
-		},
+		oauthCodes: { ...oauthCodes, ...remainingCodes },
+		oauthTokens: { ...oauthTokens, ...remainingTokens },
+		oauthRefreshTokens: { ...oauthRefreshTokens, ...remainingRefreshTokens },
 		oauthAuthorizationTransactions: {
 			...oauthAuthorizationTransactions,
-			remainingLag: remainingTransactions[0]?.value ?? 0,
+			...remainingTransactions,
 		},
-		userSessions: { ...userSessions, remainingLag: remainingSessions[0]?.value ?? 0 },
+		userSessions: { ...userSessions, ...remainingSessions },
 	};
 
 	cleanupLogger.info(
@@ -270,6 +290,13 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 				oauthAuthorizationTransactions: result.oauthAuthorizationTransactions.remainingLag,
 				userSessions: result.userSessions.remainingLag,
 			},
+			remainingLagCapped: {
+				oauthCodes: result.oauthCodes.remainingLagCapped,
+				oauthTokens: result.oauthTokens.remainingLagCapped,
+				oauthRefreshTokens: result.oauthRefreshTokens.remainingLagCapped,
+				oauthAuthorizationTransactions: result.oauthAuthorizationTransactions.remainingLagCapped,
+				userSessions: result.userSessions.remainingLagCapped,
+			},
 		},
 		'Scheduled cleanup sweep complete',
 	);
@@ -279,21 +306,102 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 
 let scheduledCleanupIntervalHandle: ReturnType<typeof setInterval> | null = null;
 
+// Namespaced the same way `request-rate-limiter.ts` namespaces its own
+// Redis keys: empty (unchanged key shape) in every real deployment, and set
+// per test run so two suites racing against the same shared test Redis
+// don't contend over one one global lease key that has nothing to do with
+// what either of them is asserting.
+const CLEANUP_LEASE_KEY = environment.RATE_LIMIT_KEY_NAMESPACE
+	? `scheduled_cleanup:${environment.RATE_LIMIT_KEY_NAMESPACE}:leader_lease`
+	: 'scheduled_cleanup:leader_lease';
+/** One value per process, not per acquisition -- see `acquireScheduledCleanupLease`'s comment for why the SAME value must survive across an unref'd interval's repeated calls. */
+const cleanupLeaseHolderId = randomUUID();
+
+/**
+ * A review finding (P2): every replica in a multi-instance deployment calls
+ * `startScheduledCleanup` independently, with nothing coordinating them.
+ * `runScheduledCleanup` itself is safe to run from more than one replica at
+ * once (each batch's `DELETE ... WHERE id IN (...)` only matches rows still
+ * actually eligible at execution time, so overlapping sweeps race harmlessly
+ * to the same end state rather than corrupting anything -- see that
+ * function's own doc comment) -- but "safe" is not "free": N replicas
+ * deployed together each run all five lag-measurement queries and delete
+ * batches from the same tables on the same schedule, multiplying database
+ * load and lock contention by the replica count for a job that is by design
+ * meant to run once.
+ *
+ * A `SET key value NX PX ttl` lease elects exactly one replica per sweep
+ * window: whichever replica's `SET` lands first holds the lease and runs the
+ * sweep; every other replica's conditional `SET` fails and it skips this
+ * cycle. The lease is intentionally NOT renewed or explicitly released --
+ * it is scoped to `intervalMilliseconds` and simply expires before the next
+ * scheduled tick, so a replica that dies mid-sweep never leaves the job
+ * permanently stuck (the lease just lapses and the next tick, on any
+ * surviving replica, acquires it fresh). With no Redis configured (a
+ * single-process deployment, or local development) coordination has nothing
+ * to coordinate across, so this always returns `true` and every sweep runs
+ * unconditionally -- identical to this function's original behavior.
+ *
+ * `holderId` defaults to this process's own generated identity; a test
+ * exercising cross-replica coordination against real Redis can pass two
+ * distinct values to simulate two independent replica processes racing for
+ * the same lease key without actually spawning two processes.
+ */
+export async function acquireScheduledCleanupLease(
+	leaseDurationMilliseconds: number,
+	holderId: string = cleanupLeaseHolderId,
+): Promise<boolean> {
+	if (!isRedisConfigured()) return true;
+
+	try {
+		const redisClient = await getRedisClient();
+		const result = await redisClient.set(CLEANUP_LEASE_KEY, holderId, {
+			condition: 'NX',
+			expiration: { type: 'PX', value: leaseDurationMilliseconds },
+		});
+		return result === 'OK';
+	} catch (error) {
+		// Redis being unreachable must not silently stop cleanup from ever
+		// running again -- fail open (run the sweep) rather than fail closed.
+		// Worst case under a real network partition between replicas: more
+		// than one replica runs the same sweep, which is the safe-but-wasteful
+		// case this lease exists to reduce, not the one it exists to prevent.
+		cleanupLogger.error(
+			{ err: error },
+			'Failed to acquire scheduled cleanup lease; running sweep unconditionally',
+		);
+		return true;
+	}
+}
+
 /**
  * DATA-001 / S-18: "cleanup exists only as an unscheduled script." Starts an
- * in-process interval that runs `runScheduledCleanup` on a fixed cadence.
- * A no-op if already running -- calling this twice does not double the
- * schedule. `stopScheduledCleanup` is the counterpart, used by tests and by
- * a graceful shutdown path.
+ * in-process interval that runs `runScheduledCleanup` on a fixed cadence,
+ * gated by `acquireScheduledCleanupLease` so only one replica in a
+ * multi-instance deployment actually runs each sweep. A no-op if already
+ * running -- calling this twice does not double the schedule.
+ * `stopScheduledCleanup` is the counterpart, used by tests and by a
+ * graceful shutdown path.
  */
 export function startScheduledCleanup(intervalMilliseconds: number): void {
 	if (scheduledCleanupIntervalHandle) {
 		return;
 	}
 	scheduledCleanupIntervalHandle = setInterval(() => {
-		runScheduledCleanup().catch((error: unknown) => {
-			cleanupLogger.error({ err: error }, 'Scheduled cleanup sweep failed');
-		});
+		void (async () => {
+			try {
+				const acquiredLease = await acquireScheduledCleanupLease(intervalMilliseconds);
+				if (!acquiredLease) {
+					cleanupLogger.info(
+						'Another replica holds the scheduled cleanup lease this cycle; skipping',
+					);
+					return;
+				}
+				await runScheduledCleanup();
+			} catch (error) {
+				cleanupLogger.error({ err: error }, 'Scheduled cleanup sweep failed');
+			}
+		})();
 	}, intervalMilliseconds);
 	// Never let a scheduled interval keep the process alive on its own --
 	// this is background maintenance, not core server work.

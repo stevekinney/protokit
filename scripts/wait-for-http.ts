@@ -49,7 +49,22 @@ export async function waitForHttp({
 	);
 }
 
-function parseArguments(argv: string[]): WaitForHttpOptions {
+/**
+ * Strict positive-integer parsing for `--max-attempts`/`--initial-delay-ms`. `Number.parseInt`
+ * alone accepts garbage input (`"abc"` -> `NaN`, `"5.5"` -> `5`, `"-3"` -> `-3`, `"0"` -> `0`) and
+ * a `NaN`/non-positive `maxAttempts` makes `waitForHttp`'s `for (let attempt = 1; attempt <=
+ * maxAttempts; ...)` loop never execute — the probe throws its "timed out" error without ever
+ * attempting a single fetch, silently skipping the check it exists to perform. Rejecting anything
+ * that isn't a bare positive integer string up front turns that into a clear error instead.
+ */
+function parsePositiveIntegerFlag(flag: string, value: string): number {
+	if (!/^[0-9]+$/.test(value) || Number(value) === 0) {
+		throw new Error(`${flag} must be a positive integer, got "${value}"`);
+	}
+	return Number(value);
+}
+
+export function parseArguments(argv: string[]): WaitForHttpOptions {
 	const url = argv[0];
 	if (!url) {
 		throw new Error(
@@ -64,10 +79,10 @@ function parseArguments(argv: string[]): WaitForHttpOptions {
 		const flag = argv[index];
 		const value = argv[index + 1];
 		if (flag === '--max-attempts' && value) {
-			maxAttempts = Number.parseInt(value, 10);
+			maxAttempts = parsePositiveIntegerFlag(flag, value);
 			index++;
 		} else if (flag === '--initial-delay-ms' && value) {
-			initialDelayMs = Number.parseInt(value, 10);
+			initialDelayMs = parsePositiveIntegerFlag(flag, value);
 			index++;
 		}
 	}

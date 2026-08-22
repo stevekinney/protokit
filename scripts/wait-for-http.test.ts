@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { waitForHttp } from './wait-for-http.ts';
+import { parseArguments, waitForHttp } from './wait-for-http.ts';
 
 describe('waitForHttp', () => {
 	test('resolves as soon as the server answers, regardless of status code', async () => {
@@ -47,5 +47,45 @@ describe('waitForHttp', () => {
 		// this is a sanity bound against an accidental unbounded loop, not a
 		// tight timing assertion.
 		expect(performance.now() - start).toBeLessThan(2000);
+	});
+});
+
+describe('parseArguments', () => {
+	test('parses valid --max-attempts and --initial-delay-ms values', () => {
+		expect(
+			parseArguments(['http://example.com', '--max-attempts', '7', '--initial-delay-ms', '100']),
+		).toEqual({ url: 'http://example.com', maxAttempts: 7, initialDelayMs: 100 });
+	});
+
+	test('leaves maxAttempts/initialDelayMs undefined so waitForHttp applies its own defaults', () => {
+		expect(parseArguments(['http://example.com'])).toEqual({
+			url: 'http://example.com',
+			maxAttempts: undefined,
+			initialDelayMs: undefined,
+		});
+	});
+
+	// Regression for a bot-reported defect: `Number.parseInt` alone turns a non-numeric,
+	// negative, zero, or fractional flag value into `NaN`/an invalid number, which silently
+	// disables `waitForHttp`'s retry loop entirely (`attempt <= NaN`/`attempt <= 0` is always
+	// false, so it throws its "timed out" error without ever calling `fetch`). These must throw a
+	// clear error at the argument-parsing boundary instead.
+	test.each([
+		['--max-attempts', 'abc'],
+		['--max-attempts', '0'],
+		['--max-attempts', '-3'],
+		['--max-attempts', '5.5'],
+		['--max-attempts', 'NaN'],
+		['--max-attempts', 'Infinity'],
+	])('rejects a non-positive-integer %s value (%s)', (flag, value) => {
+		expect(() => parseArguments(['http://example.com', flag, value])).toThrow(
+			/must be a positive integer/,
+		);
+	});
+
+	test('rejects a non-positive-integer --initial-delay-ms value', () => {
+		expect(() => parseArguments(['http://example.com', '--initial-delay-ms', 'abc'])).toThrow(
+			/must be a positive integer/,
+		);
 	});
 });

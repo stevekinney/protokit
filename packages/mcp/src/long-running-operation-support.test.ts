@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { getEventListeners } from 'node:events';
 import { runWithStandardizedTimeout } from './long-running-operation-support.js';
 
 describe('runWithStandardizedTimeout', () => {
@@ -98,5 +99,24 @@ describe('runWithStandardizedTimeout', () => {
 			timeoutMilliseconds: 1000,
 		});
 		expect(capturedSignal?.aborted).toBe(true);
+	});
+
+	it('does not leak abort listeners on a long-lived, reused external abortSignal whose signal never fires', async () => {
+		// Regression test for a leaked anonymous `{ once: true }` listener:
+		// it only self-removes when the signal actually fires, so a signal
+		// that stays unfired across many calls accumulated one listener per
+		// call. Simulates a caller-owned signal (e.g. a request-scoped
+		// controller) reused across several sequential operations.
+		const sharedController = new AbortController();
+
+		for (let index = 0; index < 5; index += 1) {
+			await runWithStandardizedTimeout({
+				operation: async () => `result-${index}`,
+				timeoutMilliseconds: 1000,
+				abortSignal: sharedController.signal,
+			});
+		}
+
+		expect(getEventListeners(sharedController.signal, 'abort').length).toBe(0);
 	});
 });

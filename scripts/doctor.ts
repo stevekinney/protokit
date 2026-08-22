@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { z } from 'zod';
 
 import { databaseServerEnvironmentSchema } from '@template/database/environment-schema';
+import { applyLocalProxyFetchEndpoint } from '@template/database/local-proxy';
 import { mcpServerEnvironmentSchema } from '@template/mcp/environment-schema';
 import { webServerEnvironmentSchema } from '@template/web/environment-schema';
 import { collectProductionStartupFailures } from '@template/web/lib/production-startup-requirements';
@@ -216,6 +217,13 @@ export async function evaluateDatabaseConnection(
 	}
 
 	try {
+		// Match the real server and migrator (`packages/database/src/index.ts`,
+		// `packages/database/src/migrate.ts`): when `DATABASE_LOCAL_PROXY_URL` is set — the
+		// Docker-backed local Postgres setup — point the Neon driver's SQL-over-HTTP requests at
+		// the local proxy instead of the real Neon HTTPS endpoint before connecting. Without this,
+		// doctor probes an endpoint the application never actually talks to in that configuration
+		// and reports a false failure while the real server connects fine.
+		applyLocalProxyFetchEndpoint(variables.DATABASE_LOCAL_PROXY_URL);
 		const { neon } = await import('@neondatabase/serverless');
 		const sql = neon(databaseUrl);
 		await sql`SELECT 1`;

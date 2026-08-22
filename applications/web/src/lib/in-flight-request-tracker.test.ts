@@ -52,6 +52,67 @@ describe('createInFlightRequestTracker', () => {
 		expect(tracker.activeCount).toBe(0);
 	});
 
+	// A review finding on `server.ts` (P2): for a long-lived streaming
+	// response (`subscriptions/listen`), the handler that constructs the
+	// `Response` returns as soon as the SSE stream is opened, not when it
+	// closes. `track()` used to decrement `activeCount` at that point,
+	// so a shutdown drain never actually waited for an open stream.
+	it('keeps a streamed Response counted as active until its body stream closes, not until the Response is returned', async () => {
+		const tracker = createInFlightRequestTracker();
+		let enqueueChunk!: (chunk: Uint8Array) => void;
+		let closeStream!: () => void;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				enqueueChunk = (chunk) => controller.enqueue(chunk);
+				closeStream = () => controller.close();
+			},
+		});
+
+		const trackedResponsePromise = tracker.track(async () => new Response(body));
+		const trackedResponse = await trackedResponsePromise;
+		// The Response was returned already, but nothing has been read from
+		// its body yet -- a naive "decrement when the handler resolves"
+		// tracker would already report 0 here, which is exactly the bug.
+		expect(tracker.activeCount).toBe(1);
+
+		const reader = trackedResponse.body!.getReader();
+		const readPromise = reader.read();
+		enqueueChunk(new TextEncoder().encode('event: ping\n\n'));
+		expect((await readPromise).done).toBe(false);
+		// Still open after delivering a chunk -- this is the SSE keep-alive
+		// case, which can repeat for as long as the stream stays open.
+		expect(tracker.activeCount).toBe(1);
+
+		const drainPromise = tracker.drain(5_000);
+		await Bun.sleep(10);
+		// The drain must still be waiting: the stream has not closed yet.
+		expect(tracker.activeCount).toBe(1);
+
+		const finalRead = reader.read();
+		closeStream();
+		expect((await finalRead).done).toBe(true);
+
+		const result = await drainPromise;
+		expect(result).toEqual({ drained: true, remaining: 0 });
+		expect(tracker.activeCount).toBe(0);
+	});
+
+	it('settles a canceled streamed Response body immediately, without waiting for a close that will never come', async () => {
+		const tracker = createInFlightRequestTracker();
+		const body = new ReadableStream<Uint8Array>({
+			start() {
+				// Never enqueues or closes -- only cancellation ends this stream.
+			},
+		});
+
+		const trackedResponse = await tracker.track(async () => new Response(body));
+		expect(tracker.activeCount).toBe(1);
+
+		await trackedResponse.body!.cancel('client disconnected');
+
+		expect(tracker.activeCount).toBe(0);
+	});
+
 	it('drains only once every concurrently-tracked request finishes', async () => {
 		const tracker = createInFlightRequestTracker();
 		let resolveFirst!: () => void;

@@ -159,17 +159,23 @@ structured payload. Request bodies are similarly bounded per endpoint (`/mcp` JS
 1MB, OAuth bodies far smaller — see `applications/web/src/lib/request-limits.ts`), rejected before
 any handler or database write runs.
 
-### Unsupported host capabilities
+### Unsupported and conditional host capabilities
 
 This server's advertised MCP capabilities describe only what it genuinely implements
 (`META-001`) — a client should not expect any of the following, because the server does not
 advertise them in production: server-initiated `sampling/createMessage` requests, `elicitation/*`
-requests, `logging/setLevel`/`notifications/message` outside protocol-conformance test mode,
-`listChanged` notifications on tools/resources/prompts (this registry does not change at runtime),
-or `resources/subscribe` (registered internally for future use but not advertised as a capability,
-since nothing currently delivers a cross-instance `notifications/resources/updated` push — see
-`packages/mcp/CLAUDE.md`'s note on this). A host that gracefully treats an unadvertised capability
-as absent needs no special handling here; one that assumes every server implements the full
+requests, `logging/setLevel`/`notifications/message` outside protocol-conformance test mode, or
+`listChanged` notifications on tools/resources/prompts (this registry does not change at runtime).
+
+`resources/subscribe` is a modern/legacy split, not a blanket absence (`PROTO-002`). On a
+connection that negotiates the modern `2026-07-28` era, this server advertises
+`capabilities.resources.subscribe: true` and genuinely delivers `notifications/resources/updated`
+through a per-user event stream, so a modern connector can rely on the capability as advertised. A
+connection that negotiates the legacy `2025-11-25` era gets no `subscribe` capability at all —
+legacy serving is per-request and stateless (`PROTO-001`), so there is no long-lived session to
+push an update to; a legacy client's `resources/subscribe` call still gets a spec-compliant empty
+ack, it just never receives a follow-up notification. A host that gracefully treats an unadvertised
+capability as absent needs no special handling here; one that assumes every server implements the full
 capability surface will see accurate, minimal advertisements rather than an unfulfilled promise.
 
 ## Privacy, terms, and support

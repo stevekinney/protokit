@@ -8,7 +8,8 @@
 		"./schema": "./src/schema.ts",
 		"./env": "./src/env.ts",
 		"./migrate": "./src/migrate.ts",
-		"./environment-schema": "./src/environment-schema.ts"
+		"./environment-schema": "./src/environment-schema.ts",
+		"./local-proxy": "./src/local-proxy.ts"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",

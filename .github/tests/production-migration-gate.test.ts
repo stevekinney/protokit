@@ -64,6 +64,21 @@ describe('production.yml: migration gate', () => {
 		expect(deploy.if ?? '').not.toMatch(/always\(\)/);
 	});
 
+	test('every job that runs `bun`/`bunx` in a `run:` step installs Bun first (setup-bun precedes the invocation)', () => {
+		for (const job of Object.values(workflow.jobs)) {
+			const steps = job.steps ?? [];
+			const setupBunIndex = steps.findIndex((step) => step.uses?.startsWith('oven-sh/setup-bun'));
+			const bunInvocationIndex = steps.findIndex((step) => /\b(bun|bunx)\b/.test(step.run ?? ''));
+
+			if (bunInvocationIndex === -1) {
+				continue;
+			}
+
+			expect(setupBunIndex).toBeGreaterThanOrEqual(0);
+			expect(setupBunIndex).toBeLessThan(bunInvocationIndex);
+		}
+	});
+
 	test('every action reference in production.yml is pinned to a full commit SHA', () => {
 		for (const job of Object.values(workflow.jobs)) {
 			for (const step of job.steps ?? []) {

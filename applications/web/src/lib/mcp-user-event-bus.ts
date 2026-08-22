@@ -114,6 +114,17 @@ export class RedisUserServerEventBus implements ServerEventBus {
 					for (const listener of this.listeners) listener(event);
 				});
 				this.redisSubscribed = true;
+				// A review finding (P2): if the last listener unsubscribed
+				// while the `SUBSCRIBE` above was still in flight,
+				// `subscribe()`'s returned teardown function already ran and
+				// found `redisSubscribed` still `false`, so it was a no-op —
+				// this subscription would otherwise be retained in Redis
+				// forever with nothing left to deliver to. Re-check now that
+				// the subscription is genuinely live, and tear it down
+				// immediately if every listener is already gone.
+				if (this.listeners.size === 0) {
+					void this.teardownRedisSubscription();
+				}
 			} catch (error) {
 				logger.error(
 					{ err: error, userId: this.userId },

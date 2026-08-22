@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
 	isAddressInCidr,
+	isValidCidr,
 	resolveNetworkIdentity,
 	type TrustedProxyConfiguration,
 } from '@web/lib/trusted-proxy';
@@ -44,6 +45,37 @@ describe('isAddressInCidr', () => {
 
 	it('never matches across address families', () => {
 		expect(isAddressInCidr('2001:db8::1', '10.0.0.0/8')).toBe(false);
+	});
+});
+
+describe('isValidCidr', () => {
+	it('accepts a valid IPv4 CIDR', () => {
+		expect(isValidCidr('10.0.0.0/8')).toBe(true);
+	});
+
+	it('accepts a valid IPv6 CIDR', () => {
+		expect(isValidCidr('2001:db8::/32')).toBe(true);
+	});
+
+	it('rejects a value with no prefix length', () => {
+		expect(isValidCidr('10.0.0.0')).toBe(false);
+	});
+
+	it('rejects a value that is not an address at all', () => {
+		expect(isValidCidr('not-a-cidr')).toBe(false);
+	});
+
+	it('rejects a prefix length that exceeds the address family width', () => {
+		expect(isValidCidr('10.0.0.0/40')).toBe(false);
+		expect(isValidCidr('2001:db8::/200')).toBe(false);
+	});
+
+	it('rejects a non-numeric prefix length', () => {
+		expect(isValidCidr('10.0.0.0/eight')).toBe(false);
+	});
+
+	it('rejects a CIDR with more than one slash', () => {
+		expect(isValidCidr('10.0.0.0/8/8')).toBe(false);
 	});
 });
 
@@ -185,5 +217,33 @@ describe('resolveNetworkIdentity', () => {
 			configuration: untrustedConfiguration,
 		});
 		expect(identity).toBe('unknown-client');
+	});
+
+	it('falls back to the trusted socket address when the configured hop count exceeds the entries present, instead of trusting the leftmost (potentially client-forged) entry', () => {
+		// Configured for 2 trusted hops, but the header the trusted proxy
+		// actually forwarded only carries 1 entry — a shorter chain than
+		// expected. The one remaining entry is not verified to have been
+		// written by a trusted proxy, so it must not be trusted as the
+		// client's real identity.
+		const identity = resolveNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ 'x-forwarded-for': 'forged-by-client' }),
+			configuration: { ...trustedXffConfiguration, trustedProxyHopCount: 2 },
+		});
+		expect(identity).toBe('10.0.0.5');
+		expect(identity).not.toBe('forged-by-client');
+	});
+
+	it('falls back to the trusted socket address when the hop count exceeds the entries present in the forwarded header too', () => {
+		const identity = resolveNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ forwarded: 'for=forged-by-client' }),
+			configuration: {
+				...trustedXffConfiguration,
+				trustedProxyHeader: 'forwarded',
+				trustedProxyHopCount: 2,
+			},
+		});
+		expect(identity).toBe('10.0.0.5');
 	});
 });

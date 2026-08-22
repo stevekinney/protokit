@@ -44,3 +44,4 @@ export type {
 export { mcpScopes, mcpScopeDescriptions, isMcpScope } from './scopes.js';
 export type { McpScope } from './scopes.js';
 export { getSupportedScopes } from './supported-scopes.js';
+export { hasRegisteredUiExtensionResource } from './ui-extension-support.js';

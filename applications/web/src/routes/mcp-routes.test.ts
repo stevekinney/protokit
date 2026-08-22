@@ -58,7 +58,12 @@ mock.module('@web/lib/request-rate-limiter', () => ({
 }));
 
 mock.module('@web/lib/mcp-concurrency-limiter', () => ({
-	acquireMcpConcurrencySlot: async () => ({ allowed: true, release: async () => {} }),
+	acquireMcpConcurrencySlot: async () => ({
+		allowed: true,
+		release: async () => {},
+		renew: async () => {},
+	}),
+	attachConcurrencySlotToResponseLifetime: (response: Response) => response,
 }));
 
 mock.module('@web/lib/mcp-origin-validation', () => ({

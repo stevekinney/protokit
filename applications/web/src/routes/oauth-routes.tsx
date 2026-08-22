@@ -5,6 +5,7 @@ import { database, schema } from '@template/database';
 import {
 	environment as mcpEnvironment,
 	getSupportedScopes,
+	hasRegisteredUiExtensionResource,
 	isMcpScope,
 	mcpScopeDescriptions,
 } from '@template/mcp';
@@ -18,6 +19,7 @@ import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import {
 	consumeAuthorizationTransaction,
 	createAuthorizationTransaction,
+	unconsumeAuthorizationTransaction,
 } from '@web/lib/authorization-transaction';
 import { isValidClientName } from '@web/lib/client-name-validation';
 import {
@@ -408,7 +410,11 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 			body: (
 				<OauthAuthorizePage
 					mode="error"
-					error={`Unsupported scope: ${scopeRequest.unknownScopes.join(', ')}.`}
+					error={
+						scopeRequest.unknownScopes.length > 0
+							? `Unsupported scope: ${scopeRequest.unknownScopes.join(', ')}.`
+							: 'The scope parameter must not be empty.'
+					}
 				/>
 			),
 		});
@@ -648,21 +654,44 @@ export async function handleOauthAuthorizeApprove(context: RequestContext): Prom
 	}
 
 	const code = randomBytes(32).toString('hex');
-	await database.insert(schema.oauthCodes).values({
-		code: hashCredential(code),
-		clientId: transaction.clientId,
-		userId: context.user.id,
-		redirectUri: transaction.redirectUri,
-		codeChallenge: transaction.codeChallenge,
-		codeChallengeMethod: transaction.codeChallengeMethod,
-		state: transaction.state,
-		resource: transaction.resource,
-		// AUTHZ-001: the exact scope the consent screen displayed and the
-		// user approved — never re-derived from the form, only ever carried
-		// forward from the transaction row `handleOauthAuthorizeGet` created.
-		scope: transaction.scope,
-		expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-	});
+	try {
+		await database.insert(schema.oauthCodes).values({
+			code: hashCredential(code),
+			clientId: transaction.clientId,
+			userId: context.user.id,
+			redirectUri: transaction.redirectUri,
+			codeChallenge: transaction.codeChallenge,
+			codeChallengeMethod: transaction.codeChallengeMethod,
+			state: transaction.state,
+			resource: transaction.resource,
+			// AUTHZ-001: the exact scope the consent screen displayed and the
+			// user approved — never re-derived from the form, only ever carried
+			// forward from the transaction row `handleOauthAuthorizeGet` created.
+			scope: transaction.scope,
+			expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+		});
+	} catch (error) {
+		// Review finding: neon-http has no multi-statement transaction support
+		// (see `OAUTH-003`'s note on the identical limitation for refresh-token
+		// rotation), so this insert cannot be folded into the same atomic
+		// statement as `consumeAuthorizationTransaction` above. Without this,
+		// a transient failure here would leave the one-time transaction
+		// already spent and no code minted -- the browser's approval form
+		// could never be retried. No code was ever generated into a response
+		// (the insert itself threw), so reopening the transaction cannot cause
+		// a code to be issued twice. Best-effort: if this also fails, the
+		// transaction stays consumed and the caller is in exactly today's
+		// (pre-fix) situation, no worse.
+		try {
+			await unconsumeAuthorizationTransaction(transactionId);
+		} catch (unconsumeError) {
+			logger.error(
+				{ err: unconsumeError },
+				'Failed to reopen authorization transaction after a failed code insert',
+			);
+		}
+		throw error;
+	}
 
 	const redirectUrl = new URL(transaction.redirectUri);
 	redirectUrl.searchParams.set('code', code);
@@ -1314,57 +1343,45 @@ async function handleOauthTokenRefreshGrant(
 		);
 	}
 
-	// OAUTH-003 / S-02: bind the single-use rotation predicate to the
-	// authenticated client and the already-validated resource, atomically,
-	// in the same UPDATE ... WHERE ... RETURNING statement that performs the
-	// mutation. neon-http's driver has no multi-statement transaction
-	// support (`db.transaction()` throws "No transactions support in
-	// neon-http driver" -- confirmed directly against the installed driver),
-	// so this single statement *is* the unit of atomicity here, the same
-	// pattern SEC-003's rate-limiting Lua script and
-	// authorization-transaction.ts's consume step already establish for
-	// this codebase. Previously the client-id and resource checks ran
-	// *after* this statement had already revoked the token, so a party
-	// presenting another client's live refresh token under its own
-	// client_id burned that token even though its own request was then
-	// rejected -- a denial-of-service on a client it does not own, with no
-	// benefit to the attacker. Folding both into the predicate means a
-	// mismatched client or resource simply matches no row -- nothing is
-	// mutated -- rather than mutating first and rejecting after.
+	// Shared predicate every lookup and the mutating rotation below must
+	// agree on: this exact token, owned by the authenticated client, for
+	// the already-validated resource, not yet revoked, not yet expired.
 	const refreshTokenHash = hashCredential(refresh_token);
-	const [revokedRefreshToken] = await database
-		.update(schema.oauthRefreshTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthRefreshTokens.refreshToken, refreshTokenHash),
-				eq(schema.oauthRefreshTokens.clientId, client.clientId),
-				eq(schema.oauthRefreshTokens.resource, resource),
-				isNull(schema.oauthRefreshTokens.revokedAt),
-				gt(schema.oauthRefreshTokens.expiresAt, new Date()),
-			),
-		)
-		.returning();
+	const activeRefreshTokenPredicate = and(
+		eq(schema.oauthRefreshTokens.refreshToken, refreshTokenHash),
+		eq(schema.oauthRefreshTokens.clientId, client.clientId),
+		eq(schema.oauthRefreshTokens.resource, resource),
+		isNull(schema.oauthRefreshTokens.revokedAt),
+		gt(schema.oauthRefreshTokens.expiresAt, new Date()),
+	);
 
-	if (!revokedRefreshToken) {
-		// Nothing matched the predicate above, so nothing was mutated by this
-		// request. Distinguish "this exact token was already rotated" (reuse
-		// of a previously-issued refresh token -- a signal that token has
-		// leaked, per the OAuth Security BCP's refresh-token rotation-reuse
-		// guidance) from every other reason a request can land here (token
-		// never existed, wrong owning client, wrong resource, expired) via a
-		// read-only lookup by hash alone. This lookup cannot itself let a
-		// race succeed twice: the mutating UPDATE above already ran and
-		// matched nothing, so this branch has nothing left to protect except
-		// deciding whether to react to a stolen token. Never logs the token
-		// or its hash -- only the family identifier.
+	// Distinguishes "this exact token was already rotated" (reuse of a
+	// previously-issued refresh token -- a signal that token has leaked,
+	// per the OAuth Security BCP's refresh-token rotation-reuse guidance)
+	// from every other reason a request can land here (token never
+	// existed, wrong owning client, wrong resource, expired) via a
+	// read-only lookup by hash alone, bound to the authenticated client and
+	// resource -- the same two conditions the mutating predicate above
+	// requires. Without that binding, presenting a *different* client's
+	// already-revoked (rotated-away) refresh token value under one's own
+	// valid credentials would let any registered client trigger family
+	// revocation -- and thus a denial-of-service -- on a token family it
+	// never owned, merely by possessing a stale hash value. Never logs the
+	// token or its hash -- only the family identifier.
+	async function respondToRefreshTokenNotFound(): Promise<Response> {
 		const [existingByHash] = await database
 			.select({
 				familyId: schema.oauthRefreshTokens.familyId,
 				revokedAt: schema.oauthRefreshTokens.revokedAt,
 			})
 			.from(schema.oauthRefreshTokens)
-			.where(eq(schema.oauthRefreshTokens.refreshToken, refreshTokenHash))
+			.where(
+				and(
+					eq(schema.oauthRefreshTokens.refreshToken, refreshTokenHash),
+					eq(schema.oauthRefreshTokens.clientId, client.clientId),
+					eq(schema.oauthRefreshTokens.resource, resource),
+				),
+			)
 			.limit(1);
 
 		if (existingByHash?.revokedAt) {
@@ -1394,28 +1411,74 @@ async function handleOauthTokenRefreshGrant(
 	// AUTHZ-001 / RFC 6749 §6: "the requested scope MUST NOT include any
 	// scope not originally granted." An explicit refresh-time `scope`
 	// request that is not a subset of what this refresh token actually
-	// carries is rejected here, before the old access token is revoked and
-	// before any new token pair is minted -- the just-rotated refresh token
-	// row above is already consumed (this codebase's atomic
-	// revoke-then-check rotation pattern; see OAUTH-003's comment on the
-	// predicate above), but nothing beyond that single-use token is spent
-	// on a request this server is about to refuse.
-	const grantedRefreshScopes = splitScopeString(revokedRefreshToken.scope || '');
-	if (
-		refreshScopeRequest.scope !== undefined &&
-		!isScopeSubsetOf(refreshScopeRequest.scope, grantedRefreshScopes)
-	) {
-		return jsonResponse(
-			{
-				error: 'invalid_scope',
-				error_description:
-					'Requested scope exceeds the scope originally granted to this refresh token.',
-			},
-			{ status: 400, headers: tokenResponseHeaders },
-		);
+	// carries must be rejected *before* the token is consumed -- a refresh
+	// token is single-use, and this codebase's atomic revoke-then-check
+	// rotation pattern (see below) does not itself un-revoke a token once
+	// the mutating UPDATE has run. Read-only, so it cannot itself let a
+	// race succeed twice: whether or not this read observes the token as
+	// still live, the actual consumption below is still governed
+	// exclusively by the atomic `UPDATE ... WHERE ... RETURNING`
+	// statement's own predicate, which is what OAUTH-003/S-02 requires for
+	// correctness under concurrency -- this read only decides whether to
+	// attempt that statement at all, never whether it succeeds.
+	if (refreshScopeRequest.scope !== undefined) {
+		const [currentRefreshToken] = await database
+			.select({ scope: schema.oauthRefreshTokens.scope })
+			.from(schema.oauthRefreshTokens)
+			.where(activeRefreshTokenPredicate)
+			.limit(1);
+
+		if (!currentRefreshToken) {
+			return respondToRefreshTokenNotFound();
+		}
+
+		const grantedRefreshScopes = splitScopeString(currentRefreshToken.scope || '');
+		if (!isScopeSubsetOf(refreshScopeRequest.scope, grantedRefreshScopes)) {
+			return jsonResponse(
+				{
+					error: 'invalid_scope',
+					error_description:
+						'Requested scope exceeds the scope originally granted to this refresh token.',
+				},
+				{ status: 400, headers: tokenResponseHeaders },
+			);
+		}
 	}
+
+	// OAUTH-003 / S-02: bind the single-use rotation predicate to the
+	// authenticated client and the already-validated resource, atomically,
+	// in the same UPDATE ... WHERE ... RETURNING statement that performs the
+	// mutation. neon-http's driver has no multi-statement transaction
+	// support (`db.transaction()` throws "No transactions support in
+	// neon-http driver" -- confirmed directly against the installed driver),
+	// so this single statement *is* the unit of atomicity here, the same
+	// pattern SEC-003's rate-limiting Lua script and
+	// authorization-transaction.ts's consume step already establish for
+	// this codebase. Previously the client-id and resource checks ran
+	// *after* this statement had already revoked the token, so a party
+	// presenting another client's live refresh token under its own
+	// client_id burned that token even though its own request was then
+	// rejected -- a denial-of-service on a client it does not own, with no
+	// benefit to the attacker. Folding both into the predicate means a
+	// mismatched client or resource simply matches no row -- nothing is
+	// mutated -- rather than mutating first and rejecting after.
+	const [revokedRefreshToken] = await database
+		.update(schema.oauthRefreshTokens)
+		.set({ revokedAt: new Date() })
+		.where(activeRefreshTokenPredicate)
+		.returning();
+
+	if (!revokedRefreshToken) {
+		// Nothing matched the predicate above, so nothing was mutated by this
+		// request. This can still happen even after the scope pre-check above
+		// passed -- e.g. a concurrent request rotated or revoked the token in
+		// between -- so the same not-found/reuse-detection handling applies.
+		return respondToRefreshTokenNotFound();
+	}
+
 	// Omitted `scope` carries the stored grant forward unchanged; an
-	// explicit (already-validated-as-a-subset) request narrows it.
+	// explicit (already-validated-as-a-subset, by the pre-check above)
+	// request narrows it.
 	const effectiveRefreshScope =
 		refreshScopeRequest.scope !== undefined
 			? canonicalizeScopes(refreshScopeRequest.scope)
@@ -1618,7 +1681,13 @@ export async function handleOauthRevokePost(context: RequestContext): Promise<Re
 	}
 
 	const response = await handleOauthRevokePostInner(context);
-	if (response.status === 400 || response.status === 401) {
+	// Same reasoning as `handleOauthTokenPost`: `authenticateOauthClient` is
+	// the sole source of a 401 (`invalid_client`) from this handler. Every
+	// other rejection -- malformed bodies, unsupported content types,
+	// missing token/client parameters, oversized values -- returns 400 and
+	// never attempted client authentication, so it must not count toward
+	// the shared lockout.
+	if (response.status === 401) {
 		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
 	}
 	return response;
@@ -1686,7 +1755,18 @@ export async function handleOauthTokenPost(context: RequestContext): Promise<Res
 	}
 
 	const response = await handleOauthTokenPostInner(context);
-	if (response.status === 400 || response.status === 401) {
+	// Only an actual client-authentication failure should count toward the
+	// shared network-wide lockout. `authenticateOauthClient` is the sole
+	// source of a 401 from this handler (`invalid_client`); every other
+	// rejection along this path -- malformed bodies, unsupported grants,
+	// expired authorization codes, redirect mismatches, invalid PKCE,
+	// resource errors, invalid scope requests -- returns 400 and is an
+	// ordinary protocol error, not a failed authentication attempt.
+	// Counting those too let ten unrelated protocol errors from one network
+	// identity (a shared NAT or hosted connector egress address) trigger the
+	// same five-minute lockout as ten wrong-secret guesses, locking out
+	// every other client and user sharing that identity.
+	if (response.status === 401) {
 		await recordFailedAuthentication({ networkIdentity: context.networkIdentity });
 	}
 	return response;
@@ -1731,8 +1811,19 @@ export async function handleOauthAuthorizationMetadataGet(
 			service_documentation: `${baseUrl}/support`,
 			op_policy_uri: `${baseUrl}/privacy`,
 			op_tos_uri: `${baseUrl}/terms`,
+			// Review finding: the real `/mcp` server capabilities (`server.ts`)
+			// only advertise the UI extension when `MCP_ENABLE_UI_EXTENSION` is
+			// set *and* at least one registered resource is actually an MCP App
+			// (`hasRegisteredUiExtensionResource()`) -- `packages/mcp-apps` ships
+			// no application today, so that predicate is always false in this
+			// repository. This metadata document must apply the exact same
+			// predicate; advertising the extension here on the flag alone would
+			// let a client discover UI-extension support in OAuth metadata and
+			// then receive server capabilities without it.
 			extensions: {
-				...(environment.MCP_ENABLE_UI_EXTENSION ? { [mcpUiExtensionIdentifier]: {} } : {}),
+				...(environment.MCP_ENABLE_UI_EXTENSION && hasRegisteredUiExtensionResource()
+					? { [mcpUiExtensionIdentifier]: {} }
+					: {}),
 			},
 		},
 		{ headers: oauthCorsHeaders },

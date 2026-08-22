@@ -19,6 +19,8 @@
  * parallel one.
  */
 
+import { isValidCidr } from '@web/lib/trusted-proxy';
+
 /**
  * A small, deliberately conservative denylist of connection-string
  * credentials that show up in documentation, examples, and copy-pasted
@@ -44,7 +46,15 @@ function extractHostAndCredentials(
 	try {
 		const url = new URL(rawUrl);
 		const credentials = url.username || url.password ? `${url.username}:${url.password}` : null;
-		return { host: url.hostname.toLowerCase(), credentials };
+		// `URL#hostname` keeps the square brackets around an IPv6 literal
+		// (e.g. `[::1]`), but this file's loopback denylist stores bare
+		// addresses (`::1`). Strip them here, once, so every caller's
+		// `loopbackHostnames.has(...)` check actually matches an IPv6 host —
+		// confirmed directly: `new URL('rediss://[::1]:6379').hostname` is
+		// `'[::1]'`, not `'::1'`.
+		const host = url.hostname.toLowerCase();
+		const unbracketed = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+		return { host: unbracketed, credentials };
 	} catch {
 		return null;
 	}
@@ -202,6 +212,34 @@ export function collectProductionStartupFailures(
 		);
 	} else if (!configuration.baseUrl.startsWith('https://')) {
 		failures.push(`BASE_URL (${configuration.baseUrl}) must use https:// in production.`);
+	} else {
+		// `getBaseUrl` (`src/lib/base-url.ts`) concatenates this value
+		// directly with `/oauth/token`, `/auth/google/callback`, and `/mcp`
+		// — a path, query, fragment, or embedded userinfo on BASE_URL would
+		// land inside those derived URLs (e.g. a trailing path turns
+		// `/oauth/token` into a path segment under it; a query string puts
+		// the endpoint suffix after `?`), pointing OAuth metadata and
+		// redirects at unserved locations. Require a canonical origin: only
+		// scheme + host (+ optional port), nothing else.
+		try {
+			const parsed = new URL(configuration.baseUrl);
+			const isCanonicalOrigin =
+				parsed.origin === configuration.baseUrl &&
+				parsed.pathname === '/' &&
+				!parsed.search &&
+				!parsed.hash &&
+				!parsed.username &&
+				!parsed.password;
+			if (!isCanonicalOrigin) {
+				failures.push(
+					`BASE_URL (${configuration.baseUrl}) must be a canonical origin (scheme, host, and ` +
+						'optional port only — no path, query, fragment, or userinfo). Endpoint paths are ' +
+						'appended to this value directly.',
+				);
+			}
+		} catch {
+			failures.push(`BASE_URL (${configuration.baseUrl}) could not be parsed as a URL.`);
+		}
 	}
 
 	if (!configuration.isRedisConfigured) {
@@ -220,6 +258,28 @@ export function collectProductionStartupFailures(
 				'address for rate limiting and network identity instead of the real client, and the ' +
 				'atomic rate limiter above stops protecting individual clients.',
 		);
+	} else {
+		// `isAddressInCidr` (the function that actually consumes each of
+		// these entries at request time) silently returns `false` for a
+		// malformed one — a typo would parse "successfully" here and then
+		// match no socket peer ever, so every request would fall back to the
+		// proxy's own socket address, collapsing rate limiting and
+		// failed-authentication lockouts onto one shared bucket for every
+		// real client. Parse and reject a malformed entry now, while startup
+		// can still fail closed, instead of discovering it in production
+		// traffic.
+		const cidrs = configuration.trustedProxyCidrs
+			.split(',')
+			.map((cidr) => cidr.trim())
+			.filter(Boolean);
+		const malformedCidrs = cidrs.filter((cidr) => !isValidCidr(cidr));
+		if (malformedCidrs.length > 0) {
+			failures.push(
+				`TRUSTED_PROXY_CIDRS contains malformed entries: ${malformedCidrs.join(', ')}. Each ` +
+					'entry must be a valid IPv4 or IPv6 address with a prefix length that fits that ' +
+					"family's address width (e.g. 10.0.0.0/8 or 2001:db8::/32).",
+			);
+		}
 	}
 
 	if (configuration.databaseLocalProxyUrl) {

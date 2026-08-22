@@ -228,6 +228,42 @@ async function setupMcpProtocolAndExtensions() {
 	}
 }
 
+/**
+ * Environment keys that only ever describe *this* machine and must never be copied to Railway
+ * verbatim, because Railway is a production deployment target by definition. Copying
+ * `NODE_ENV=development` from a developer's `.env.local` overrides the image's baked-in
+ * `ENV NODE_ENV=production` (`Dockerfile`'s runtime stage), which makes `CONFIG-001`'s fail-closed
+ * production invariants vacuous and `server.ts` bind to loopback (`OPEN-1`) — the deployed service
+ * becomes unreachable through Railway's published port. `DATABASE_LOCAL_PROXY_URL` and
+ * `PROTOKIT_TUNNEL_ACTIVE` are the same class of local-only value: the former is explicitly
+ * required to be unset in production (`production-startup-requirements.ts`), and the latter only
+ * has meaning for a locally spawned `develop.ts --tunnel` process.
+ */
+export const RAILWAY_EXCLUDED_ENVIRONMENT_KEYS: ReadonlySet<string> = new Set([
+	'NODE_ENV',
+	'DATABASE_LOCAL_PROXY_URL',
+	'PROTOKIT_TUNNEL_ACTIVE',
+]);
+
+/**
+ * Pure planning function for what `setupRailway` pushes: every non-empty `.env.local` entry
+ * except the local-only keys above, plus an explicit `NODE_ENV=production` — never inferred from
+ * whatever the developer's own `.env.local` happens to say, since a Railway service is production
+ * by definition regardless of what mode the machine running `setup.ts` is in.
+ */
+export function planRailwayVariables(
+	variables: Record<string, string | undefined>,
+): Array<[string, string]> {
+	const plan: Array<[string, string]> = [];
+	for (const [key, value] of Object.entries(variables)) {
+		if (!value) continue;
+		if (RAILWAY_EXCLUDED_ENVIRONMENT_KEYS.has(key)) continue;
+		plan.push([key, value]);
+	}
+	plan.push(['NODE_ENV', 'production']);
+	return plan;
+}
+
 async function setupRailway() {
 	console.log('\n--- Railway ---\n');
 
@@ -246,8 +282,7 @@ async function setupRailway() {
 		execute('railway', ['init', '-y'], { stdio: 'inherit' });
 
 		const variables = readEnvironmentFile();
-		for (const [key, value] of Object.entries(variables)) {
-			if (!value) continue;
+		for (const [key, value] of planRailwayVariables(variables)) {
 			try {
 				// `--stdin` delivers the value over stdin rather than as an argv element, so a
 				// credential never appears in `ps` output while Railway is configuring it.
@@ -256,7 +291,7 @@ async function setupRailway() {
 				console.warn(`  Failed to set ${key} on Railway`);
 			}
 		}
-		console.log('Railway environment variables configured.');
+		console.log('Railway environment variables configured (NODE_ENV forced to production).');
 	} catch {
 		console.warn('Railway setup failed. Configure manually with: railway init');
 	}

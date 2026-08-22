@@ -14,8 +14,9 @@ import { allPrompts } from './prompts/index.js';
 // (headings as `## `, lists as `- `, etc.), which is legible prose either
 // way and never contains raw HTML tags.
 import instructions from './instructions.md' with { type: 'text' };
-import { EXTENSION_ID, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
+import { EXTENSION_ID } from '@modelcontextprotocol/ext-apps/server';
 import { registerConformanceFixtures } from './conformance-fixture-registration.js';
+import { hasRegisteredUiExtensionResource } from './ui-extension-support.js';
 import { environment } from './env.js';
 import { metricsCollector } from './metrics.js';
 import { logger } from './logger.js';
@@ -148,18 +149,19 @@ export function createMcpServer(context: {
 	const era = context.era ?? 'legacy';
 	const enableConformanceMode = context.enableConformanceMode ?? environment.MCP_CONFORMANCE_MODE;
 	const experimentalCapabilities: Record<string, { version: string }> = {};
-	// CONTENT-001: advertising the MCP Apps extension is not just gated on the
-	// `MCP_ENABLE_UI_EXTENSION` flag (which defaults off, but an operator can
-	// still set it) — it also requires at least one registered resource that
-	// is actually an MCP App (`RESOURCE_MIME_TYPE`). `packages/mcp-apps` ships
-	// no application today, so this mechanically keeps the capability absent
-	// even if the flag is turned on by mistake, rather than only relying on
-	// the default. Once a real app + resource exists, this becomes true on
-	// its own with no further change needed here.
-	const hasRegisteredUiExtensionResource = allResources.some(
-		(resource) => resource.mimeType === RESOURCE_MIME_TYPE,
-	);
-	if (context.enableUiExtension && hasRegisteredUiExtensionResource) {
+	// CONTENT-001 / review finding: advertising the MCP Apps extension is not
+	// just gated on the `MCP_ENABLE_UI_EXTENSION` flag (which defaults off,
+	// but an operator can still set it) — it also requires at least one
+	// registered resource that is actually an MCP App (`RESOURCE_MIME_TYPE`).
+	// `hasRegisteredUiExtensionResource()` is the single source of truth for
+	// that predicate, shared with `oauth-routes.tsx`'s authorization-server
+	// metadata `extensions` field — see its own doc comment for why that
+	// sharing matters. `packages/mcp-apps` ships no application today, so
+	// this mechanically keeps the capability absent even if the flag is
+	// turned on by mistake, rather than only relying on the default. Once a
+	// real app + resource exists, this becomes true on its own with no
+	// further change needed here.
+	if (context.enableUiExtension && hasRegisteredUiExtensionResource()) {
 		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
 	}
 

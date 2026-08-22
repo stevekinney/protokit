@@ -43,25 +43,50 @@ function ipToBigInt(address: string): { family: 4 | 6; value: bigint } | null {
  * canonicalization, so it correctly matches an IPv4 CIDR.
  */
 export function isAddressInCidr(address: string, cidr: string): boolean {
-	const [rangeAddress, prefixLengthText] = cidr.split('/');
-	if (!rangeAddress || prefixLengthText === undefined) return false;
-
-	const prefixLength = Number.parseInt(prefixLengthText, 10);
-	if (!Number.isInteger(prefixLength) || prefixLength < 0) return false;
+	const rangeInfo = parseCidr(cidr);
+	if (!rangeInfo) return false;
 
 	const canonicalAddress = canonicalizeIpAddress(address);
-	const canonicalRange = canonicalizeIpAddress(rangeAddress);
-
 	const addressInfo = ipToBigInt(canonicalAddress);
-	const rangeInfo = ipToBigInt(canonicalRange);
-	if (!addressInfo || !rangeInfo || addressInfo.family !== rangeInfo.family) return false;
+	if (!addressInfo || addressInfo.family !== rangeInfo.family) return false;
 
 	const width = addressInfo.family === 4 ? 32 : 128;
-	if (prefixLength > width) return false;
-	if (prefixLength === 0) return true;
+	if (rangeInfo.prefixLength === 0) return true;
 
-	const shift = BigInt(width - prefixLength);
+	const shift = BigInt(width - rangeInfo.prefixLength);
 	return addressInfo.value >> shift === rangeInfo.value >> shift;
+}
+
+function parseCidr(cidr: string): { family: 4 | 6; value: bigint; prefixLength: number } | null {
+	const parts = cidr.split('/');
+	if (parts.length !== 2) return null;
+	const [rangeAddress, prefixLengthText] = parts;
+	if (!rangeAddress || !prefixLengthText) return null;
+
+	// Reject anything `Number.parseInt` would otherwise silently tolerate
+	// (leading/trailing garbage such as "8abc" or " 8"): the prefix must be
+	// nothing but decimal digits.
+	if (!/^\d+$/.test(prefixLengthText)) return null;
+	const prefixLength = Number.parseInt(prefixLengthText, 10);
+
+	const rangeInfo = ipToBigInt(canonicalizeIpAddress(rangeAddress));
+	if (!rangeInfo) return null;
+
+	const width = rangeInfo.family === 4 ? 32 : 128;
+	if (prefixLength > width) return null;
+
+	return { ...rangeInfo, prefixLength };
+}
+
+/**
+ * Whether `cidr` is syntactically valid and addressable (a real IPv4 or
+ * IPv6 range address, with a prefix length that fits that family's
+ * address width). Used at startup to fail closed on a malformed
+ * `TRUSTED_PROXY_CIDRS` entry instead of letting it silently match nothing
+ * — see `production-startup-requirements.ts`.
+ */
+export function isValidCidr(cidr: string): boolean {
+	return parseCidr(cidr) !== null;
 }
 
 function isSocketPeerTrusted(
@@ -81,7 +106,15 @@ function parseForwardedForHeaderValue(part: string): string | null {
 function selectHopFromEnd(entries: string[], hopCount: number): string | null {
 	if (entries.length === 0) return null;
 	const index = entries.length - hopCount;
-	return entries[Math.max(0, Math.min(index, entries.length - 1))] ?? null;
+	// A hop count that exceeds the number of entries actually present means
+	// the forwarding chain is shorter than configured — the trusted proxy
+	// appended fewer hops than expected, so the leftmost remaining entry is
+	// not verified to have been written by a trusted proxy at all; it could
+	// be a value the client itself supplied. Rather than clamping to index 0
+	// and trusting that unverified entry, reject the header outright so the
+	// caller falls back to the (verified) socket address.
+	if (index < 0) return null;
+	return entries[Math.min(index, entries.length - 1)] ?? null;
 }
 
 function extractForwardedAddress(

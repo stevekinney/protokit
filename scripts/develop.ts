@@ -52,6 +52,29 @@ export const exposedRoutes: readonly string[] = [
 	'/mcp',
 ];
 
+/**
+ * The environment the dev server subprocess is spawned with. When a tunnel URL is already known,
+ * `BASE_URL` is set to it — this is what makes `getBaseUrl` (`applications/web/src/lib/base-url.ts`)
+ * advertise the public HTTPS tunnel origin in OAuth discovery documents, authorization redirects,
+ * and the resource audience, instead of falling back to the loopback `http://localhost:3000` it
+ * would otherwise infer from the plain HTTP request cloudflared forwards. `getBaseUrl` deliberately
+ * ignores forwarded host/proto headers, so this environment variable is the only channel that can
+ * carry the real origin to it.
+ */
+export function buildDevelopmentServerEnvironment(
+	tunnelEnabled: boolean,
+	baseEnvironment: Record<string, string | undefined>,
+	tunnelUrl?: string,
+): Record<string, string | undefined> {
+	return {
+		...baseEnvironment,
+		// Only ever true when --tunnel is passed: disables the development login bypass for the
+		// lifetime of this process, regardless of NODE_ENV. See `shouldEnableTunnel` above.
+		PROTOKIT_TUNNEL_ACTIVE: tunnelEnabled ? 'true' : 'false',
+		...(tunnelUrl ? { BASE_URL: tunnelUrl } : {}),
+	};
+}
+
 export function formatExposedRoutesBanner(tunnelUrl: string): string {
 	const lines = [
 		'',
@@ -127,6 +150,69 @@ async function pollUntilReady(
 	throw new Error(`Timed out waiting for ${url} to become ready`);
 }
 
+/**
+ * Spawns the cloudflared tunnel using the locally installed binary that `commandExists('cloudflared')`
+ * already verified — not `bunx cloudflared`, which resolves and runs an unpinned npm package
+ * regardless of what is actually installed on PATH, defeating the point of checking for a
+ * reviewed binary first (SECRETS-001, S-12). A quick tunnel mints its public URL as soon as it
+ * connects to the Cloudflare edge, independent of whether the local origin it forwards to is up
+ * yet, so this runs BEFORE the dev server is spawned — the URL must be known in time to configure
+ * the server's own `BASE_URL`, not merely printed after the fact.
+ */
+async function startTunnel(): Promise<{ process: ReturnType<typeof Bun.spawn>; url: string }> {
+	const tunnelPrefix = `${ANSI_MAGENTA}[tunnel]${ANSI_RESET}`;
+	const tunnelProcess = Bun.spawn(['cloudflared', 'tunnel', '--url', 'http://localhost:3000'], {
+		stdout: 'pipe',
+		stderr: 'pipe',
+		cwd: import.meta.dirname + '/..',
+	});
+
+	prefixStream(tunnelProcess.stdout, tunnelPrefix);
+
+	// Parse stderr for the tunnel URL
+	let tunnelUrl: string | null = null;
+	const tunnelStderrReader = tunnelProcess.stderr.getReader();
+	const tunnelStderrDecoder = new TextDecoder();
+	let tunnelStderrBuffer = '';
+
+	const url = await new Promise<string>((resolve, reject) => {
+		const tunnelTimeout = setTimeout(() => {
+			reject(new Error('Timed out waiting for tunnel URL'));
+		}, 30000);
+
+		function readTunnelStderr(): void {
+			tunnelStderrReader.read().then(({ done, value }) => {
+				if (done) return;
+
+				tunnelStderrBuffer += tunnelStderrDecoder.decode(value, { stream: true });
+				const lines = tunnelStderrBuffer.split('\n');
+				tunnelStderrBuffer = lines.pop() ?? '';
+
+				for (const line of lines) {
+					if (line.length > 0) {
+						write(`${tunnelPrefix} ${line}\n`);
+					}
+
+					if (!tunnelUrl) {
+						const extractedUrl = parseTunnelUrl(line);
+						if (extractedUrl) {
+							tunnelUrl = extractedUrl;
+							clearTimeout(tunnelTimeout);
+							resolve(extractedUrl);
+						}
+					}
+				}
+
+				readTunnelStderr();
+			});
+		}
+
+		readTunnelStderr();
+	});
+
+	return { process: tunnelProcess, url };
+}
+
 async function main(): Promise<void> {
 	const tunnelEnabled = shouldEnableTunnel(process.argv);
 	const inspectorEnabled = shouldEnableInspector(process.argv);
@@ -150,19 +236,32 @@ async function main(): Promise<void> {
 		);
 	}
 
+	// With --tunnel, resolve the public URL FIRST: the dev server below is spawned with BASE_URL
+	// set to it, which is the only way `getBaseUrl` advertises the tunnel origin instead of
+	// `http://localhost:3000` in OAuth discovery documents, authorization redirects, and the
+	// resource audience (see `buildDevelopmentServerEnvironment` above).
+	let resolvedTunnelUrl: string | undefined;
+	if (tunnelEnabled) {
+		const tunnel = await startTunnel();
+		childProcesses.push(tunnel.process);
+		resolvedTunnelUrl = tunnel.url;
+
+		const banner = [
+			'',
+			`${ANSI_GREEN}${ANSI_BOLD}${'='.repeat(60)}${ANSI_RESET}`,
+			`${ANSI_GREEN}${ANSI_BOLD}  Tunnel URL: ${resolvedTunnelUrl}${ANSI_RESET}`,
+			`${ANSI_GREEN}${ANSI_BOLD}${'='.repeat(60)}${ANSI_RESET}`,
+		];
+		write(banner.join('\n') + '\n');
+	}
+
 	// Spawn the dev server
 	const developmentPrefix = `${ANSI_CYAN}[dev]${ANSI_RESET}`;
 	const developmentProcess = Bun.spawn(['bun', 'turbo', 'dev'], {
 		stdout: 'pipe',
 		stderr: 'pipe',
 		cwd: import.meta.dirname + '/..',
-		env: {
-			...process.env,
-			// Only ever true when --tunnel is passed: disables the
-			// development login bypass for the lifetime of this process,
-			// regardless of NODE_ENV. See `shouldEnableTunnel` above.
-			PROTOKIT_TUNNEL_ACTIVE: tunnelEnabled ? 'true' : 'false',
-		},
+		env: buildDevelopmentServerEnvironment(tunnelEnabled, process.env, resolvedTunnelUrl),
 	});
 
 	childProcesses.push(developmentProcess);
@@ -175,73 +274,7 @@ async function main(): Promise<void> {
 
 	write(`${developmentPrefix} Server is ready!\n\n`);
 
-	if (tunnelEnabled) {
-		// Spawn the cloudflared tunnel using the locally installed binary that
-		// `commandExists('cloudflared')` already verified above — not `bunx cloudflared`, which
-		// resolves and runs an unpinned npm package regardless of what is actually installed on
-		// PATH, defeating the point of checking for a reviewed binary first (SECRETS-001, S-12).
-		const tunnelPrefix = `${ANSI_MAGENTA}[tunnel]${ANSI_RESET}`;
-		const tunnelProcess = Bun.spawn(['cloudflared', 'tunnel', '--url', 'http://localhost:3000'], {
-			stdout: 'pipe',
-			stderr: 'pipe',
-			cwd: import.meta.dirname + '/..',
-		});
-
-		childProcesses.push(tunnelProcess);
-		prefixStream(tunnelProcess.stdout, tunnelPrefix);
-
-		// Parse stderr for the tunnel URL
-		let tunnelUrl: string | null = null;
-		const tunnelStderrReader = tunnelProcess.stderr.getReader();
-		const tunnelStderrDecoder = new TextDecoder();
-		let tunnelStderrBuffer = '';
-
-		const tunnelUrlPromise = new Promise<string>((resolve, reject) => {
-			const tunnelTimeout = setTimeout(() => {
-				reject(new Error('Timed out waiting for tunnel URL'));
-			}, 30000);
-
-			function readTunnelStderr(): void {
-				tunnelStderrReader.read().then(({ done, value }) => {
-					if (done) return;
-
-					tunnelStderrBuffer += tunnelStderrDecoder.decode(value, { stream: true });
-					const lines = tunnelStderrBuffer.split('\n');
-					tunnelStderrBuffer = lines.pop() ?? '';
-
-					for (const line of lines) {
-						if (line.length > 0) {
-							write(`${tunnelPrefix} ${line}\n`);
-						}
-
-						if (!tunnelUrl) {
-							const extractedUrl = parseTunnelUrl(line);
-							if (extractedUrl) {
-								tunnelUrl = extractedUrl;
-								clearTimeout(tunnelTimeout);
-								resolve(extractedUrl);
-							}
-						}
-					}
-
-					readTunnelStderr();
-				});
-			}
-
-			readTunnelStderr();
-		});
-
-		const resolvedTunnelUrl = await tunnelUrlPromise;
-
-		// Print highlighted banner
-		const banner = [
-			'',
-			`${ANSI_GREEN}${ANSI_BOLD}${'='.repeat(60)}${ANSI_RESET}`,
-			`${ANSI_GREEN}${ANSI_BOLD}  Tunnel URL: ${resolvedTunnelUrl}${ANSI_RESET}`,
-			`${ANSI_GREEN}${ANSI_BOLD}${'='.repeat(60)}${ANSI_RESET}`,
-		];
-
-		write(banner.join('\n') + '\n');
+	if (resolvedTunnelUrl) {
 		write(formatExposedRoutesBanner(resolvedTunnelUrl));
 	}
 

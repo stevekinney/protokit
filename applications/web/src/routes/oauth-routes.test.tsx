@@ -7,10 +7,22 @@ const mockOauthCodes: unknown[] = [];
 let mockOauthTokens: unknown[] = [];
 let mockOauthRefreshTokens: unknown[] = [];
 let mockInsertedValues: unknown[] = [];
+let recordFailedAuthenticationCalls: unknown[] = [];
+let mockInsertShouldThrow = false;
 
 const oauthClientsTable = Symbol('oauthClients');
 const oauthCodesTable = Symbol('oauthCodes');
 const oauthTokensTable = Symbol('oauthTokens');
+const oauthRefreshTokensTable = {
+	refreshToken: 'refreshToken',
+	clientId: 'clientId',
+	resource: 'resource',
+	scope: 'scope',
+	familyId: 'familyId',
+	accessTokenHash: 'accessTokenHash',
+	revokedAt: 'revokedAt',
+	expiresAt: 'expiresAt',
+};
 
 mock.module('@web/env', () => ({
 	environment: mockEnvironment,
@@ -25,6 +37,7 @@ mock.module('@template/database', () => ({
 						if (table === oauthClientsTable) return Promise.resolve(mockOauthClients);
 						if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
 						if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
+						if (table === oauthRefreshTokensTable) return Promise.resolve(mockOauthRefreshTokens);
 						return Promise.resolve([]);
 					},
 				}),
@@ -37,7 +50,13 @@ mock.module('@template/database', () => ({
 				// `await database.insert(...).values(...)` (registration), and
 				// the CIMD upsert chain `.values(...).onConflictDoUpdate(...).returning()`.
 				return {
-					then: (resolve: (value: undefined) => void) => resolve(undefined),
+					then: (resolve: (value: undefined) => void, reject: (reason: unknown) => void) => {
+						if (mockInsertShouldThrow) {
+							reject(new Error('simulated insert failure'));
+							return;
+						}
+						resolve(undefined);
+					},
 					onConflictDoUpdate: () => ({
 						returning: () => Promise.resolve([{ ...(values as Record<string, unknown>) }]),
 					}),
@@ -56,11 +75,7 @@ mock.module('@template/database', () => ({
 		oauthClients: oauthClientsTable,
 		oauthCodes: oauthCodesTable,
 		oauthTokens: oauthTokensTable,
-		oauthRefreshTokens: {
-			refreshToken: 'refreshToken',
-			revokedAt: 'revokedAt',
-			expiresAt: 'expiresAt',
-		},
+		oauthRefreshTokens: oauthRefreshTokensTable,
 		users: { id: 'id', email: 'email' },
 	},
 }));
@@ -108,7 +123,9 @@ mock.module('@web/lib/request-rate-limiter', () => ({
 		remainingRequests: 10,
 	}),
 	isAuthenticationLockedOut: async () => false,
-	recordFailedAuthentication: async () => {},
+	recordFailedAuthentication: async (input: unknown) => {
+		recordFailedAuthenticationCalls.push(input);
+	},
 }));
 
 mock.module('@web/lib/base-url', () => ({
@@ -184,6 +201,7 @@ const mockAuthorizationTransactionState: {
 	consumeResult: null,
 };
 const consumeAuthorizationTransactionCalls: unknown[] = [];
+const unconsumeAuthorizationTransactionCalls: unknown[] = [];
 // AUTHZ-001: captures what `handleOauthAuthorizeGet` actually resolved and
 // passed as `scope` -- the default-when-omitted set or the caller's own
 // (already-validated) narrower request -- so tests below can assert on it
@@ -197,6 +215,9 @@ mock.module('@web/lib/authorization-transaction', () => ({
 	consumeAuthorizationTransaction: async (input: unknown) => {
 		consumeAuthorizationTransactionCalls.push(input);
 		return mockAuthorizationTransactionState.consumeResult;
+	},
+	unconsumeAuthorizationTransaction: async (transactionId: string) => {
+		unconsumeAuthorizationTransactionCalls.push(transactionId);
 	},
 }));
 
@@ -577,6 +598,7 @@ describe('token exchange', () => {
 	beforeEach(() => {
 		setEnvironment({});
 		mockInsertedValues = [];
+		recordFailedAuthenticationCalls = [];
 	});
 
 	it('returns 400 for unsupported grant type', async () => {
@@ -589,6 +611,39 @@ describe('token exchange', () => {
 		expect(response.status).toBe(400);
 		const body = await response.json();
 		expect(body.error).toBe('unsupported_grant_type');
+	});
+
+	it('does not count an ordinary protocol error (400) toward the failed-authentication lockout', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: 'grant_type=implicit&client_id=c1',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		// Ten of these from one network identity must not trigger the shared
+		// lockout: an unsupported grant type never attempted client
+		// authentication.
+		expect(recordFailedAuthenticationCalls).toEqual([]);
+	});
+
+	it('counts an actual client-authentication failure (401) toward the failed-authentication lockout', async () => {
+		mockOauthClients = [];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code: 'some-code',
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'unknown',
+				code_verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(401);
+		expect(recordFailedAuthenticationCalls.length).toBe(1);
 	});
 
 	it('returns 400 for unsupported content type', async () => {
@@ -705,6 +760,7 @@ describe('token revocation', () => {
 		mockOauthTokens = [];
 		mockOauthRefreshTokens = [];
 		mockOauthClients = [];
+		recordFailedAuthenticationCalls = [];
 	});
 
 	it('returns 400 when token parameter is missing', async () => {
@@ -715,6 +771,29 @@ describe('token revocation', () => {
 		});
 		const response = await handleOauthRevokePost(context);
 		expect(response.status).toBe(400);
+	});
+
+	it('does not count an ordinary protocol error (missing client_id, 400) toward the shared lockout', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
+		expect(recordFailedAuthenticationCalls).toEqual([]);
+	});
+
+	it('counts an actual client-authentication failure (401) toward the shared lockout', async () => {
+		mockOauthClients = [];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-token&client_id=unknown-client',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(401);
+		expect(recordFailedAuthenticationCalls.length).toBe(1);
 	});
 
 	it('returns 400 when client_id parameter is missing (OAUTH-003)', async () => {
@@ -1208,6 +1287,28 @@ describe('authorization approve', () => {
 		mockInsertedValues = [];
 		mockAuthorizationTransactionState.consumeResult = validTransaction;
 		consumeAuthorizationTransactionCalls.length = 0;
+		unconsumeAuthorizationTransactionCalls.length = 0;
+		mockInsertShouldThrow = false;
+	});
+
+	it('reopens the authorization transaction when the code insert fails, so the approval form can be retried', async () => {
+		mockInsertShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+
+		// The transaction was already consumed by the time the insert fails
+		// (this codebase's atomic revoke-then-check pattern); without the
+		// fix, that consumption is permanent and the same form can never be
+		// resubmitted. This asserts the compensating un-consume runs.
+		await expect(handleOauthAuthorizeApprove(context)).rejects.toThrow('simulated insert failure');
+		expect(unconsumeAuthorizationTransactionCalls).toEqual(['transaction-id']);
 	});
 
 	it('returns 401 when user is not authenticated', async () => {

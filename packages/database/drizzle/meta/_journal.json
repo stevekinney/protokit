@@ -50,6 +50,13 @@
 			"when": 1787331588163,
 			"tag": "0006_marvelous_kinsey_walden",
 			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "7",
+			"when": 1787409363123,
+			"tag": "0007_backfill_client_secret_expiry",
+			"breakpoints": true
 		}
 	]
 }

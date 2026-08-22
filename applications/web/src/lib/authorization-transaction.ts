@@ -124,3 +124,29 @@ export async function consumeAuthorizationTransaction(input: {
 		scope: consumed.scope,
 	};
 }
+
+/**
+ * Review finding: the caller creates the authorization code as a second,
+ * separate statement after `consumeAuthorizationTransaction` above has
+ * already marked the transaction consumed (neon-http has no multi-statement
+ * transaction support -- see `OAUTH-003`'s note on the same limitation for
+ * refresh-token rotation). If that second insert fails -- a transient
+ * database error, or a concurrent client/user deletion -- the one-time
+ * transaction is already spent and no code exists, and without this
+ * function the browser's approval form could never be retried.
+ *
+ * Called only by the caller's own `catch` block, best-effort, after an
+ * insert it just attempted has already thrown -- so no code was ever
+ * delivered to the client, and reopening the transaction here cannot cause
+ * a code to be issued twice. Every other single-use guarantee
+ * (`consumeAuthorizationTransaction`'s atomic predicate: CSRF, session,
+ * user, expiry) is untouched; this only clears the flag that predicate
+ * checks, so the same browser POST -- or a fresh one, if the consent page
+ * is reloaded -- can attempt consumption again.
+ */
+export async function unconsumeAuthorizationTransaction(transactionId: string): Promise<void> {
+	await database
+		.update(schema.oauthAuthorizationTransactions)
+		.set({ consumedAt: null })
+		.where(eq(schema.oauthAuthorizationTransactions.transactionId, hashCredential(transactionId)));
+}
