@@ -37,38 +37,49 @@ async function seedUserWithConnection(clientName: string) {
 	const clientId = `consent-inventory-test-client-${randomUUID()}`;
 	createdClientIds.push(clientId);
 
-	await database.insert(schema.users).values({
-		id: userId,
-		email: `consent-inventory-${userId}@example.com`,
-		name: 'Consent Inventory Test User',
-	});
-
-	await database.insert(schema.oauthClients).values({
-		clientId,
-		clientName,
-		clientType: 'public',
-		tokenEndpointAuthMethod: 'none',
-		redirectUris: ['http://localhost:9999/callback'],
-		grantTypes: ['authorization_code', 'refresh_token'],
-		responseTypes: ['code'],
-	});
-
 	const accessToken = hashCredential(randomUUID());
-	await database.insert(schema.oauthTokens).values({
-		accessToken,
-		clientId,
-		userId,
-		expiresAt: new Date(Date.now() + 60_000),
-	});
 
-	await database.insert(schema.oauthRefreshTokens).values({
-		refreshToken: hashCredential(randomUUID()),
-		clientId,
-		userId,
-		accessTokenHash: accessToken,
-		familyId: randomUUID(),
-		expiresAt: new Date(Date.now() + 60_000),
-	});
+	// `users` and `oauth_clients` are foreign-key parents and must land before
+	// their children, but they do not depend on each other — and the two token
+	// rows below depend only on those parents, not on one another. Every
+	// statement here is an HTTP round trip through the local Neon proxy, and
+	// this helper is called three times by a single test, so running the five
+	// inserts strictly in series cost fifteen sequential trips and pushed that
+	// test past bun's 5s budget on a continuous-integration runner. Two waves
+	// instead of five, doing identical work.
+	await Promise.all([
+		database.insert(schema.users).values({
+			id: userId,
+			email: `consent-inventory-${userId}@example.com`,
+			name: 'Consent Inventory Test User',
+		}),
+		database.insert(schema.oauthClients).values({
+			clientId,
+			clientName,
+			clientType: 'public',
+			tokenEndpointAuthMethod: 'none',
+			redirectUris: ['http://localhost:9999/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+		}),
+	]);
+
+	await Promise.all([
+		database.insert(schema.oauthTokens).values({
+			accessToken,
+			clientId,
+			userId,
+			expiresAt: new Date(Date.now() + 60_000),
+		}),
+		database.insert(schema.oauthRefreshTokens).values({
+			refreshToken: hashCredential(randomUUID()),
+			clientId,
+			userId,
+			accessTokenHash: accessToken,
+			familyId: randomUUID(),
+			expiresAt: new Date(Date.now() + 60_000),
+		}),
+	]);
 
 	return { userId, clientId, accessToken };
 }
@@ -193,6 +204,17 @@ describe('revokeUserClientGrant', () => {
 });
 
 describe('revokeAllUserGrants', () => {
+	// Seeds three full connections (each a user, a client, and two token rows),
+	// revokes across all of them, then verifies — roughly fifteen round trips
+	// through the local Neon proxy even after the seeding above was batched into
+	// two waves per connection. Comfortably under a second here, and past bun's
+	// generic 5s default on a continuous-integration runner, which runs this
+	// suite several times slower.
+	//
+	// An explicit budget on this one test, matching the precedent set for the
+	// end-to-end OAuth chains: reduce the work first, then measure what is left
+	// against a limit that fits it rather than one meant for unit tests. A
+	// genuine hang still fails, at 30s instead of 5s.
 	it('revokes every connection for the user, across multiple clients', async () => {
 		const { userId } = await seedUserWithConnection('Revoke-All Client One');
 		const { accessToken: secondAccessToken } =
@@ -222,5 +244,5 @@ describe('revokeAllUserGrants', () => {
 			.where(eq(schema.oauthCodes.code, outstandingCode))
 			.limit(1);
 		expect(codeRow?.usedAt).not.toBeNull();
-	});
+	}, 30_000);
 });
