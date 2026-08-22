@@ -437,6 +437,19 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	// still authenticates (it is a perfectly valid token, just under-scoped for
 	// this particular tool), and the tool call itself is refused without ever
 	// calling `get_user_profile`'s own handler.
+	// An end-to-end chain, deliberately serial: each step consumes the previous
+	// step's output, so nothing here can be parallelized away. It drives roughly
+	// ten HTTP requests against the real dispatcher, and each one costs
+	// 218-345ms locally because it makes several database round trips through
+	// the Neon proxy — about 2.5-3.5s here, and past bun's generic 5s default on
+	// a slower continuous-integration runner.
+	//
+	// An explicit budget for this one test, not a relaxed default for the suite.
+	// Everything that could be made faster already has been (see the batched
+	// seeding and parallel verification in `account-deletion.integration.test.ts`),
+	// and a test that legitimately takes three seconds should not be measured
+	// against a limit meant for unit tests. A genuine hang still fails, at 30s
+	// instead of 5s.
 	it('a real narrowed-scope token authenticates at /mcp but is refused insufficient_scope for a tool outside its grant', async () => {
 		const port = startServer();
 		const cookie = await signIn(port);
@@ -466,5 +479,5 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		expect(result._meta?.['mcp/www_authenticate']).toContain('scope="profile:read"');
 
 		await client.close();
-	});
+	}, 30_000);
 });

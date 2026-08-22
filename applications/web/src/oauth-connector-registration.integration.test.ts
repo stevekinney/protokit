@@ -134,6 +134,19 @@ async function signIn(port: number): Promise<string> {
 }
 
 describeWithRedis('public client registration and refresh rotation (requires Redis)', () => {
+	// An end-to-end chain, deliberately serial: each step consumes the previous
+	// step's output, so nothing here can be parallelized away. It drives roughly
+	// ten HTTP requests against the real dispatcher, and each one costs
+	// 218-345ms locally because it makes several database round trips through
+	// the Neon proxy — about 2.5-3.5s here, and past bun's generic 5s default on
+	// a slower continuous-integration runner.
+	//
+	// An explicit budget for this one test, not a relaxed default for the suite.
+	// Everything that could be made faster already has been (see the batched
+	// seeding and parallel verification in `account-deletion.integration.test.ts`),
+	// and a test that legitimately takes three seconds should not be measured
+	// against a limit meant for unit tests. A genuine hang still fails, at 30s
+	// instead of 5s.
 	it('OAUTH-002: a DCR public client (auth_method none) gets no secret, completes PKCE, rotates its refresh token exactly once, and cannot replay it', async () => {
 		const port = startServer();
 
@@ -250,7 +263,7 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 		expect(replayResponse.status).toBe(400);
 		const replayBody = (await replayResponse.json()) as { error: string };
 		expect(replayBody.error).toBe('invalid_grant');
-	});
+	}, 30_000);
 });
 
 describeWithRedis('Client ID Metadata Document registration (requires Redis)', () => {
