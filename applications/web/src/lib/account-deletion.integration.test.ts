@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'bun:test';
-import { eq, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
 import { deleteOauthClient, deleteUserAccount } from '@web/lib/account-deletion';
+import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
 
 /**
  * DATA-001 / S-18 acceptance criterion 4: "Account and client deletion
@@ -22,51 +23,12 @@ afterAll(async () => {
 	// a failing assertion left behind, so a broken run doesn't poison the
 	// shared test database for the next one.
 	//
-	// Batched with `inArray` rather than looped per identifier: every statement
-	// here is a separate HTTP round trip through the local Neon proxy, and one
-	// trip per table per seeded account overran the 5s hook budget once this
-	// file had a handful of tests. Twelve statements total, regardless of how
-	// many accounts the file seeds. Batching is the fix; raising the hook
-	// timeout would only postpone the same failure.
-	if (createdUserIds.length > 0) {
-		await database
-			.delete(schema.oauthTokens)
-			.where(inArray(schema.oauthTokens.userId, createdUserIds));
-		await database
-			.delete(schema.oauthRefreshTokens)
-			.where(inArray(schema.oauthRefreshTokens.userId, createdUserIds));
-		await database
-			.delete(schema.oauthCodes)
-			.where(inArray(schema.oauthCodes.userId, createdUserIds));
-		await database
-			.delete(schema.oauthAuthorizationTransactions)
-			.where(inArray(schema.oauthAuthorizationTransactions.userId, createdUserIds));
-		await database
-			.delete(schema.userSessions)
-			.where(inArray(schema.userSessions.userId, createdUserIds));
-		await database
-			.delete(schema.userGoogleAccounts)
-			.where(inArray(schema.userGoogleAccounts.userId, createdUserIds));
-		await database.delete(schema.users).where(inArray(schema.users.id, createdUserIds));
-	}
-
-	if (createdClientIds.length > 0) {
-		await database
-			.delete(schema.oauthTokens)
-			.where(inArray(schema.oauthTokens.clientId, createdClientIds));
-		await database
-			.delete(schema.oauthRefreshTokens)
-			.where(inArray(schema.oauthRefreshTokens.clientId, createdClientIds));
-		await database
-			.delete(schema.oauthCodes)
-			.where(inArray(schema.oauthCodes.clientId, createdClientIds));
-		await database
-			.delete(schema.oauthAuthorizationTransactions)
-			.where(inArray(schema.oauthAuthorizationTransactions.clientId, createdClientIds));
-		await database
-			.delete(schema.oauthClients)
-			.where(inArray(schema.oauthClients.clientId, createdClientIds));
-	}
+	// Two statements, not twelve. `DATA-001` cascades every child table from
+	// `users` and `oauth_clients`, so walking each table by hand only bought
+	// extra HTTP round trips through the local Neon proxy — enough to blow the
+	// 5s hook budget on a continuous-integration runner. See
+	// `test-support/delete-test-accounts.ts`.
+	await deleteTestAccounts({ clientIds: createdClientIds, userIds: createdUserIds });
 });
 
 async function seedFullAccount() {

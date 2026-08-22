@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
+import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -132,19 +133,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-	for (const id of [clientId, otherClientId]) {
-		await database.delete(schema.oauthTokens).where(eq(schema.oauthTokens.clientId, id));
-		await database
-			.delete(schema.oauthRefreshTokens)
-			.where(eq(schema.oauthRefreshTokens.clientId, id));
-		await database.delete(schema.oauthCodes).where(eq(schema.oauthCodes.clientId, id));
-		await database
-			.delete(schema.oauthAuthorizationTransactions)
-			.where(eq(schema.oauthAuthorizationTransactions.clientId, id));
-		await database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, id));
-	}
-	await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-	await database.delete(schema.users).where(eq(schema.users.id, userId));
+	// One statement per entity instead of one per table: `DATA-001` cascades
+	// every child row from `users` and `oauth_clients`, and each extra statement
+	// is an HTTP round trip through the local Neon proxy — enough of them
+	// overran the 5s hook budget on a continuous-integration runner. See
+	// `test-support/delete-test-accounts.ts`.
+	await deleteTestAccounts({ clientIds: [clientId, otherClientId], userIds: [userId] });
 });
 
 describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Redis)', () => {

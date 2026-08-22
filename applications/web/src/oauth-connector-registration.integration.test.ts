@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
+import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -116,19 +117,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-	for (const clientId of insertedClientIds) {
-		await database.delete(schema.oauthTokens).where(eq(schema.oauthTokens.clientId, clientId));
-		await database
-			.delete(schema.oauthRefreshTokens)
-			.where(eq(schema.oauthRefreshTokens.clientId, clientId));
-		await database.delete(schema.oauthCodes).where(eq(schema.oauthCodes.clientId, clientId));
-		await database
-			.delete(schema.oauthAuthorizationTransactions)
-			.where(eq(schema.oauthAuthorizationTransactions.clientId, clientId));
-		await database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId));
-	}
-	await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-	await database.delete(schema.users).where(eq(schema.users.id, userId));
+	// One statement per entity instead of one per table: `DATA-001` cascades
+	// every child row from `users` and `oauth_clients`, and each extra statement
+	// is an HTTP round trip through the local Neon proxy — enough of them
+	// overran the 5s hook budget on a continuous-integration runner. See
+	// `test-support/delete-test-accounts.ts`.
+	await deleteTestAccounts({ clientIds: insertedClientIds, userIds: [userId] });
 });
 
 async function signIn(port: number): Promise<string> {
