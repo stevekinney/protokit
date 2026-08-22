@@ -72,6 +72,21 @@ class MetricsCollector {
 		outcomes.set(outcome, (outcomes.get(outcome) ?? 0) + 1);
 	}
 
+	/**
+	 * Review round 4 / P2: this previously cleared `entry.durations` after
+	 * computing percentiles, on the mistaken assumption that a snapshot is a
+	 * one-shot read. `/metrics` (`metrics-routes.ts`) is a Prometheus-style
+	 * scrape endpoint -- polled repeatedly by one or more scrapers -- and a
+	 * scrape must be idempotent: reading it must never change what the next
+	 * reader sees. Clearing the samples here meant a second scraper, or the
+	 * same scraper on its next interval before another tool invocation, saw
+	 * `p50`/`p95`/`p99` reset to `0` while `invocations`/`errors` kept
+	 * climbing -- an internally inconsistent snapshot, and one reader
+	 * silently consuming data before another could see it. The bounded
+	 * last-`MAX_DURATIONS` window in `recordToolInvocation` already keeps
+	 * memory bounded, so nothing here needs to clear it -- the window
+	 * naturally ages out old samples as new ones arrive.
+	 */
 	snapshot(): MetricsSnapshot {
 		const tools: MetricsSnapshot['tools'] = {};
 		for (const [name, entry] of this.tools) {
@@ -83,7 +98,6 @@ class MetricsCollector {
 				p95: percentile(sorted, 95),
 				p99: percentile(sorted, 99),
 			};
-			entry.durations = [];
 		}
 		const events: EventOutcomeCounts = {};
 		for (const [category, outcomes] of this.events) {

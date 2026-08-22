@@ -45,10 +45,29 @@ export interface RotationResult {
  * `applications/web/src/lib/session-signing-secret.ts`'s `resolveSessionSigningSecrets`). The
  * previous value is never returned or logged by this function — it only ever exists inside the
  * `.env.local` file (mode `0600`) between these two steps.
+ *
+ * Refuses to run a second time while an overlap window is already open (i.e.
+ * `SESSION_SIGNING_SECRET_PREVIOUS` is already set): rerunning this during an existing overlap —
+ * for example after a partial Railway update — would move the *current* secret into
+ * `SESSION_SIGNING_SECRET_PREVIOUS`, silently discarding the original retired key that is still
+ * this file's only surviving record of it. Every session, CSRF token, and pending Google OAuth
+ * state signed under that original key would stop verifying immediately, before the documented
+ * `session-cutover` step ever ran — the exact bot-reported P2 this guard exists to close. Run
+ * `session-cutover` first to close the existing window, then rotate again.
  */
 export function rotateSessionSigningSecretLocally(environmentFilePath: string): RotationResult {
-	const previousValue =
-		readEnvironmentEntriesFromFile(environmentFilePath)['SESSION_SIGNING_SECRET'];
+	const entries = readEnvironmentEntriesFromFile(environmentFilePath);
+	if (entries['SESSION_SIGNING_SECRET_PREVIOUS']) {
+		throw new Error(
+			'A SESSION_SIGNING_SECRET rotation is already in progress (SESSION_SIGNING_SECRET_PREVIOUS ' +
+				'is set) -- rotating again now would overwrite it with the current secret and silently ' +
+				'discard the original retired key, invalidating any session, CSRF token, or pending ' +
+				'Google OAuth state still signed under it before the documented cutover step runs. Run ' +
+				'`bun scripts/rotate-secret.ts session-cutover` first to end the existing overlap window, ' +
+				'then rotate again.',
+		);
+	}
+	const previousValue = entries['SESSION_SIGNING_SECRET'];
 	const nextValue = generateSessionSigningSecret();
 	appendEnvironmentEntryToFile(environmentFilePath, 'SESSION_SIGNING_SECRET', nextValue);
 	if (previousValue) {
@@ -184,7 +203,13 @@ function applyRailwayOperations(operations: readonly RailwayVariableOperation[])
 
 async function rotateSessionSigningSecretCommand(): Promise<void> {
 	console.log('\n--- Rotating SESSION_SIGNING_SECRET ---\n');
-	const result = rotateSessionSigningSecretLocally(ENVIRONMENT_FILE_PATH);
+	let result: RotationResult;
+	try {
+		result = rotateSessionSigningSecretLocally(ENVIRONMENT_FILE_PATH);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : 'Rotation refused.');
+		process.exit(1);
+	}
 	console.log(
 		result.previousValuePresent
 			? 'Wrote a new SESSION_SIGNING_SECRET and moved the outgoing value to SESSION_SIGNING_SECRET_PREVIOUS (values not printed).'

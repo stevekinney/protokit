@@ -45,12 +45,18 @@ export function HomePage(props: HomePageProps): JSX.Element {
 						<p className="text-sm font-medium text-slate-500">Signed in as</p>
 						<p className="mt-2 text-xl font-bold text-slate-900">{props.user.email}</p>
 						<div className="mt-5 flex flex-wrap items-center gap-3">
-							<a
-								href="/oauth/authorize"
-								className="inline-flex items-center rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white hover:bg-sky-500"
-							>
-								Review OAuth Request
-							</a>
+							{/*
+							 * Review round 4 / P2: a "Review OAuth Request" link to a
+							 * bare `/oauth/authorize` (no `client_id`, `redirect_uri`,
+							 * `response_type`, PKCE, or `resource`) always rendered
+							 * that route's invalid-parameters error -- OAuth consent
+							 * can only be initiated by a client carrying those
+							 * parameters, never by the resource server itself. Removed
+							 * rather than replaced: nothing on this page can supply a
+							 * valid, configured authorization request, and the
+							 * "Connected Applications" section below already covers
+							 * reviewing/revoking existing grants.
+							 */}
 							<form method="POST" action="/auth/sign-out">
 								{props.signOutCsrfToken && (
 									<input type="hidden" name="csrf_token" value={props.signOutCsrfToken} />

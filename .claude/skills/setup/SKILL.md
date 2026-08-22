@@ -66,8 +66,8 @@ Always manual — no CLI or MCP automation available.
 1. Tell the user:
    - Open https://console.cloud.google.com/apis/credentials
    - Create an OAuth 2.0 Client ID
-   - Add redirect URI: `http://localhost:3000/api/auth/callback/google` (development)
-   - For production, also add: `https://<your-domain>/api/auth/callback/google`
+   - Add redirect URI: `http://localhost:3000/auth/google/callback` (development)
+   - For production, also add: `https://<your-domain>/auth/google/callback`
 2. Ask for `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (allow skipping)
 3. If provided, write both to `.env.local`
 

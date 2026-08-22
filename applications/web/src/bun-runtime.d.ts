@@ -16,6 +16,7 @@ declare module 'bun:test' {
 		toBeNull: () => void;
 		toBeUndefined: () => void;
 		toBeDefined: () => void;
+		toBeTruthy: () => void;
 		toHaveProperty: (property: string, value?: unknown) => void;
 		toHaveLength: (expected: number) => void;
 		toThrow: (expected?: unknown) => void;

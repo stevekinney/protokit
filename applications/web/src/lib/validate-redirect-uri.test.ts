@@ -18,6 +18,22 @@ describe('isValidRedirectUri', () => {
 		expect(isValidRedirectUri('http://127.0.0.1:8080/callback')).toBe(true);
 	});
 
+	it('accepts http://[::1] (IPv6 loopback)', () => {
+		expect(isValidRedirectUri('http://[::1]:8080/callback')).toBe(true);
+	});
+
+	it('accepts http://[::1] without a port', () => {
+		expect(isValidRedirectUri('http://[::1]/callback')).toBe(true);
+	});
+
+	it('accepts an expanded IPv6 loopback spelling, normalized by URL parsing to [::1]', () => {
+		expect(isValidRedirectUri('http://[0:0:0:0:0:0:0:1]:8080/callback')).toBe(true);
+	});
+
+	it('rejects a non-loopback IPv6 host', () => {
+		expect(isValidRedirectUri('http://[2001:db8::1]:8080/callback')).toBe(false);
+	});
+
 	it('rejects http://localhost.evil.com', () => {
 		expect(isValidRedirectUri('http://localhost.evil.com')).toBe(false);
 	});

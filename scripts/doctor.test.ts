@@ -6,6 +6,7 @@ import {
 	evaluateDatabaseConnection,
 	evaluateEnvironmentSchema,
 	evaluateEnvironmentSchemas,
+	evaluateMcpProductionProhibitions,
 	evaluateProductionReadiness,
 	loadCandidateVariables,
 	parseArguments,
@@ -167,7 +168,25 @@ describe('evaluateProductionReadiness', () => {
 		delete variables.GOOGLE_CLIENT_SECRET;
 		const results = evaluateProductionReadiness('production', variables);
 		expect(
-			results.some((entry) => entry.detail.includes('must both be set or both be absent')),
+			results.some((entry) =>
+				entry.detail.includes('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set'),
+			),
+		).toBe(true);
+	});
+
+	// Review round 4 / P1: production has no other authentication provider —
+	// `/auth/dev/login` is disabled outside development and an
+	// unauthenticated `/oauth/authorize` request redirects to
+	// `/auth/google/start`, which 503s with no Google credentials configured.
+	it('fails when both Google credentials are absent', () => {
+		const variables = validVariables();
+		delete variables.GOOGLE_CLIENT_ID;
+		delete variables.GOOGLE_CLIENT_SECRET;
+		const results = evaluateProductionReadiness('production', variables);
+		expect(
+			results.some((entry) =>
+				entry.detail.includes('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set'),
+			),
 		).toBe(true);
 	});
 
@@ -221,6 +240,52 @@ describe('evaluateProductionReadiness', () => {
 				group: 'Production readiness',
 			},
 		]);
+	});
+
+	it('fails when MCP_CONFORMANCE_MODE=true — the synthetic conformance registry must never reach production (review round 4)', () => {
+		const variables = { ...validVariables(), MCP_CONFORMANCE_MODE: 'true' };
+		const results = evaluateProductionReadiness('production', variables);
+		expect(
+			results.some(
+				(entry) => entry.status === 'fail' && entry.detail.includes('MCP_CONFORMANCE_MODE is true'),
+			),
+		).toBe(true);
+	});
+
+	it('passes when MCP_CONFORMANCE_MODE=false, matching the schema default', () => {
+		const variables = { ...validVariables(), MCP_CONFORMANCE_MODE: 'false' };
+		const results = evaluateProductionReadiness('production', variables);
+		expect(results.some((entry) => entry.status === 'fail')).toBe(false);
+	});
+});
+
+describe('evaluateMcpProductionProhibitions', () => {
+	it('reports nothing for the development target, even with LOG_CONTENT_DIAGNOSTICS_UNTIL set', () => {
+		expect(
+			evaluateMcpProductionProhibitions('development', {
+				LOG_CONTENT_DIAGNOSTICS_UNTIL: '2099-01-01T00:00:00Z',
+			}),
+		).toEqual([]);
+	});
+
+	it('reports nothing for the production target when LOG_CONTENT_DIAGNOSTICS_UNTIL is unset', () => {
+		expect(evaluateMcpProductionProhibitions('production', validVariables())).toEqual([]);
+	});
+
+	// Regression for a bot-reported P2: a valid `LOG_CONTENT_DIAGNOSTICS_UNTIL` timestamp passes
+	// the schema check (`z.iso.datetime()` doesn't know about NODE_ENV), but
+	// `packages/mcp/src/env.ts` refuses to import at all in production regardless of the
+	// timestamp value (OBS-001). Without this check, `doctor --production` reported a fully ready
+	// configuration for an environment the real MCP server immediately refuses to start with.
+	it('fails in production when LOG_CONTENT_DIAGNOSTICS_UNTIL is set, even to a valid future timestamp', () => {
+		const variables = {
+			...validVariables(),
+			LOG_CONTENT_DIAGNOSTICS_UNTIL: '2099-01-01T00:00:00Z',
+		};
+		const results = evaluateMcpProductionProhibitions('production', variables);
+		expect(results).toHaveLength(1);
+		expect(results[0]?.status).toBe('fail');
+		expect(results[0]?.detail).toContain('not supported in production');
 	});
 });
 
@@ -353,5 +418,40 @@ describe('evaluateDatabaseConnection', () => {
 		const results = await evaluateDatabaseConnection({});
 		expect(results[0]?.status).toBe('skip');
 		expect(neonConfig.fetchEndpoint).toBe(originalFetchEndpoint);
+	});
+
+	it('probes only DATABASE_URL, under its original unqualified label, when DATABASE_URL_UNPOOLED is unset', async () => {
+		const results = await evaluateDatabaseConnection({
+			DATABASE_URL: 'postgresql://user:pass@production-host.example.com:5432/db',
+		});
+		expect(results).toHaveLength(1);
+		expect(results[0]?.label).toBe('Database connection');
+	});
+
+	// Regression for a bot-reported P2: packages/database/src/migrate.ts's runMigrations prefers
+	// DATABASE_URL_UNPOOLED over DATABASE_URL when both are set. Previously doctor only ever
+	// probed DATABASE_URL, so a stale/unreachable DATABASE_URL_UNPOOLED reported a fully green
+	// "Database connection: Connected successfully" while the real migration step (run on every
+	// deployment) still failed against the URL it actually uses. Both URLs must now be probed and
+	// reported as two distinct, separately labeled results.
+	it('probes both DATABASE_URL and DATABASE_URL_UNPOOLED as separate results when both are set', async () => {
+		const results = await evaluateDatabaseConnection({
+			DATABASE_URL: 'postgresql://user:pass@pooled-host.example.com:5432/db',
+			DATABASE_URL_UNPOOLED: 'postgresql://user:pass@unpooled-host.example.com:5432/db',
+		});
+		expect(results).toHaveLength(2);
+		expect(results[0]?.label).toBe('Database connection (pooled, DATABASE_URL)');
+		expect(results[1]?.label).toBe(
+			'Database connection (unpooled, DATABASE_URL_UNPOOLED — used for migrations)',
+		);
+	});
+
+	it('applies DATABASE_LOCAL_PROXY_URL to the DATABASE_URL_UNPOOLED probe too', async () => {
+		await evaluateDatabaseConnection({
+			DATABASE_URL: 'postgresql://user:pass@pooled-host.example.com:5432/db',
+			DATABASE_URL_UNPOOLED: 'postgresql://user:pass@unpooled-host.example.com:5432/db',
+			DATABASE_LOCAL_PROXY_URL: 'http://db.localtest.me:4444/sql',
+		});
+		expect(neonConfig.fetchEndpoint).toBe('http://db.localtest.me:4444/sql');
 	});
 });

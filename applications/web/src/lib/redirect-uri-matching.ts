@@ -12,12 +12,20 @@
  * `https://claude.ai/api/mcp/auth_callback`) is matched by exact string
  * equality against what the client registered — nothing about the
  * loopback carve-out below ever applies to `https:`.
+ *
+ * `[::1]` (IPv6 loopback) is treated as loopback here too, same as
+ * `localhost`/`127.0.0.1` — RFC 8252 §7.3 names it explicitly, and the
+ * comparison below already keeps every loopback host distinct from every
+ * other one (`registered.hostname === requested.hostname`), so this adds a
+ * third recognized loopback host rather than blurring the existing two.
  */
 
 function isLoopbackRedirectUri(parsed: URL): boolean {
 	return (
 		parsed.protocol === 'http:' &&
-		(parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
+		(parsed.hostname === 'localhost' ||
+			parsed.hostname === '127.0.0.1' ||
+			parsed.hostname === '[::1]')
 	);
 }
 

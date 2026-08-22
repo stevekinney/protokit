@@ -29,6 +29,14 @@ import {
 // full MCP client/server round trip. Conformance fixtures are dev/test-only
 // surface area and must never register while a public tunnel is active,
 // regardless of what MCP_CONFORMANCE_MODE happens to be set to locally.
+//
+// This predicate deliberately does not also check NODE_ENV: production
+// misconfiguration (MCP_CONFORMANCE_MODE=true in a production deployment,
+// where tunnelActive is normally false) is refused earlier and harder, at
+// process startup, by `assertProductionStartupInvariants()`
+// (`startup-invariants.ts` / `production-startup-requirements.ts`) — the
+// server never reaches this call at all with that misconfiguration in
+// production, rather than silently degrading here.
 export function shouldEnableConformanceMode(input: {
 	conformanceModeConfigured: boolean;
 	tunnelActive: boolean;

@@ -22,6 +22,25 @@ describe('HomePage', () => {
 		expect(html).toContain('Signed in as');
 	});
 
+	/**
+	 * Review round 4 / P2: a parameterless `/oauth/authorize` link always
+	 * rendered that route's invalid-parameters error, since OAuth consent
+	 * must be initiated by a client carrying `client_id`, `redirect_uri`,
+	 * `response_type`, PKCE, and `resource` -- none of which this page has.
+	 */
+	it('never links to a parameterless /oauth/authorize for a signed-in user', () => {
+		const user = {
+			id: 'user-1',
+			email: 'test@example.com',
+			name: 'Test User',
+			image: null,
+			role: 'user',
+		};
+		const html = renderToStaticMarkup(<HomePage user={user} baseUrl="https://example.com" />);
+		expect(html).not.toContain('href="/oauth/authorize"');
+		expect(html).not.toContain('Review OAuth Request');
+	});
+
 	it('includes CopyButton next to MCP endpoint URL', () => {
 		const html = renderToStaticMarkup(<HomePage user={null} baseUrl="https://example.com" />);
 		expect(html).toContain('https://example.com/mcp');

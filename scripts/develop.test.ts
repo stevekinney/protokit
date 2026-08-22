@@ -1,11 +1,15 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import {
 	buildDevelopmentServerEnvironment,
+	childProcesses,
 	exposedRoutes,
 	formatExposedRoutesBanner,
+	type ManagedChildProcess,
 	parseTunnelUrl,
+	resetChildProcessesForTesting,
 	shouldEnableInspector,
 	shouldEnableTunnel,
+	startTunnel,
 } from './develop.ts';
 
 describe('shouldEnableTunnel', () => {
@@ -79,6 +83,69 @@ describe('buildDevelopmentServerEnvironment', () => {
 		const environment = buildDevelopmentServerEnvironment(false, { PATH: '/usr/bin', FOO: 'bar' });
 		expect(environment.PATH).toBe('/usr/bin');
 		expect(environment.FOO).toBe('bar');
+	});
+});
+
+function emptyStream(): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.close();
+		},
+	});
+}
+
+describe('startTunnel', () => {
+	afterEach(() => {
+		resetChildProcessesForTesting();
+	});
+
+	// Regression for a bot-reported P2: previously the spawned tunnel process was only pushed
+	// into `childProcesses` *after* `startTunnel` resolved. If cloudflared stayed alive but never
+	// printed a URL matching `parseTunnelUrl` within the timeout (e.g. after an output-format
+	// change), this function threw before ever registering the process — `main()`'s top-level
+	// `.catch()` handler calls `shutdown()` on exactly this rejection, but `shutdown()` can only
+	// kill what is already in `childProcesses`, so the process was orphaned, still forwarding
+	// port 3000 to the public internet, even though the command reported that startup failed.
+	it('registers the spawned process in childProcesses immediately, even when URL discovery times out', async () => {
+		let killed = false;
+		const fakeProcess: ManagedChildProcess = {
+			stdout: emptyStream(),
+			stderr: emptyStream(),
+			exited: new Promise(() => {}),
+			kill: () => {
+				killed = true;
+			},
+		};
+
+		await expect(
+			startTunnel({ spawn: () => fakeProcess, timeoutMilliseconds: 10 }),
+		).rejects.toThrow('Timed out waiting for tunnel URL');
+
+		expect(childProcesses).toContain(fakeProcess);
+		// startTunnel itself never kills a process -- only shutdown() does, and this test never
+		// calls it. This just confirms the fake wasn't killed by some other path in the function.
+		expect(killed).toBe(false);
+	});
+
+	it('resolves with the tunnel URL parsed from stderr, and still registers the process', async () => {
+		const encoder = new TextEncoder();
+		const stderr = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode('INF |  https://real-tunnel.trycloudflare.com  |\n'));
+				controller.close();
+			},
+		});
+		const fakeProcess: ManagedChildProcess = {
+			stdout: emptyStream(),
+			stderr,
+			exited: new Promise(() => {}),
+			kill: () => {},
+		};
+
+		const result = await startTunnel({ spawn: () => fakeProcess, timeoutMilliseconds: 5000 });
+
+		expect(result.url).toBe('https://real-tunnel.trycloudflare.com');
+		expect(childProcesses).toContain(fakeProcess);
 	});
 });
 

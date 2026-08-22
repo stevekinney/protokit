@@ -32,6 +32,7 @@ function validConfiguration(): ProductionStartupConfiguration {
 		trustedProxyHeader: 'x-forwarded-for',
 		nodeTlsRejectUnauthorized: undefined,
 		sessionSigningSecret: 'a'.repeat(32),
+		mcpConformanceModeConfigured: false,
 	};
 }
 
@@ -147,6 +148,77 @@ describe('collectProductionStartupFailures — bracketed IPv6 loopback hosts', (
 			redisUrl: 'rediss://[2001:db8::1]:6380',
 		});
 		expect(failures.some((failure) => failure.includes('local host'))).toBe(false);
+	});
+});
+
+describe('collectProductionStartupFailures — non-Postgres DATABASE_URL scheme', () => {
+	it('rejects a well-formed, non-loopback, non-Postgres DATABASE_URL', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			databaseUrl: 'https://db.example.com/database?sslmode=verify-full',
+		});
+		expect(
+			failures.some(
+				(failure) => failure.includes('DATABASE_URL') && failure.includes('postgres://'),
+			),
+		).toBe(true);
+	});
+
+	it('accepts the postgres:// scheme, not only postgresql://', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			databaseUrl:
+				'postgres://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full',
+		});
+		expect(failures.some((failure) => failure.includes('scheme'))).toBe(false);
+	});
+
+	it('applies the same scheme rule to DATABASE_URL_UNPOOLED when set', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			databaseUrlUnpooled: 'https://db.example.com/database?sslmode=verify-full',
+		});
+		expect(
+			failures.some(
+				(failure) => failure.includes('DATABASE_URL_UNPOOLED') && failure.includes('postgres://'),
+			),
+		).toBe(true);
+	});
+});
+
+describe('collectProductionStartupFailures — production authentication provider', () => {
+	// Review round 4 / P1: production disables `/auth/dev/login`
+	// (development-only) and an unauthenticated `/oauth/authorize` request
+	// unconditionally redirects to `/auth/google/start`, which 503s with no
+	// Google credentials configured — a deployment could otherwise pass
+	// every other startup check while nobody could sign in.
+	it('rejects a production configuration with both Google credentials absent', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			googleClientId: undefined,
+			googleClientSecret: undefined,
+		});
+		expect(
+			failures.some((failure) =>
+				failure.includes('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set'),
+			),
+		).toBe(true);
+	});
+
+	it('rejects a production configuration with only one Google credential set', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			googleClientSecret: undefined,
+		});
+		expect(
+			failures.some((failure) =>
+				failure.includes('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set'),
+			),
+		).toBe(true);
+	});
+
+	it('accepts a production configuration with both Google credentials set', () => {
+		expect(collectProductionStartupFailures(validConfiguration())).toEqual([]);
 	});
 });
 

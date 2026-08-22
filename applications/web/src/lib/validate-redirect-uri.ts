@@ -9,6 +9,14 @@
  * username — so it is rejected outright rather than trusted to "look"
  * like the right domain.
  *
+ * Review round 4: `http://[::1]` is accepted alongside `http://localhost`
+ * and `http://127.0.0.1`. RFC 8252 §7.3 names IPv6 loopback (`::1`)
+ * explicitly, and a native client bound to IPv6-only or IPv6-preferred
+ * loopback has no other way to register a working redirect URI. This was a
+ * gap, not a considered exclusion — the earlier `localhost`/`127.0.0.1`-only
+ * scoping followed the roadmap bullet's literal wording without weighing
+ * IPv6 against it.
+ *
  * OAUTH-004: a `*` anywhere in the parsed hostname is rejected outright.
  * `new URL()` happily parses `https://*.example.com/cb` as a literal
  * hostname (confirmed directly — `*` is not a forbidden host code point
@@ -38,7 +46,9 @@ export function isValidRedirectUri(uri: string): boolean {
 	if (parsed.protocol === 'https:') return true;
 	if (
 		parsed.protocol === 'http:' &&
-		(parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
+		(parsed.hostname === 'localhost' ||
+			parsed.hostname === '127.0.0.1' ||
+			parsed.hostname === '[::1]')
 	)
 		return true;
 	return false;

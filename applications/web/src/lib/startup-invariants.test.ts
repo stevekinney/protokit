@@ -27,6 +27,7 @@ const mockEnvironment: ProductionStartupInvariantSource['environment'] = {
 	TRUSTED_PROXY_HEADER: undefined,
 	NODE_TLS_REJECT_UNAUTHORIZED: undefined,
 	SESSION_SIGNING_SECRET: undefined,
+	MCP_CONFORMANCE_MODE: false,
 };
 const mockDatabaseEnvironment: ProductionStartupInvariantSource['databaseEnvironment'] = {
 	DATABASE_URL:
@@ -55,6 +56,7 @@ function resetToValidProductionConfiguration(): void {
 	mockEnvironment.TRUSTED_PROXY_HEADER = 'x-forwarded-for';
 	mockEnvironment.NODE_TLS_REJECT_UNAUTHORIZED = undefined;
 	mockEnvironment.SESSION_SIGNING_SECRET = 'a'.repeat(32);
+	mockEnvironment.MCP_CONFORMANCE_MODE = false;
 	redisConfigured = true;
 	mockDatabaseEnvironment.DATABASE_URL =
 		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full';
@@ -186,14 +188,28 @@ describe('assertProductionStartupInvariants', () => {
 	it('throws in production when Google credentials are partially configured', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.GOOGLE_CLIENT_SECRET = undefined;
-		expect(() => invoke()).toThrow(/must both be set or both be absent/);
+		expect(() => invoke()).toThrow(/GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set/);
 	});
 
-	it('does not throw in production when Google credentials are both absent', () => {
+	// Review round 4 / P1: previously did not throw. Production disables
+	// `/auth/dev/login` (development-only) and an unauthenticated
+	// `/oauth/authorize` request unconditionally redirects to
+	// `/auth/google/start`, which 503s with no Google credentials configured
+	// — a deployment could pass every other startup check while no user
+	// could ever sign in. There is no other production authentication
+	// provider in this codebase, so both credentials are now required
+	// outright, not merely required to agree with each other.
+	it('throws in production when Google credentials are both absent', () => {
 		resetToValidProductionConfiguration();
 		mockEnvironment.GOOGLE_CLIENT_ID = undefined;
 		mockEnvironment.GOOGLE_CLIENT_SECRET = undefined;
-		expect(() => invoke()).not.toThrow();
+		expect(() => invoke()).toThrow(/GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set/);
+	});
+
+	it('throws in production when MCP_CONFORMANCE_MODE is true (review round 4: this bypasses shouldEnableConformanceMode entirely, since that predicate only checks PROTOKIT_TUNNEL_ACTIVE, never NODE_ENV)', () => {
+		resetToValidProductionConfiguration();
+		mockEnvironment.MCP_CONFORMANCE_MODE = true;
+		expect(() => invoke()).toThrow(/MCP_CONFORMANCE_MODE is true/);
 	});
 
 	it('reports every failing setting in one error, not just the first', () => {
@@ -236,6 +252,7 @@ function validConfiguration(): ProductionStartupConfiguration {
 		trustedProxyCidrs: '10.0.0.0/8',
 		trustedProxyHeader: 'x-forwarded-for',
 		sessionSigningSecret: 'a'.repeat(32),
+		mcpConformanceModeConfigured: false,
 	};
 }
 
@@ -255,6 +272,14 @@ describe('collectProductionStartupFailures', () => {
 			expect(failures.some((failure) => failure.includes('NODE_ENV is "development"'))).toBe(true);
 		},
 	);
+
+	it('reports MCP_CONFORMANCE_MODE=true as a production startup failure', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			mcpConformanceModeConfigured: true,
+		});
+		expect(failures.some((failure) => failure.includes('MCP_CONFORMANCE_MODE is true'))).toBe(true);
+	});
 
 	it('never includes a raw credential value in a failure message', () => {
 		const failures = collectProductionStartupFailures({

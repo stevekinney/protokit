@@ -51,6 +51,15 @@ jobs:
           api_key: ${{ secrets.NEON_API_KEY }}
           branch_name: pre-migration-${{ github.sha }}
 
+      # If DATABASE_URL points at a database that already had these tables
+      # before this repository tracked Drizzle migrations (for example, an
+      # earlier fork of this template deployed before migration 0000
+      # existed), this step fails on its first run with "relation already
+      # exists". See packages/database/CLAUDE.md ("Baselining a database
+      # that predates tracked migrations") and run
+      # `bun scripts/baseline-existing-database.ts` against that database
+      # once, out of band, before re-running this workflow. A fresh
+      # database needs none of this.
       - name: Run migrations
         run: bun scripts/migrate.ts
         env:

@@ -156,6 +156,7 @@ export function evaluateProductionReadiness(
 		trustedProxyHeader: variables.TRUSTED_PROXY_HEADER,
 		nodeTlsRejectUnauthorized: variables.NODE_TLS_REJECT_UNAUTHORIZED,
 		sessionSigningSecret: variables.SESSION_SIGNING_SECRET,
+		mcpConformanceModeConfigured: variables.MCP_CONFORMANCE_MODE === 'true',
 	});
 
 	if (failureMessages.length === 0) {
@@ -167,6 +168,40 @@ export function evaluateProductionReadiness(
 	return failureMessages.map((message) =>
 		makeResult('Production readiness', 'fail', 'Production startup invariant', message),
 	);
+}
+
+/**
+ * Mirrors an imperative, cross-field check `packages/mcp/src/env.ts` runs after schema
+ * validation (`OBS-001`): production refuses to import at all when `LOG_CONTENT_DIAGNOSTICS_UNTIL`
+ * is set, regardless of the timestamp value. `z.iso.datetime()` alone cannot express "not
+ * allowed in production" — that shape is shared and side-effect-free by design (see
+ * `packages/mcp/src/environment-schema.ts`) — so `evaluateEnvironmentSchema` reports this field
+ * as valid even in a `--production` run, and without this function doctor could report a fully
+ * ready configuration that the real MCP server immediately refuses to start with. This lives
+ * next to `evaluateProductionReadiness` rather than inside
+ * `collectProductionStartupFailures`/`production-startup-requirements.ts` because that file is
+ * `applications/web`'s shared web-server invariant set — `LOG_CONTENT_DIAGNOSTICS_UNTIL` is an
+ * `@template/mcp`-only field with no equivalent web invariant to share.
+ */
+export function evaluateMcpProductionProhibitions(
+	target: Target,
+	variables: CandidateVariables,
+): CheckResult[] {
+	if (target !== 'production') return [];
+
+	if (variables.LOG_CONTENT_DIAGNOSTICS_UNTIL) {
+		return [
+			makeResult(
+				'Production readiness',
+				'fail',
+				'LOG_CONTENT_DIAGNOSTICS_UNTIL',
+				'LOG_CONTENT_DIAGNOSTICS_UNTIL is not supported in production — packages/mcp/src/env.ts ' +
+					'refuses to import with this set, regardless of the timestamp. Unset it before deploying.',
+			),
+		];
+	}
+
+	return [];
 }
 
 export function evaluateCliAvailability(): CheckResult[] {
@@ -201,6 +236,45 @@ export function evaluateEnvironmentFile(): CheckResult[] {
 	];
 }
 
+/**
+ * Probes a single connection-string endpoint and reports pass/fail. Shared by both the pooled
+ * (`DATABASE_URL`) and unpooled (`DATABASE_URL_UNPOOLED`) probes in `evaluateDatabaseConnection`
+ * below — both need the identical local-proxy override and error-formatting behavior.
+ */
+async function probeDatabaseUrl(
+	label: string,
+	databaseUrl: string,
+	localProxyUrl: string | undefined,
+): Promise<CheckResult> {
+	try {
+		// Match the real server and migrator (`packages/database/src/index.ts`,
+		// `packages/database/src/migrate.ts`): when `DATABASE_LOCAL_PROXY_URL` is set — the
+		// Docker-backed local Postgres setup — point the Neon driver's SQL-over-HTTP requests at
+		// the local proxy instead of the real Neon HTTPS endpoint before connecting. Without this,
+		// doctor probes an endpoint the application never actually talks to in that configuration
+		// and reports a false failure while the real server connects fine.
+		applyLocalProxyFetchEndpoint(localProxyUrl);
+		const { neon } = await import('@neondatabase/serverless');
+		const sql = neon(databaseUrl);
+		await sql`SELECT 1`;
+		return makeResult('Database connection', 'pass', label, 'Connected successfully');
+	} catch (error) {
+		const message = error instanceof Error ? error.message : 'Unknown error';
+		return makeResult('Database connection', 'fail', label, `Failed (${message})`);
+	}
+}
+
+/**
+ * Probes `DATABASE_URL`, and — when `DATABASE_URL_UNPOOLED` is also set — probes it too, as a
+ * second, separately reported result. `packages/database/src/migrate.ts`'s `runMigrations`
+ * prefers `DATABASE_URL_UNPOOLED` over `DATABASE_URL` (`environment.DATABASE_URL_UNPOOLED ||
+ * environment.DATABASE_URL`), so a stale or unreachable unpooled URL previously passed doctor
+ * silently — only the pooled URL was ever probed — while the real migration path (run during
+ * every deployment) still failed against it despite doctor's all-green report. When
+ * `DATABASE_URL_UNPOOLED` is unset, migration falls back to the same `DATABASE_URL` this already
+ * probes, so a second probe would be redundant and the single result keeps its original label
+ * for backward compatibility with existing callers of this function.
+ */
 export async function evaluateDatabaseConnection(
 	variables: CandidateVariables,
 ): Promise<CheckResult[]> {
@@ -217,26 +291,26 @@ export async function evaluateDatabaseConnection(
 		];
 	}
 
-	try {
-		// Match the real server and migrator (`packages/database/src/index.ts`,
-		// `packages/database/src/migrate.ts`): when `DATABASE_LOCAL_PROXY_URL` is set — the
-		// Docker-backed local Postgres setup — point the Neon driver's SQL-over-HTTP requests at
-		// the local proxy instead of the real Neon HTTPS endpoint before connecting. Without this,
-		// doctor probes an endpoint the application never actually talks to in that configuration
-		// and reports a false failure while the real server connects fine.
-		applyLocalProxyFetchEndpoint(variables.DATABASE_LOCAL_PROXY_URL);
-		const { neon } = await import('@neondatabase/serverless');
-		const sql = neon(databaseUrl);
-		await sql`SELECT 1`;
-		return [
-			makeResult('Database connection', 'pass', 'Database connection', 'Connected successfully'),
-		];
-	} catch (error) {
-		const message = error instanceof Error ? error.message : 'Unknown error';
-		return [
-			makeResult('Database connection', 'fail', 'Database connection', `Failed (${message})`),
-		];
+	const unpooledUrl = variables.DATABASE_URL_UNPOOLED;
+	const results: CheckResult[] = [
+		await probeDatabaseUrl(
+			unpooledUrl ? 'Database connection (pooled, DATABASE_URL)' : 'Database connection',
+			databaseUrl,
+			variables.DATABASE_LOCAL_PROXY_URL,
+		),
+	];
+
+	if (unpooledUrl) {
+		results.push(
+			await probeDatabaseUrl(
+				'Database connection (unpooled, DATABASE_URL_UNPOOLED — used for migrations)',
+				unpooledUrl,
+				variables.DATABASE_LOCAL_PROXY_URL,
+			),
+		);
 	}
+
+	return results;
 }
 
 export function evaluateGithubAuthentication(): CheckResult[] {
@@ -298,6 +372,7 @@ async function runNeonChecks(
 	return [
 		...evaluateEnvironmentSchemas(variables),
 		...evaluateProductionReadiness(target, variables),
+		...evaluateMcpProductionProhibitions(target, variables),
 		...(await evaluateDatabaseConnection(variables)),
 	];
 }
@@ -316,6 +391,7 @@ async function runAllChecks(target: Target, variables: CandidateVariables): Prom
 		...evaluateCliAvailability(),
 		...evaluateEnvironmentSchemas(variables),
 		...evaluateProductionReadiness(target, variables),
+		...evaluateMcpProductionProhibitions(target, variables),
 		...(await evaluateDatabaseConnection(variables)),
 		...evaluateGithubAuthentication(),
 		...evaluateGithubSecrets(),

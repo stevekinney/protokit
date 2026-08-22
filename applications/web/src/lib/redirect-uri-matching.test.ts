@@ -113,6 +113,36 @@ describe('redirectUriMatchesRegistered', () => {
 		).toBe(false);
 	});
 
+	it('matches a registered IPv6 loopback ([::1]) redirect URI whose request uses a different port', () => {
+		expect(
+			redirectUriMatchesRegistered(
+				'http://[::1]:54321/callback',
+				['http://[::1]:1234/callback'],
+				isValidRedirectUri,
+			),
+		).toBe(true);
+	});
+
+	it('does not treat [::1] and 127.0.0.1 as the same loopback host', () => {
+		expect(
+			redirectUriMatchesRegistered(
+				'http://[::1]:9999/callback',
+				['http://127.0.0.1/callback'],
+				isValidRedirectUri,
+			),
+		).toBe(false);
+	});
+
+	it('normalizes an expanded IPv6 loopback spelling to [::1] before matching', () => {
+		expect(
+			redirectUriMatchesRegistered(
+				'http://[0:0:0:0:0:0:0:1]:54321/callback',
+				['http://[::1]:1234/callback'],
+				isValidRedirectUri,
+			),
+		).toBe(true);
+	});
+
 	it('rejects when the client has no matching registered redirect URI at all', () => {
 		expect(redirectUriMatchesRegistered('http://localhost:9999/cb', [], isValidRedirectUri)).toBe(
 			false,

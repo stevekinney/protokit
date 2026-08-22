@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { isIPv4, isIPv6 } from 'node:net';
 
 import {
 	commandExists,
@@ -131,9 +132,17 @@ async function setupGoogle() {
 	console.log('Google OAuth credentials are required for authentication.');
 	console.log('Configure your own credentials for both development and production.\n');
 
+	// `/auth/google/callback` (not `/api/auth/callback/google`) is what the router and both
+	// token-exchange call sites actually serve — `applications/web/src/application.tsx`'s route
+	// table and `applications/web/src/lib/google-authentication.ts`'s `callbackUrl` at both the
+	// authorization-request and code-exchange steps. Google requires an exact registered redirect
+	// URI match, so printing any other path here hands the operator credentials that fail sign-in
+	// with a redirect-URI mismatch. Both a production and a localhost URI are printed because
+	// Google Cloud Console requires every environment's exact URI to be registered up front.
 	console.log('Open Google Cloud Console: https://console.cloud.google.com/apis/credentials');
-	console.log('Create OAuth 2.0 Client ID with redirect URI:');
-	console.log('  https://your-app.railway.app/api/auth/callback/google\n');
+	console.log('Create OAuth 2.0 Client ID with these redirect URIs (register both):');
+	console.log('  https://your-app.up.railway.app/auth/google/callback');
+	console.log('  http://localhost:3000/auth/google/callback\n');
 
 	const googleClientId = await prompt('GOOGLE_CLIENT_ID (blank to skip): ');
 	const googleClientSecret = googleClientId
@@ -194,7 +203,11 @@ async function setupRedis() {
 	}
 
 	// May carry embedded credentials (redis://user:pass@host) — hidden the same as any other
-	// secret input.
+	// secret input. The `redis://localhost:6379` default is for local development only:
+	// `setupRailway` below never copies this value to Railway — it requires a separate,
+	// validated `rediss://` endpoint before pushing anything, because production startup
+	// (`assertProductionStartupInvariants`) rejects both a loopback host and the non-TLS
+	// `redis://` scheme outright.
 	const redisUrl = await promptSecret(
 		'REDIS_URL (default: redis://localhost:6379, input hidden): ',
 	);
@@ -301,6 +314,134 @@ async function setupBaseUrl() {
 }
 
 /**
+ * Mirrors `redisUrlFailures`'s three production checks
+ * (`applications/web/src/lib/production-startup-requirements.ts`): the encrypted,
+ * certificate-verified `rediss://` scheme, a non-loopback host, and no known placeholder
+ * credential. Not exhaustive (matches the source's own "cheap check for the obvious mistake"
+ * scope) — used only to keep `setupRailway` re-prompting instead of pushing a value production
+ * will reject at startup.
+ */
+const knownPlaceholderRedisCredentials = new Set([
+	'user:password',
+	'admin:admin',
+	'test:test',
+	'postgres:postgres',
+	'guest:guest',
+	'root:root',
+	'changeme:changeme',
+]);
+const loopbackRedisHostnames = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
+
+export function isValidProductionRedisUrl(value: string): boolean {
+	if (!value.startsWith('rediss://')) return false;
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return false;
+	}
+	const host = parsed.hostname.toLowerCase();
+	const unbracketed = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+	if (loopbackRedisHostnames.has(unbracketed)) return false;
+	const credentials =
+		parsed.username || parsed.password ? `${parsed.username}:${parsed.password}` : null;
+	if (credentials && knownPlaceholderRedisCredentials.has(credentials.toLowerCase())) return false;
+	return true;
+}
+
+/**
+ * Mirrors `isValidCidr`'s syntax check (`applications/web/src/lib/trusted-proxy.ts`): a real
+ * IPv4 or IPv6 range address with a prefix length that fits that family's address width. Uses
+ * `node:net`'s `isIPv4`/`isIPv6` rather than importing the application module directly — that
+ * module has no package export, and this is a shape sanity check for the prompt loop, not the
+ * authoritative parser (`isAddressInCidr` at request time is).
+ */
+export function isValidTrustedProxyCidr(cidr: string): boolean {
+	const parts = cidr.split('/');
+	if (parts.length !== 2) return false;
+	const [address, prefixLengthText] = parts;
+	if (!address || !prefixLengthText || !/^\d+$/.test(prefixLengthText)) return false;
+	const prefixLength = Number.parseInt(prefixLengthText, 10);
+	if (isIPv4(address)) return prefixLength <= 32;
+	if (isIPv6(address)) return prefixLength <= 128;
+	return false;
+}
+
+/**
+ * A comma-separated `TRUSTED_PROXY_CIDRS` value is valid only if every entry is — one malformed
+ * entry silently matches no socket peer at request time, per `isAddressInCidr`'s documented
+ * fail-closed behavior.
+ */
+export function isValidTrustedProxyCidrList(value: string): boolean {
+	const entries = value
+		.split(',')
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+	return entries.length > 0 && entries.every(isValidTrustedProxyCidr);
+}
+
+const trustedProxyHeaderChoices = ['x-forwarded-for', 'forwarded', 'cf-connecting-ip'] as const;
+
+/**
+ * `TRUSTED-PROXY-P1` (round 4 review): `assertProductionStartupInvariants` refuses production
+ * startup unless both `TRUSTED_PROXY_CIDRS` and `TRUSTED_PROXY_HEADER` are set, but no phase
+ * ever collected them — the same missing-phase defect `setupBaseUrl` above was added to fix for
+ * `BASE_URL`. Collected here, before Railway is touched, for the same reason: failing the wizard
+ * phase is cheaper than an operator discovering the deployed service won't boot.
+ */
+async function setupTrustedProxy() {
+	console.log('\n--- Trusted Proxy (production) ---\n');
+
+	if (getEnvironmentValue('TRUSTED_PROXY_CIDRS') && getEnvironmentValue('TRUSTED_PROXY_HEADER')) {
+		console.log('TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER already exist in .env.local.');
+		return;
+	}
+
+	console.log("Production runs behind Railway's reverse proxy. Without both of these, rate");
+	console.log("limiting and failed-authentication lockouts fall back to the proxy's own socket");
+	console.log('address for every request, collapsing every real client onto one shared bucket.\n');
+	console.log("Railway's edge proxy forwards the client address via the standard");
+	console.log("X-Forwarded-For header; find Railway's current published proxy CIDR ranges in");
+	console.log('their documentation before entering them here.\n');
+
+	if (!getEnvironmentValue('TRUSTED_PROXY_CIDRS')) {
+		for (;;) {
+			const input = await prompt('TRUSTED_PROXY_CIDRS (comma-separated, e.g. 10.0.0.0/8): ');
+			if (!input || !isValidTrustedProxyCidrList(input)) {
+				console.warn(
+					'TRUSTED_PROXY_CIDRS is required and every entry must be a valid IPv4 or IPv6 CIDR ' +
+						'(e.g. 10.0.0.0/8 or 2001:db8::/32). Try again.',
+				);
+				continue;
+			}
+			appendToEnvironmentFile('TRUSTED_PROXY_CIDRS', input);
+			break;
+		}
+	}
+
+	if (!getEnvironmentValue('TRUSTED_PROXY_HEADER')) {
+		for (;;) {
+			const input = await prompt(
+				`TRUSTED_PROXY_HEADER (${trustedProxyHeaderChoices.join(' | ')}, default: x-forwarded-for): `,
+			);
+			const value = input || 'x-forwarded-for';
+			if (
+				!trustedProxyHeaderChoices.includes(value as (typeof trustedProxyHeaderChoices)[number])
+			) {
+				console.warn(
+					`TRUSTED_PROXY_HEADER must be one of: ${trustedProxyHeaderChoices.join(', ')}.`,
+				);
+				continue;
+			}
+			appendToEnvironmentFile('TRUSTED_PROXY_HEADER', value);
+			break;
+		}
+	}
+
+	console.log('Trusted proxy configuration written to .env.local');
+}
+
+/**
  * Environment keys that only ever describe *this* machine and must never be copied to Railway
  * verbatim, because Railway is a production deployment target by definition. Copying
  * `NODE_ENV=development` from a developer's `.env.local` overrides the image's baked-in
@@ -309,31 +450,43 @@ async function setupBaseUrl() {
  * becomes unreachable through Railway's published port. `DATABASE_LOCAL_PROXY_URL` and
  * `PROTOKIT_TUNNEL_ACTIVE` are the same class of local-only value: the former is explicitly
  * required to be unset in production (`production-startup-requirements.ts`), and the latter only
- * has meaning for a locally spawned `develop.ts --tunnel` process.
+ * has meaning for a locally spawned `develop.ts --tunnel` process. `REDIS_URL` is excluded too —
+ * not because it is local-only, but because the local dev default (`redis://localhost:6379`)
+ * fails every one of `isValidProductionRedisUrl`'s checks; `setupRailway` below always supplies a
+ * separately validated value via `planRailwayVariables`'s `overrides` parameter instead of
+ * copying `.env.local`'s verbatim.
  */
 export const RAILWAY_EXCLUDED_ENVIRONMENT_KEYS: ReadonlySet<string> = new Set([
 	'NODE_ENV',
 	'DATABASE_LOCAL_PROXY_URL',
 	'PROTOKIT_TUNNEL_ACTIVE',
+	'REDIS_URL',
 ]);
 
 /**
  * Pure planning function for what `setupRailway` pushes: every non-empty `.env.local` entry
  * except the local-only keys above, plus an explicit `NODE_ENV=production` — never inferred from
  * whatever the developer's own `.env.local` happens to say, since a Railway service is production
- * by definition regardless of what mode the machine running `setup.ts` is in.
+ * by definition regardless of what mode the machine running `setup.ts` is in — and finally
+ * `overrides`, values `setupRailway` collected and validated separately from `.env.local` (today:
+ * a production-grade `REDIS_URL`). Overrides win over both the generic copy and `NODE_ENV`, so
+ * they are applied last and de-duplicated against whatever the generic loop already added.
  */
 export function planRailwayVariables(
 	variables: Record<string, string | undefined>,
+	overrides: Record<string, string> = {},
 ): Array<[string, string]> {
-	const plan: Array<[string, string]> = [];
+	const plan = new Map<string, string>();
 	for (const [key, value] of Object.entries(variables)) {
 		if (!value) continue;
 		if (RAILWAY_EXCLUDED_ENVIRONMENT_KEYS.has(key)) continue;
-		plan.push([key, value]);
+		plan.set(key, value);
 	}
-	plan.push(['NODE_ENV', 'production']);
-	return plan;
+	plan.set('NODE_ENV', 'production');
+	for (const [key, value] of Object.entries(overrides)) {
+		plan.set(key, value);
+	}
+	return [...plan.entries()];
 }
 
 async function setupRailway() {
@@ -363,12 +516,52 @@ async function setupRailway() {
 		return;
 	}
 
+	// `TRUSTED-PROXY-P1`: same fail-closed guard, for the same reason.
+	if (!getEnvironmentValue('TRUSTED_PROXY_CIDRS') || !getEnvironmentValue('TRUSTED_PROXY_HEADER')) {
+		console.error(
+			'TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set in .env.local. Production ' +
+				'refuses to start without both (assertProductionStartupInvariants). Run ' +
+				'`bun scripts/setup.ts trusted-proxy` first, then re-run this phase.',
+		);
+		process.exitCode = 1;
+		return;
+	}
+
+	// `REDIS-PROD-P1` (round 4 review): the local dev default written by `setupRedis`
+	// (`redis://localhost:6379`) is excluded from the generic copy above precisely because it
+	// fails every production check. Collect a separately validated production endpoint here
+	// instead of silently pushing the local one — an operator who already has a production Redis
+	// URL in `.env.local` (because they edited it by hand) does not get re-prompted.
+	const localRedisUrl = getEnvironmentValue('REDIS_URL');
+	const railwayVariableOverrides: Record<string, string> = {};
+	if (localRedisUrl && isValidProductionRedisUrl(localRedisUrl)) {
+		railwayVariableOverrides.REDIS_URL = localRedisUrl;
+	} else {
+		console.log(
+			'REDIS_URL in .env.local is the local development default and cannot be used in ' +
+				'production (assertProductionStartupInvariants requires an encrypted, ' +
+				'certificate-verified rediss:// endpoint on a non-local host).',
+		);
+		for (;;) {
+			const input = await promptSecret('Production REDIS_URL (rediss://..., input hidden): ');
+			if (!input || !isValidProductionRedisUrl(input)) {
+				console.warn(
+					'REDIS_URL must use rediss://, point at a non-local host, and carry no placeholder ' +
+						'credentials. Try again.',
+				);
+				continue;
+			}
+			railwayVariableOverrides.REDIS_URL = input;
+			break;
+		}
+	}
+
 	console.log('\nInitializing Railway project...');
 	try {
 		execute('railway', ['init', '-y'], { stdio: 'inherit' });
 
 		const variables = readEnvironmentFile();
-		for (const [key, value] of planRailwayVariables(variables)) {
+		for (const [key, value] of planRailwayVariables(variables, railwayVariableOverrides)) {
 			try {
 				// `--stdin` delivers the value over stdin rather than as an argv element, so a
 				// credential never appears in `ps` output while Railway is configuring it.
@@ -420,16 +613,44 @@ async function setupGithubSecrets(neonProjectId?: string) {
 		setGithubSecret('DATABASE_URL', connectionString);
 		setGithubSecret('DATABASE_URL_UNPOOLED', directConnectionString);
 
-		const neonApiKey = await promptSecret(
-			'NEON_API_KEY (for PR workflow Neon branch creation, blank to skip, input hidden): ',
-		);
-
-		if (neonApiKey) {
-			setGithubSecret('NEON_API_KEY', neonApiKey);
-		} else {
-			console.warn(
-				'Skipping NEON_API_KEY — PR database validation workflow will not work without it.',
+		// `NEON-API-KEY-P1` (round 4 review): `.github/workflows/production.yml` passes
+		// NEON_API_KEY to `neondatabase/create-branch-action` before every migration (the
+		// mandatory rollback-branch snapshot), not only the PR-validation workflow. Skipping it
+		// does not merely degrade PR checks — it fails every production deploy before migration
+		// or `railway up` ever runs. Required, not skippable, once the operator has opted into
+		// CI/CD configuration at all.
+		for (;;) {
+			const neonApiKey = await promptSecret(
+				'NEON_API_KEY (required — used by both the PR and production workflows, input hidden): ',
 			);
+			if (!neonApiKey) {
+				console.warn(
+					'NEON_API_KEY is required: production.yml cannot create its pre-migration rollback ' +
+						'branch without it, and every production deploy fails before migration. Try again.',
+				);
+				continue;
+			}
+			setGithubSecret('NEON_API_KEY', neonApiKey);
+			break;
+		}
+
+		// `RAILWAY-TOKEN-P1` (round 4 review): production.yml's `deploy` job authenticates
+		// exclusively with secrets.RAILWAY_TOKEN — a GitHub-hosted runner has no other login path.
+		// Without this secret, every deploy this workflow triggers reaches `railway up`
+		// unauthenticated and fails.
+		for (;;) {
+			const railwayToken = await promptSecret(
+				"RAILWAY_TOKEN (required — the only credential production.yml's deploy job uses, input hidden): ",
+			);
+			if (!railwayToken) {
+				console.warn(
+					"RAILWAY_TOKEN is required: production.yml's deploy job has no other way to " +
+						'authenticate with Railway on a GitHub-hosted runner. Try again.',
+				);
+				continue;
+			}
+			setGithubSecret('RAILWAY_TOKEN', railwayToken);
+			break;
 		}
 
 		console.log('GitHub secrets configured.');
@@ -473,6 +694,7 @@ async function runFullSetup() {
 	await setupRedis();
 	await setupMcpProtocolAndExtensions();
 	await setupBaseUrl();
+	await setupTrustedProxy();
 	await setupRailway();
 	await setupGithubSecrets(neonResult?.projectId);
 	await runInitialMigration();
@@ -511,6 +733,9 @@ const phases: Record<string, () => Promise<void>> = {
 	},
 	'base-url': async () => {
 		await setupBaseUrl();
+	},
+	'trusted-proxy': async () => {
+		await setupTrustedProxy();
 	},
 	railway: async () => {
 		await setupRailway();

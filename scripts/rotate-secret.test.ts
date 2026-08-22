@@ -76,6 +76,47 @@ describe('rotateSessionSigningSecretLocally', () => {
 		expect(entries['SESSION_SIGNING_SECRET']).toBe(nextValue);
 	});
 
+	// Regression for a bot-reported P2: rerunning `rotate-secret.ts session` while an overlap
+	// window is already open (SESSION_SIGNING_SECRET_PREVIOUS already set) used to replace
+	// SESSION_SIGNING_SECRET_PREVIOUS with the *current* secret, silently discarding the original
+	// retired key — invalidating every session, CSRF token, and pending Google OAuth state still
+	// signed under it, before the documented session-cutover step ever ran.
+	test('refuses to rotate again while an overlap window is already open, and leaves the file untouched', () => {
+		directory = mkdtempSync(join(tmpdir(), 'protokit-rotate-test-'));
+		environmentFile = join(directory, '.env.local');
+
+		const originalSecret = 'c'.repeat(64);
+		appendEnvironmentEntryToFile(environmentFile, 'SESSION_SIGNING_SECRET', originalSecret);
+		const first = rotateSessionSigningSecretLocally(environmentFile);
+		const afterFirstRotation = readEnvironmentEntriesFromFile(environmentFile);
+		expect(afterFirstRotation['SESSION_SIGNING_SECRET_PREVIOUS']).toBe(originalSecret);
+		expect(afterFirstRotation['SESSION_SIGNING_SECRET']).toBe(first.nextValue);
+
+		expect(() => rotateSessionSigningSecretLocally(environmentFile)).toThrow(/already in progress/);
+
+		// The original retired key must still be recoverable -- a second rotation attempt must
+		// not have overwritten it with the current secret.
+		const afterRefusedSecondRotation = readEnvironmentEntriesFromFile(environmentFile);
+		expect(afterRefusedSecondRotation['SESSION_SIGNING_SECRET_PREVIOUS']).toBe(originalSecret);
+		expect(afterRefusedSecondRotation['SESSION_SIGNING_SECRET']).toBe(first.nextValue);
+	});
+
+	test('rotates again successfully once the overlap window has been closed by cutover', () => {
+		directory = mkdtempSync(join(tmpdir(), 'protokit-rotate-test-'));
+		environmentFile = join(directory, '.env.local');
+
+		const originalSecret = 'd'.repeat(64);
+		appendEnvironmentEntryToFile(environmentFile, 'SESSION_SIGNING_SECRET', originalSecret);
+		const first = rotateSessionSigningSecretLocally(environmentFile);
+		rotateSessionSigningSecretCutoverLocally(environmentFile);
+
+		const second = rotateSessionSigningSecretLocally(environmentFile);
+		expect(second.previousValuePresent).toBe(true);
+		expect(readEnvironmentEntriesFromFile(environmentFile)['SESSION_SIGNING_SECRET_PREVIOUS']).toBe(
+			first.nextValue,
+		);
+	});
+
 	test('writes a fresh secret when none existed before', () => {
 		directory = mkdtempSync(join(tmpdir(), 'protokit-rotate-test-'));
 		environmentFile = join(directory, '.env.local');

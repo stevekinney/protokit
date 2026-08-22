@@ -174,6 +174,23 @@ describe('handleHealthReadinessGet', () => {
 		expect(notConfigured.headers.get('Cache-Control')).toBe('no-store');
 	});
 
+	it('reports extensions.ui as false when the flag is on but no MCP App resource is registered (review round 4)', async () => {
+		// This repository ships no `packages/mcp-apps` application today, so
+		// `hasRegisteredUiExtensionResource()` is always false in this real
+		// build -- matching what `/mcp` and OAuth metadata actually advertise.
+		setEnvironment({ MCP_ENABLE_UI_EXTENSION: true });
+		const response = await handleHealthReadinessGet(buildContext());
+		const body = await response.json();
+		expect(body.extensions.ui).toBe(false);
+	});
+
+	it('reports extensions.ui as false when the flag itself is off, regardless of any registered resource', async () => {
+		setEnvironment({ MCP_ENABLE_UI_EXTENSION: false });
+		const response = await handleHealthReadinessGet(buildContext());
+		const body = await response.json();
+		expect(body.extensions.ui).toBe(false);
+	});
+
 	it('never advertises the enterprise-managed authorization extension', async () => {
 		const response = await handleHealthReadinessGet(buildContext());
 		const body = await response.json();

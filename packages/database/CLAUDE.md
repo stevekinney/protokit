@@ -53,17 +53,28 @@ any deployment that predates this directory) will therefore attempt every migrat
 including `CREATE TABLE "oauth_clients"` and friends — which fails with `relation already exists` if
 those tables are already there from a prior manual setup.
 
-There is no generic, automated fix for this: a deployment old enough to predate `drizzle/` almost
-certainly predates schema changes this repository has since made (`serviceAccountUserId` and
-`mcp_sessions` existed at various points and no longer do), so its actual table shape will not match
-any single migration's `CREATE TABLE` definitions exactly. Baselining requires an operator to compare
-their live schema against `drizzle/meta/*_snapshot.json` and judge which migrations their database
-already reflects — this is not something a migration file or CI job can safely automate. Before running
-`bun scripts/migrate.ts` against such a database for the first time:
+There is no generic, automated fix for the judgment call this requires: a deployment old enough to
+predate `drizzle/` almost certainly predates schema changes this repository has since made
+(`serviceAccountUserId` and `mcp_sessions` existed at various points and no longer do), so its actual
+table shape will not necessarily match any single migration's `CREATE TABLE` definitions exactly.
+Deciding which migration a live database already reflects requires an operator to compare that
+database's schema against `drizzle/meta/*_snapshot.json` — this is not something a migration file or
+CI job can safely infer from "does `oauth_clients` exist". Before running `bun scripts/migrate.ts`
+against such a database for the first time:
 
 1. Confirm the live schema against `drizzle/meta/000N_snapshot.json` snapshots in order, from `0000` up,
    to find the last migration your existing tables already satisfy.
-2. Seed the tracking table so the migrator skips everything up to and including that point:
+2. If that migration is `0000_wet_leopardon` — the common case for a deployment that predates
+   `drizzle/` entirely — run `bun scripts/baseline-existing-database.ts`. It seeds
+   `drizzle.__drizzle_migrations` with a row for 0000 (real sha256 hash of the checked-in migration
+   file, real `created_at` from `drizzle/meta/_journal.json`, so it's indistinguishable from a row
+   `migrate()` would have written itself), and refuses to act (`fresh-database`) if `oauth_clients`
+   doesn't exist yet — a safety net against running it on an empty database, not a replacement for
+   step 1. It's idempotent: running it again against an already-tracked database is a no-op
+   (`already-tracked`).
+   If your database already reflects a _later_ migration instead, the script doesn't cover that case
+   (baselining past 0000 needs a different check-table per migration, which isn't worth generalizing
+   for a boundary this narrow) — seed the row by hand instead:
    `CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL,
 created_at bigint);` then `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES
 ('baseline', <the "when" value of that migration's entry in drizzle/meta/_journal.json>);`

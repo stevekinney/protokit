@@ -86,7 +86,26 @@ export function formatExposedRoutesBanner(tunnelUrl: string): string {
 	return lines.join('\n');
 }
 
-const childProcesses: Array<ReturnType<typeof Bun.spawn>> = [];
+/**
+ * The subset of `Bun.spawn`'s return value every function in this file actually uses. Declared
+ * as its own interface (rather than `ReturnType<typeof Bun.spawn>` directly) so `startTunnel`
+ * can accept an injectable spawn function in tests — a fake process satisfying only this shape
+ * (no real subprocess, no real `cloudflared` binary) is enough to exercise the URL-discovery
+ * timeout path that a live `cloudflared` process cannot be reliably driven into inside a test.
+ */
+export interface ManagedChildProcess {
+	readonly stdout: ReadableStream<Uint8Array>;
+	readonly stderr: ReadableStream<Uint8Array>;
+	readonly exited: Promise<number>;
+	kill(): void;
+}
+
+export const childProcesses: ManagedChildProcess[] = [];
+
+/** Test-only: clears the module-level `childProcesses` registry between test cases. */
+export function resetChildProcessesForTesting(): void {
+	childProcesses.length = 0;
+}
 
 function write(message: string): void {
 	process.stdout.write(message);
@@ -159,13 +178,41 @@ async function pollUntilReady(
  * yet, so this runs BEFORE the dev server is spawned — the URL must be known in time to configure
  * the server's own `BASE_URL`, not merely printed after the fact.
  */
-async function startTunnel(): Promise<{ process: ReturnType<typeof Bun.spawn>; url: string }> {
-	const tunnelPrefix = `${ANSI_MAGENTA}[tunnel]${ANSI_RESET}`;
-	const tunnelProcess = Bun.spawn(['cloudflared', 'tunnel', '--url', 'http://localhost:3000'], {
+function defaultTunnelSpawn(command: readonly string[]): ManagedChildProcess {
+	return Bun.spawn([...command], {
 		stdout: 'pipe',
 		stderr: 'pipe',
 		cwd: import.meta.dirname + '/..',
 	});
+}
+
+export async function startTunnel(
+	options: {
+		/**
+		 * Overrides how the tunnel process is spawned. Test-only: production code never passes
+		 * this, so it always gets the real `cloudflared` binary via `Bun.spawn`.
+		 */
+		spawn?: (command: readonly string[]) => ManagedChildProcess;
+		/**
+		 * Overrides the URL-discovery timeout in milliseconds. Test-only: production code never
+		 * passes this, so it always waits the real 30 seconds.
+		 */
+		timeoutMilliseconds?: number;
+	} = {},
+): Promise<{ process: ManagedChildProcess; url: string }> {
+	const { spawn = defaultTunnelSpawn, timeoutMilliseconds = 30000 } = options;
+	const tunnelPrefix = `${ANSI_MAGENTA}[tunnel]${ANSI_RESET}`;
+	const tunnelProcess = spawn(['cloudflared', 'tunnel', '--url', 'http://localhost:3000']);
+
+	// Registered immediately after spawning, before waiting on URL discovery below. Regression
+	// for a bot-reported P2: if cloudflared stays alive but never prints a URL matching
+	// `parseTunnelUrl` within the timeout (e.g. after an output-format change), the promise below
+	// rejects and this function throws before it would otherwise have returned the process to its
+	// caller. `main()`'s top-level `.catch()` handler calls `shutdown()` on any such failure, but
+	// `shutdown()` can only kill what is in `childProcesses` -- a tunnel process that was spawned
+	// but never registered would be orphaned, left running and forwarding port 3000 to the public
+	// internet, even though the command reports that startup failed.
+	childProcesses.push(tunnelProcess);
 
 	prefixStream(tunnelProcess.stdout, tunnelPrefix);
 
@@ -178,7 +225,7 @@ async function startTunnel(): Promise<{ process: ReturnType<typeof Bun.spawn>; u
 	const url = await new Promise<string>((resolve, reject) => {
 		const tunnelTimeout = setTimeout(() => {
 			reject(new Error('Timed out waiting for tunnel URL'));
-		}, 30000);
+		}, timeoutMilliseconds);
 
 		function readTunnelStderr(): void {
 			tunnelStderrReader.read().then(({ done, value }) => {
@@ -242,8 +289,9 @@ async function main(): Promise<void> {
 	// resource audience (see `buildDevelopmentServerEnvironment` above).
 	let resolvedTunnelUrl: string | undefined;
 	if (tunnelEnabled) {
+		// `startTunnel` registers its process into `childProcesses` itself, immediately after
+		// spawning -- see the comment there. No push needed here.
 		const tunnel = await startTunnel();
-		childProcesses.push(tunnel.process);
 		resolvedTunnelUrl = tunnel.url;
 
 		const banner = [

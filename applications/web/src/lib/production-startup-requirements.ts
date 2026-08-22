@@ -42,7 +42,7 @@ const loopbackHostnames = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
 
 function extractHostAndCredentials(
 	rawUrl: string,
-): { host: string; credentials: string | null } | null {
+): { host: string; credentials: string | null; scheme: string } | null {
 	try {
 		const url = new URL(rawUrl);
 		const credentials = url.username || url.password ? `${url.username}:${url.password}` : null;
@@ -54,7 +54,7 @@ function extractHostAndCredentials(
 		// `'[::1]'`, not `'::1'`.
 		const host = url.hostname.toLowerCase();
 		const unbracketed = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
-		return { host: unbracketed, credentials };
+		return { host: unbracketed, credentials, scheme: url.protocol.toLowerCase() };
 	} catch {
 		return null;
 	}
@@ -78,6 +78,19 @@ function databaseUrlFailures(label: string, rawUrl: string): string[] {
 
 	if (parsed.credentials && knownPlaceholderCredentials.has(parsed.credentials.toLowerCase())) {
 		failures.push(`${label} uses placeholder credentials. Set real production credentials.`);
+	}
+
+	// The runtime driver (`@neondatabase/serverless`'s `neon()`, via
+	// `drizzle-orm/neon-http`) expects a `postgres:`/`postgresql:` connection
+	// string. A value that is a well-formed, non-loopback URL using some
+	// other scheme (e.g. `https://db.example.com/database?sslmode=verify-full`
+	// — parseable, non-loopback, and carrying the required query parameter)
+	// would otherwise pass every check above and only fail once the server
+	// tries to actually query the database.
+	if (parsed.scheme !== 'postgres:' && parsed.scheme !== 'postgresql:') {
+		failures.push(
+			`${label} must use the postgres:// or postgresql:// scheme (got "${parsed.scheme}").`,
+		);
 	}
 
 	// Only `verify-full` actually validates the server certificate: PostgreSQL's
@@ -179,6 +192,20 @@ export interface ProductionStartupConfiguration {
 	 * "not disabling validation" when absent, matching Node's own default.
 	 */
 	nodeTlsRejectUnauthorized?: string | undefined;
+	/**
+	 * Review round 4 / P2: `shouldEnableConformanceMode()`
+	 * (`mcp-handler.ts`) only ever checked `PROTOKIT_TUNNEL_ACTIVE`, never
+	 * `NODE_ENV` -- so a production deployment misconfigured with
+	 * `MCP_CONFORMANCE_MODE=true` (production always has `tunnelActive:
+	 * false`) registered the full synthetic conformance registry
+	 * (`registerConformanceFixtures`), including `list_audit_events` and the
+	 * `test_*` fixtures the comments throughout that module explicitly
+	 * describe as dev/test-only. Those fixtures sit outside the production
+	 * definitions' `requiredScope` checks, so any otherwise-valid OAuth
+	 * token could discover and invoke them. Fail closed at startup instead
+	 * of trusting every deployment to remember to unset the flag.
+	 */
+	mcpConformanceModeConfigured: boolean;
 }
 
 /**
@@ -316,12 +343,31 @@ export function collectProductionStartupFailures(
 		);
 	}
 
-	const hasGoogleClientId = Boolean(configuration.googleClientId);
-	const hasGoogleClientSecret = Boolean(configuration.googleClientSecret);
-	if (hasGoogleClientId !== hasGoogleClientSecret) {
+	if (configuration.mcpConformanceModeConfigured) {
 		failures.push(
-			'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set or both be absent — a ' +
-				'partial Google sign-in configuration cannot issue a valid authorization request.',
+			'MCP_CONFORMANCE_MODE is true. This registers the synthetic conformance-fixture ' +
+				'registry (list_audit_events, test_* tools/resources/prompts) outside the ' +
+				"production registry's requiredScope checks -- never set it in production.",
+		);
+	}
+
+	// There is no production authentication provider other than Google sign-in
+	// in this codebase: `/auth/dev/login` 404s whenever `NODE_ENV !==
+	// 'development'` (`development-authentication-routes.ts`), and an
+	// unauthenticated `/oauth/authorize` request unconditionally redirects to
+	// `/auth/google/start` (`buildOauthSignInRedirectPath`,
+	// `oauth-routes.tsx`). If Google credentials are both absent, that route
+	// 404s or 503s (`isGoogleConfigured` in `google-authentication-routes.tsx`)
+	// for every user, every time — a deployment can pass every other startup
+	// check while nobody can sign in or approve an OAuth request. Both
+	// credentials are therefore required outright in production, not merely
+	// required to agree with each other.
+	if (!configuration.googleClientId || !configuration.googleClientSecret) {
+		failures.push(
+			'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set in production. There is no ' +
+				'other authentication provider: /auth/dev/login is disabled outside development, so ' +
+				'without both, every unauthenticated user is redirected to an unconfigured Google ' +
+				'sign-in route that returns 503.',
 		);
 	}
 

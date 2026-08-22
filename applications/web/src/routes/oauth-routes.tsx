@@ -523,6 +523,29 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
+	// RFC 7591 §2 / RFC 6749 §3.1.1: a client's `response_types` at
+	// registration is the set it is authorized to request here. Both DCR
+	// (`oauthRegistrationSchema`) and CIMD (`client-metadata-documents.ts`)
+	// only default to `['code']` when the field is omitted entirely — a
+	// client that explicitly registered `response_types: []` (or any array
+	// that excludes `code`) has told this server it is not authorized to use
+	// the `code` response type, even though `responseType !== 'code'` was
+	// already rejected above. Enforce that before a consent transaction (and
+	// therefore before any code could ever be issued) rather than trusting
+	// the client's own name for what it stores.
+	if (!client.responseTypes.includes('code')) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: (
+				<OauthAuthorizePage
+					mode="error"
+					error="This client is not registered for the code response type."
+				/>
+			),
+		});
+	}
+
 	// S-09: consumed once, atomically, by approve/deny — every authoritative
 	// value below is reloaded from this row, never trusted from the form.
 	const transaction = await createAuthorizationTransaction({
@@ -1210,27 +1233,65 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	}
 
 	const tokens = issueTokens();
-	await database.insert(schema.oauthTokens).values({
-		accessToken: tokens.accessTokenHash,
-		clientId: authorizationCode.clientId,
-		userId: authorizationCode.userId,
-		scope: authorizationCode.scope || '',
-		resource: authorizationCode.resource,
-		expiresAt: tokens.accessTokenExpiresAt,
-	});
-	await database.insert(schema.oauthRefreshTokens).values({
-		refreshToken: tokens.refreshTokenHash,
-		clientId: authorizationCode.clientId,
-		userId: authorizationCode.userId,
-		scope: authorizationCode.scope || '',
-		resource: authorizationCode.resource,
-		accessTokenHash: tokens.accessTokenHash,
-		// OAUTH-003: the authorization-code exchange starts a new refresh-token
-		// lineage, so this refresh token is the root of its own family. Every
-		// token this one rotates into carries the same familyId forward.
-		familyId: randomUUID(),
-		expiresAt: tokens.refreshTokenExpiresAt,
-	});
+	try {
+		await database.insert(schema.oauthTokens).values({
+			accessToken: tokens.accessTokenHash,
+			clientId: authorizationCode.clientId,
+			userId: authorizationCode.userId,
+			scope: authorizationCode.scope || '',
+			resource: authorizationCode.resource,
+			expiresAt: tokens.accessTokenExpiresAt,
+		});
+		await database.insert(schema.oauthRefreshTokens).values({
+			refreshToken: tokens.refreshTokenHash,
+			clientId: authorizationCode.clientId,
+			userId: authorizationCode.userId,
+			scope: authorizationCode.scope || '',
+			resource: authorizationCode.resource,
+			accessTokenHash: tokens.accessTokenHash,
+			// OAUTH-003: the authorization-code exchange starts a new refresh-token
+			// lineage, so this refresh token is the root of its own family. Every
+			// token this one rotates into carries the same familyId forward.
+			familyId: randomUUID(),
+			expiresAt: tokens.refreshTokenExpiresAt,
+		});
+	} catch (error) {
+		// Review finding: neon-http has no multi-statement transaction support
+		// (the same limitation `handleOauthAuthorizeApprove`'s code-insert catch
+		// documents, and `OAUTH-003` documents for refresh rotation), so these
+		// two inserts cannot be folded into the same atomic statement as the
+		// `usedAt` update above. Without this, a transient failure here would
+		// leave the code already marked used with no usable token response --
+		// unretryable, and if only the second insert failed, an undisclosed
+		// access-token row nothing ever returned to the client would remain.
+		// Best-effort compensation: delete the access-token row if it was
+		// written (a no-op DELETE if the first insert itself is what threw),
+		// then reopen the code so the client's retry can mint a fresh pair. No
+		// token was ever generated into a response (the insert itself threw),
+		// so reopening the code cannot cause a token to be issued twice.
+		try {
+			await database
+				.delete(schema.oauthTokens)
+				.where(eq(schema.oauthTokens.accessToken, tokens.accessTokenHash));
+		} catch (cleanupError) {
+			logger.error(
+				{ err: cleanupError },
+				'Failed to remove orphaned access token after failed token issuance',
+			);
+		}
+		try {
+			await database
+				.update(schema.oauthCodes)
+				.set({ usedAt: null })
+				.where(eq(schema.oauthCodes.code, authorizationCodeHash));
+		} catch (unconsumeError) {
+			logger.error(
+				{ err: unconsumeError },
+				'Failed to reopen authorization code after failed token issuance',
+			);
+		}
+		throw error;
+	}
 
 	metricsCollector.recordEvent('token_exchange', 'success');
 
@@ -1484,7 +1545,7 @@ async function handleOauthTokenRefreshGrant(
 			? canonicalizeScopes(refreshScopeRequest.scope)
 			: revokedRefreshToken.scope || '';
 
-	await database
+	const [revokedAccessToken] = await database
 		.update(schema.oauthTokens)
 		.set({ revokedAt: new Date() })
 		.where(
@@ -1492,30 +1553,89 @@ async function handleOauthTokenRefreshGrant(
 				eq(schema.oauthTokens.accessToken, revokedRefreshToken.accessTokenHash),
 				isNull(schema.oauthTokens.revokedAt),
 			),
-		);
+		)
+		.returning();
 
 	const tokens = issueTokens();
-	await database.insert(schema.oauthTokens).values({
-		accessToken: tokens.accessTokenHash,
-		clientId: revokedRefreshToken.clientId,
-		userId: revokedRefreshToken.userId,
-		scope: effectiveRefreshScope,
-		resource: revokedRefreshToken.resource,
-		expiresAt: tokens.accessTokenExpiresAt,
-	});
-	await database.insert(schema.oauthRefreshTokens).values({
-		refreshToken: tokens.refreshTokenHash,
-		clientId: revokedRefreshToken.clientId,
-		userId: revokedRefreshToken.userId,
-		scope: effectiveRefreshScope,
-		resource: revokedRefreshToken.resource,
-		accessTokenHash: tokens.accessTokenHash,
-		// OAUTH-003: rotation carries the family forward unchanged, so every
-		// token descended from one authorization-code exchange stays
-		// revocable as one lineage.
-		familyId: revokedRefreshToken.familyId,
-		expiresAt: tokens.refreshTokenExpiresAt,
-	});
+	try {
+		await database.insert(schema.oauthTokens).values({
+			accessToken: tokens.accessTokenHash,
+			clientId: revokedRefreshToken.clientId,
+			userId: revokedRefreshToken.userId,
+			scope: effectiveRefreshScope,
+			resource: revokedRefreshToken.resource,
+			expiresAt: tokens.accessTokenExpiresAt,
+		});
+		await database.insert(schema.oauthRefreshTokens).values({
+			refreshToken: tokens.refreshTokenHash,
+			clientId: revokedRefreshToken.clientId,
+			userId: revokedRefreshToken.userId,
+			scope: effectiveRefreshScope,
+			resource: revokedRefreshToken.resource,
+			accessTokenHash: tokens.accessTokenHash,
+			// OAUTH-003: rotation carries the family forward unchanged, so every
+			// token descended from one authorization-code exchange stays
+			// revocable as one lineage.
+			familyId: revokedRefreshToken.familyId,
+			expiresAt: tokens.refreshTokenExpiresAt,
+		});
+	} catch (error) {
+		// Review finding: neon-http has no multi-statement transaction support
+		// (the same limitation documented above the rotation predicate, and at
+		// `handleOauthAuthorizeApprove`'s code-insert catch), so these two
+		// inserts cannot be folded into the same atomic statement as the
+		// revoke-and-check above. Without this, a transient failure here would
+		// permanently burn the client's only refresh token (and its access
+		// token) with no replacement ever issued, forcing a full
+		// re-authorization -- and if only the second insert failed, an
+		// inaccessible live access-token row would also remain. Best-effort
+		// compensation: delete the new access-token row if it was written (a
+		// no-op DELETE if the first insert itself is what threw), then reopen
+		// exactly the rows this request itself revoked a moment ago -- the
+		// refresh token unconditionally (the atomic predicate above already
+		// proved this request, and only this request, revoked it), and the old
+		// access token only if `revokedAccessToken` is non-null (i.e. this
+		// request's own UPDATE actually matched and revoked it -- reopening it
+		// unconditionally could resurrect a token an unrelated, legitimate
+		// `/oauth/revoke` call had already killed moments earlier). No token
+		// was ever generated into a response (the insert itself threw), so
+		// reopening either row cannot cause a token to be issued twice.
+		try {
+			await database
+				.delete(schema.oauthTokens)
+				.where(eq(schema.oauthTokens.accessToken, tokens.accessTokenHash));
+		} catch (cleanupError) {
+			logger.error(
+				{ err: cleanupError },
+				'Failed to remove orphaned access token after failed refresh rotation',
+			);
+		}
+		try {
+			await database
+				.update(schema.oauthRefreshTokens)
+				.set({ revokedAt: null })
+				.where(eq(schema.oauthRefreshTokens.refreshToken, revokedRefreshToken.refreshToken));
+		} catch (unrevokeError) {
+			logger.error(
+				{ err: unrevokeError },
+				'Failed to reopen refresh token after failed refresh rotation',
+			);
+		}
+		if (revokedAccessToken) {
+			try {
+				await database
+					.update(schema.oauthTokens)
+					.set({ revokedAt: null })
+					.where(eq(schema.oauthTokens.accessToken, revokedAccessToken.accessToken));
+			} catch (unrevokeError) {
+				logger.error(
+					{ err: unrevokeError },
+					'Failed to reopen access token after failed refresh rotation',
+				);
+			}
+		}
+		throw error;
+	}
 
 	metricsCollector.recordEvent('refresh', 'success');
 

@@ -23,6 +23,7 @@ type StartupWebEnvironment = Writable<
 		| 'TRUSTED_PROXY_HEADER'
 		| 'NODE_TLS_REJECT_UNAUTHORIZED'
 		| 'SESSION_SIGNING_SECRET'
+		| 'MCP_CONFORMANCE_MODE'
 	>
 >;
 
@@ -92,6 +93,7 @@ export function assertProductionStartupInvariants(
 		trustedProxyHeader: source.environment.TRUSTED_PROXY_HEADER,
 		nodeTlsRejectUnauthorized: source.environment.NODE_TLS_REJECT_UNAUTHORIZED,
 		sessionSigningSecret: source.environment.SESSION_SIGNING_SECRET,
+		mcpConformanceModeConfigured: source.environment.MCP_CONFORMANCE_MODE,
 	});
 
 	if (failures.length > 0) {

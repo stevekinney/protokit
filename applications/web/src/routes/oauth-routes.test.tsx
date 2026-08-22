@@ -3,12 +3,14 @@ import { hashCredential } from '@web/lib/hash-credential';
 
 const mockEnvironment: Record<string, unknown> = {};
 let mockOauthClients: unknown[] = [];
-const mockOauthCodes: unknown[] = [];
+let mockOauthCodes: unknown[] = [];
 let mockOauthTokens: unknown[] = [];
 let mockOauthRefreshTokens: unknown[] = [];
 let mockInsertedValues: unknown[] = [];
 let recordFailedAuthenticationCalls: unknown[] = [];
 let mockInsertShouldThrow = false;
+let mockUpdateCalls: Array<{ table: unknown; set: Record<string, unknown> }> = [];
+let mockDeleteCalls: Array<{ table: unknown; where: unknown }> = [];
 
 const oauthClientsTable = Symbol('oauthClients');
 const oauthCodesTable = Symbol('oauthCodes');
@@ -63,12 +65,26 @@ mock.module('@template/database', () => ({
 				};
 			},
 		}),
-		update: () => ({
-			set: () => ({
-				where: () => ({
-					returning: () => Promise.resolve(mockOauthRefreshTokens),
-				}),
-			}),
+		update: (table: unknown) => ({
+			set: (setValues: Record<string, unknown>) => {
+				mockUpdateCalls.push({ table, set: setValues });
+				return {
+					where: () => ({
+						returning: () => {
+							if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
+							if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
+							if (table === oauthRefreshTokensTable) return Promise.resolve(mockOauthRefreshTokens);
+							return Promise.resolve([]);
+						},
+					}),
+				};
+			},
+		}),
+		delete: (table: unknown) => ({
+			where: (where: unknown) => {
+				mockDeleteCalls.push({ table, where });
+				return Promise.resolve(undefined);
+			},
 		}),
 	},
 	schema: {
@@ -958,6 +974,7 @@ describe('authorization GET', () => {
 		clientId: 'c1',
 		clientName: 'Test App',
 		redirectUris: ['https://example.com/cb'],
+		responseTypes: ['code'],
 	};
 	const authorizeUrlBase =
 		'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp';
@@ -1108,12 +1125,34 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(400);
 	});
 
+	it('rejects response_type=code for a client registered with an empty response_types array', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['https://example.com/cb'],
+				responseTypes: [],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toContain('not registered for the code response type');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
 	it('renders consent page with an opaque transaction id and csrf token, never the raw client/redirect/PKCE values', async () => {
 		mockOauthClients = [
 			{
 				clientId: 'c1',
 				clientName: 'Test App',
 				redirectUris: ['https://example.com/cb'],
+				responseTypes: ['code'],
 			},
 		];
 		mockAuthorizationTransactionState.created = {
@@ -1168,6 +1207,7 @@ describe('authorization GET', () => {
 				clientId: 'c1',
 				clientName: 'Test App',
 				redirectUris: ['http://localhost:1234/callback'],
+				responseTypes: ['code'],
 			},
 		];
 		const context = createContext({
@@ -1219,6 +1259,7 @@ describe('authorization GET', () => {
 				clientId: 'c1',
 				clientName: 'Claude',
 				redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+				responseTypes: ['code'],
 			},
 		];
 		const context = createContext({
@@ -1589,6 +1630,13 @@ describe('authorization code token exchange', () => {
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
+		mockOauthCodes = [];
+		mockOauthTokens = [];
+		mockOauthRefreshTokens = [];
+		mockInsertedValues = [];
+		mockInsertShouldThrow = false;
+		mockUpdateCalls = [];
+		mockDeleteCalls = [];
 	});
 
 	it('returns 400 for missing required parameters', async () => {
@@ -1654,6 +1702,76 @@ describe('authorization code token exchange', () => {
 		expect(body.error).toBe('unsupported_grant_type');
 		expect(mockInsertedValues).toEqual([]);
 	});
+
+	// RFC 7636 Appendix B's canonical example verifier/challenge pair.
+	const validCodeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+	const validCodeChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+	function seedValidAuthorizationCode(): void {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				tokenEndpointAuthMethod: 'none',
+				clientSecret: null,
+				grantTypes: ['authorization_code', 'refresh_token'],
+			},
+		];
+		mockOauthCodes = [
+			{
+				code: 'hashed:valid-code',
+				clientId: 'c1',
+				userId: 'u1',
+				redirectUri: 'https://example.com/cb',
+				codeChallenge: validCodeChallenge,
+				codeChallengeMethod: 'S256',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read',
+				usedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+	}
+	function validCodeGrantContext(): ReturnType<typeof createContext> {
+		return createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code: 'valid-code',
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'c1',
+				code_verifier: validCodeVerifier,
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+	}
+
+	it('mints an access token and a refresh token from a valid authorization code', async () => {
+		seedValidAuthorizationCode();
+		const response = await handleOauthTokenPost(validCodeGrantContext());
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.access_token).toBeTruthy();
+		expect(body.refresh_token).toBeTruthy();
+		expect(mockInsertedValues).toHaveLength(2);
+	});
+
+	it('reopens the authorization code and removes the orphaned access-token row when token issuance fails after the code is consumed', async () => {
+		seedValidAuthorizationCode();
+		mockInsertShouldThrow = true;
+
+		// Without the fix, the `usedAt` update above (which already ran before
+		// the insert failed) is permanent -- the code can never be retried,
+		// and any access-token row the first (successful) insert wrote before
+		// the second insert threw would be left orphaned and undisclosed.
+		await expect(handleOauthTokenPost(validCodeGrantContext())).rejects.toThrow(
+			'simulated insert failure',
+		);
+
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		expect(
+			mockUpdateCalls.some((call) => call.table === oauthCodesTable && call.set.usedAt === null),
+		).toBe(true);
+	});
 });
 
 describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
@@ -1669,6 +1787,7 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		];
 		mockOauthRefreshTokens = [
 			{
+				refreshToken: 'hashed:refresh-token-value',
 				clientId: 'c1',
 				userId: 'u1',
 				scope: 'profile:read',
@@ -1679,7 +1798,16 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 				expiresAt: new Date(Date.now() + 60000),
 			},
 		];
+		mockOauthTokens = [
+			{
+				accessToken: 'hashed:old-access-token',
+				revokedAt: null,
+			},
+		];
 		mockInsertedValues = [];
+		mockInsertShouldThrow = false;
+		mockUpdateCalls = [];
+		mockDeleteCalls = [];
 	});
 
 	it('carries the stored scope forward when the refresh request omits scope entirely', async () => {
@@ -1759,5 +1887,37 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		const body = await response.json();
 		expect(body.error).toBe('invalid_scope');
 		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('reopens the refresh token and its old access token, and removes the orphaned new access-token row, when rotation fails after revocation', async () => {
+		mockInsertShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		// Without the fix, the revoke-then-check UPDATE above (which already
+		// ran before the insert failed) permanently burns the client's only
+		// refresh token -- and its access token -- with no replacement ever
+		// issued.
+		await expect(handleOauthTokenPost(context)).rejects.toThrow('simulated insert failure');
+
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		expect(
+			mockUpdateCalls.some(
+				(call) => call.table === oauthRefreshTokensTable && call.set.revokedAt === null,
+			),
+		).toBe(true);
+		expect(
+			mockUpdateCalls.some(
+				(call) => call.table === oauthTokensTable && call.set.revokedAt === null,
+			),
+		).toBe(true);
 	});
 });
