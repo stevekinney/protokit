@@ -119,6 +119,33 @@ describe('handleHealthReadinessGet', () => {
 		expect(response.status).toBe(404);
 	});
 
+	// Review finding (P2): a disabled endpoint (HEALTH_READINESS_API_KEY
+	// unset) must return its promised 404 even when Redis -- which the rate
+	// limiter depends on -- is unavailable. Before the fix, the rate-limit
+	// check ran BEFORE the not-configured check, so this scenario threw
+	// instead of returning 404, turning a disabled endpoint into a 500 that
+	// depends on infrastructure it has no other reason to need. See the
+	// identical regression test in `metrics-routes.test.ts`.
+	it('returns 404 when no readiness key is configured, even if the rate limiter would throw (Redis unavailable)', async () => {
+		setEnvironment({ HEALTH_READINESS_API_KEY: undefined });
+		mock.module('@web/lib/request-rate-limiter', () => ({
+			enforceHealthProbeRateLimit: async () => {
+				throw new Error('simulated Redis unavailable');
+			},
+		}));
+
+		const response = await handleHealthReadinessGet(buildContext());
+		expect(response.status).toBe(404);
+
+		mock.module('@web/lib/request-rate-limiter', () => ({
+			enforceHealthProbeRateLimit: async () => ({
+				allowed: true,
+				retryAfterSeconds: 0,
+				remainingRequests: 10,
+			}),
+		}));
+	});
+
 	it('returns 401 when no authorization header is presented', async () => {
 		const response = await handleHealthReadinessGet(
 			buildContext({ request: new Request('https://app.example.com/health/ready') }),

@@ -88,6 +88,15 @@ export type RevocationResult = {
 	 * `handleOauthTokenAuthorizationCodeGrant`'s exchange requires
 	 * `isNull(usedAt)`, so a consumed-by-revocation code fails exchange
 	 * exactly like an already-redeemed one.
+	 *
+	 * A later review finding (P2) widened this further: `usedAt` is now
+	 * overwritten unconditionally for every not-yet-expired code, not only
+	 * ones still unused, so this count includes codes an in-flight (or
+	 * already-completed) token exchange had already marked used — see
+	 * `revokeUserClientGrant`'s own comment for why overwriting rather than
+	 * skipping is what closes the compensating-reopen race. This is a
+	 * reporting-count change only; the exchange path was already rejecting
+	 * an already-used code before this.
 	 */
 	consumedAuthorizationCodes: number;
 };
@@ -147,6 +156,34 @@ function revocationResultFromRow(row: RevocationRow | undefined): RevocationResu
  * three `UPDATE`s are one Postgres statement, so they either all commit or
  * none do — no transaction API required.
  */
+/**
+ * Review finding (P2) on the `consumed_authorization_codes` CTE below: it
+ * used to filter on `used_at IS NULL`, so a code
+ * `handleOauthTokenAuthorizationCodeGrant` had already marked used (an
+ * in-flight token exchange) was left completely untouched by revocation --
+ * it simply matched no row. That silence is what let that handler's own
+ * best-effort compensating reopen (on a failed token insert AFTER the code
+ * was consumed) unconditionally clear `used_at` back to null, even when the
+ * user had just revoked this exact grant in that same window --
+ * resurrecting access the user was told was gone.
+ *
+ * Fix: revocation now OVERWRITES `used_at` unconditionally for every
+ * not-yet-expired code, rather than skipping one that is already non-null.
+ * That reopen's own `UPDATE` (see `oauth-routes.tsx`) is conditioned on
+ * `used_at` still holding the exact value it wrote when it consumed the
+ * code -- once revocation overwrites it here, that condition no longer
+ * matches and the reopen becomes a no-op, so the code stays dead instead of
+ * being silently reopened. (The reverse ordering -- revocation running
+ * before the exchange's own consume -- was already closed: that consume's
+ * `used_at IS NULL` check fails once revocation has written a non-null
+ * value first.) SQL `now()` and the handler's own `new Date()` essentially
+ * never collide at millisecond precision, so this does not depend on
+ * ordering two writes to the identical instant -- an actual collision would
+ * just fall back to the prior (already-accepted) unconditional-reopen
+ * behavior, not introduce a new failure mode. `expires_at > now()` keeps
+ * this from rewriting `used_at` on long-dead historical codes that can
+ * never be exchanged regardless.
+ */
 export async function revokeUserClientGrant(
 	userId: string,
 	clientId: string,
@@ -168,7 +205,7 @@ export async function revokeUserClientGrant(
 			consumed_authorization_codes AS (
 				UPDATE oauth_codes
 				SET used_at = now()
-				WHERE user_id = ${userId} AND client_id = ${clientId} AND used_at IS NULL
+				WHERE user_id = ${userId} AND client_id = ${clientId} AND expires_at > now()
 				RETURNING code
 			)
 		SELECT
@@ -199,9 +236,10 @@ export async function revokeAllUserGrants(userId: string): Promise<RevocationRes
 				RETURNING refresh_token
 			),
 			consumed_authorization_codes AS (
+				-- See revokeUserClientGrant's own doc comment above.
 				UPDATE oauth_codes
 				SET used_at = now()
-				WHERE user_id = ${userId} AND used_at IS NULL
+				WHERE user_id = ${userId} AND expires_at > now()
 				RETURNING code
 			)
 		SELECT

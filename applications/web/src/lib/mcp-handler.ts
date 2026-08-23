@@ -13,7 +13,7 @@ import { eq } from 'drizzle-orm';
 import { environment } from '@web/env';
 import { createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
 import { McpUserHandlerCache } from '@web/lib/mcp-user-handler-cache';
-import { disconnectRedisSubscriberClient } from '@web/lib/redis-client';
+import { disconnectRedisSubscriberClient, isRedisConfigured } from '@web/lib/redis-client';
 import { markAsServerOnlyCloseableStream } from '@web/lib/in-flight-request-tracker';
 import { readMcpRequestAuthExtra } from '@web/lib/mcp-request-context';
 import { boundRequestBody, PayloadTooLargeError } from '@web/lib/bounded-request-body';
@@ -157,6 +157,57 @@ function createUserHandlerEntry(userId: string): {
 
 const userHandlers = new McpUserHandlerCache(createUserHandlerEntry);
 userHandlers.startSweep(mcpUserHandlerSweepIntervalMs, mcpUserHandlerIdleMs);
+
+/**
+ * Review finding (P2): `createUserHandlerEntry` above advertises
+ * `resources.subscribe` for the modern era whenever a
+ * `publishResourceUpdate` callback is wired in (true in production), but
+ * nothing outside the conformance fixtures ever called it — a real profile
+ * mutation (`upsertGoogleUser`) never notified a subscriber, so a
+ * production client could subscribe to `user://profile` and receive only
+ * keepalives. This is the publish-side counterpart callers use from
+ * outside the request path that owns a live `McpHttpHandler` for this user
+ * (session, account-connection, and identity routes are not themselves MCP
+ * requests, so they have no handler instance of their own to call
+ * `.notify` on).
+ *
+ * The original version of this function lived in `mcp-user-event-bus.ts`
+ * and always called `createUserServerEventBus(userId).publish(...)` —
+ * unconditionally constructing a brand-new bus instance rather than
+ * reusing this module's own `userHandlers` cache. That is correct for the
+ * Redis-backed bus (`publish()` fans out over Redis regardless of which
+ * process holds this user's open `subscriptions/listen` stream, the same
+ * cross-instance guarantee `McpUserHandlerCache` documents), but it was a
+ * real defect for the in-memory fallback (Redis not configured, e.g. local
+ * development): the handler this process actually serves
+ * `subscriptions/listen` from subscribes to the `bus` bound to ITS OWN
+ * `McpHttpHandler` instance (`createUserHandlerEntry`, above), while the
+ * fresh `InMemoryServerEventBus()` the old code constructed here had no
+ * listeners at all — a modern client was correctly told
+ * `resources.subscribe` is supported, but a real update could never reach
+ * it locally.
+ *
+ * Fix: reuse the cached handler's own bus (`userHandlers.peek`, which does
+ * NOT create an entry — there is nothing to notify if this process has
+ * never served this user an MCP request) via the same `handler.notify`
+ * path the in-request `publishResourceUpdate` callback above already
+ * uses. Only when no local entry exists does this fall back to a fresh
+ * `createUserServerEventBus(userId).publish(...)` — and only when Redis is
+ * configured, since that is the only case where publishing to a channel
+ * nothing in THIS process is subscribed to can possibly reach a listener
+ * (a different process instance). With Redis not configured and no local
+ * handler, there is no deliverable path at all, so there is nothing to do.
+ */
+export function publishUserResourceUpdate(userId: string, uri: string): void {
+	const existing = userHandlers.peek(userId);
+	if (existing) {
+		existing.handler.notify.resourceUpdated(uri);
+		return;
+	}
+	if (isRedisConfigured()) {
+		createUserServerEventBus(userId).publish({ kind: 'resource_updated', uri });
+	}
+}
 
 /**
  * S-05: MCP request bodies were handed straight to the SDK, which buffers

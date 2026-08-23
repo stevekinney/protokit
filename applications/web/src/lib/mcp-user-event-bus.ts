@@ -230,28 +230,10 @@ export function createUserServerEventBus(userId: string): UserServerEventBus {
 	return new InMemoryServerEventBus();
 }
 
-/**
- * Review finding (P2): `mcp-handler.ts` advertises `resources.subscribe`
- * for the modern era whenever a `publishResourceUpdate` callback is wired
- * in (true in production), but nothing outside the conformance fixtures
- * ever called it — a real profile mutation (`upsertGoogleUser`) never
- * notified a subscriber, so a production client could subscribe to
- * `user://profile` and receive only keepalives.
- *
- * This is the publish-side counterpart callers use from outside the
- * request path that owns a live `McpHttpHandler` for this user (session,
- * account-connection, and identity routes are not themselves MCP requests,
- * so they have no handler instance to call `.notify` on). `publish()` on
- * the Redis-backed bus fans out over Redis regardless of which process
- * holds this user's open `subscriptions/listen` stream — the same
- * cross-instance guarantee `McpUserHandlerCache` documents — so this does
- * not need to find or share the cache's bus instance. The in-memory
- * fallback (Redis not configured) only delivers within the exact bus
- * instance that published, so it cannot reach a live subscription from
- * here; that matches the existing single-process-only caveat on this
- * fallback, and every real deployment requires Redis
- * (`production-startup-requirements.ts`).
- */
-export function publishUserResourceUpdate(userId: string, uri: string): void {
-	createUserServerEventBus(userId).publish({ kind: 'resource_updated', uri });
-}
+// `publishUserResourceUpdate` (the publish-side counterpart callers use
+// from outside the request path that owns a live `McpHttpHandler` — see
+// its own doc comment in `mcp-handler.ts`) lives there rather than here.
+// It needs to be able to reuse an already-live handler's bus for the
+// in-memory (Redis not configured) fallback, and only `mcp-handler.ts`
+// holds the `McpUserHandlerCache` that tracks which handler/bus instance
+// is actually live for a given user in this process.

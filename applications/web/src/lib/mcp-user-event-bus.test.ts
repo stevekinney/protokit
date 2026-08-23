@@ -2,11 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { createClient } from 'redis';
 import type { ServerEvent } from '@modelcontextprotocol/server';
-import {
-	RedisUserServerEventBus,
-	createUserServerEventBus,
-	publishUserResourceUpdate,
-} from '@web/lib/mcp-user-event-bus';
+import { RedisUserServerEventBus, createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
+import { publishUserResourceUpdate } from '@web/lib/mcp-handler';
 import { getRedisSubscriberClient } from '@web/lib/redis-client';
 
 // The bus publishes on a Redis channel named for the user, and Redis is shared

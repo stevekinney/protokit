@@ -171,15 +171,15 @@ export async function handleHealthReadinessGet(context: RequestContext): Promise
 		);
 	}
 
-	const rateLimitResult = await enforceHealthProbeRateLimit({
-		networkIdentity: context.networkIdentity,
-	});
-	if (!rateLimitResult.allowed) {
-		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
-			'Cache-Control': 'no-store',
-		});
-	}
-
+	// Review finding (P2): see the identical fix and rationale in
+	// `metrics-routes.ts`'s `handleMetricsGet` -- `checkBearerCredential`'s
+	// `not_configured` result used to run AFTER `enforceHealthProbeRateLimit`,
+	// so when `HEALTH_READINESS_API_KEY` is intentionally unset and Redis is
+	// temporarily unavailable, this Redis-backed rate-limit lookup threw
+	// before the promised 404 could ever be returned. `checkBearerCredential`
+	// is pure and synchronous, so computing it first costs nothing and lets
+	// the disabled-endpoint case return before the rate limiter -- which
+	// only a CONFIGURED endpoint needs -- ever runs.
 	const credentialResult = checkBearerCredential({
 		configuredKey: environment.HEALTH_READINESS_API_KEY,
 		authorizationHeader: context.request.headers.get('authorization'),
@@ -190,6 +190,15 @@ export async function handleHealthReadinessGet(context: RequestContext): Promise
 			{ error: 'not_found' },
 			{ status: 404, headers: { 'Cache-Control': 'no-store' } },
 		);
+	}
+
+	const rateLimitResult = await enforceHealthProbeRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
+			'Cache-Control': 'no-store',
+		});
 	}
 
 	if (credentialResult === 'unauthorized') {

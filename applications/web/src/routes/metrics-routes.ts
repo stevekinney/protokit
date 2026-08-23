@@ -36,15 +36,18 @@ export async function handleMetricsGet(context: RequestContext): Promise<Respons
 		);
 	}
 
-	const rateLimitResult = await enforceMetricsRateLimit({
-		networkIdentity: context.networkIdentity,
-	});
-	if (!rateLimitResult.allowed) {
-		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
-			'Cache-Control': 'no-store',
-		});
-	}
-
+	// Review finding (P2): `checkBearerCredential` -- and specifically its
+	// `not_configured` result -- used to run AFTER `enforceMetricsRateLimit`,
+	// so when `METRICS_API_KEY` is intentionally unset (this endpoint
+	// disabled) and Redis is temporarily unavailable, the Redis-backed
+	// rate-limit lookup threw before the promised 404 could ever be
+	// returned -- turning a disabled endpoint into a slow 500 that depends
+	// on infrastructure it has no other reason to need. `checkBearerCredential`
+	// itself is pure and synchronous (`!input.configuredKey` is checked
+	// first, before any header parsing), so computing it up front costs
+	// nothing and lets the `not_configured` case return before the rate
+	// limiter -- which only a CONFIGURED endpoint needs, to protect against
+	// credential guessing -- ever runs.
 	const credentialResult = checkBearerCredential({
 		configuredKey: environment.METRICS_API_KEY,
 		authorizationHeader: context.request.headers.get('authorization'),
@@ -55,6 +58,15 @@ export async function handleMetricsGet(context: RequestContext): Promise<Respons
 			{ error: 'not_found' },
 			{ status: 404, headers: { 'Cache-Control': 'no-store' } },
 		);
+	}
+
+	const rateLimitResult = await enforceMetricsRateLimit({
+		networkIdentity: context.networkIdentity,
+	});
+	if (!rateLimitResult.allowed) {
+		return createRateLimitedResponse(rateLimitResult.retryAfterSeconds, {
+			'Cache-Control': 'no-store',
+		});
 	}
 
 	if (credentialResult === 'unauthorized') {

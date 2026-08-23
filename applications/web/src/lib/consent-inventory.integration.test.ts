@@ -97,6 +97,32 @@ async function seedOutstandingAuthorizationCode(userId: string, clientId: string
 	return code;
 }
 
+/**
+ * Simulates the exact row shape `handleOauthTokenAuthorizationCodeGrant`
+ * leaves behind the moment it consumes a code (`usedAt` set) but before a
+ * subsequent token insert has failed and its compensating reopen has run --
+ * the narrow window review finding (P2) is about. Returns the `usedAt` this
+ * helper wrote, matching what that handler's own reopen predicate compares
+ * against.
+ */
+async function seedInFlightConsumedAuthorizationCode(
+	userId: string,
+	clientId: string,
+): Promise<{ code: string; usedAt: Date }> {
+	const code = hashCredential(randomUUID());
+	const usedAt = new Date();
+	await database.insert(schema.oauthCodes).values({
+		code,
+		clientId,
+		userId,
+		redirectUri: 'http://localhost:9999/callback',
+		codeChallenge: 'test-code-challenge',
+		expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+		usedAt,
+	});
+	return { code, usedAt };
+}
+
 describe('listUserConnections', () => {
 	it('lists a client with a live access token and omits one with none', async () => {
 		const { userId, clientId } = await seedUserWithConnection('Live Connection Client');
@@ -200,6 +226,46 @@ describe('revokeUserClientGrant', () => {
 			.where(eq(schema.oauthCodes.code, clientBCode))
 			.limit(1);
 		expect(codeRow?.usedAt).toBeNull();
+	});
+
+	// Review finding (P2) regression test, the revocation half of the race:
+	// before this fix, `consumed_authorization_codes` filtered on
+	// `used_at IS NULL`, so a code already marked used by an in-flight token
+	// exchange (this helper's exact shape) matched no row -- revocation left
+	// it completely untouched. That silence is what let
+	// `handleOauthTokenAuthorizationCodeGrant`'s own compensating reopen (on
+	// a failed token insert AFTER the code was consumed) unconditionally
+	// clear `usedAt` back to `null`, resurrecting a code the user had just
+	// revoked. This proves revocation now overwrites `usedAt` on such a code
+	// too, which is what makes that reopen's own `usedAt = <original value>`
+	// predicate match nothing afterward -- see the paired unit-level proof
+	// in `oauth-routes.test.tsx` for the reopen side of this same fix.
+	it('overwrites usedAt on a code an in-flight token exchange already consumed, closing the compensating-reopen race', async () => {
+		const { userId, clientId } = await seedUserWithConnection('In-Flight Consume Race Client');
+		const { code, usedAt: originalUsedAt } = await seedInFlightConsumedAuthorizationCode(
+			userId,
+			clientId,
+		);
+
+		const result = await revokeUserClientGrant(userId, clientId);
+		// This code was already used, so it is not a NEWLY-outstanding code
+		// this call closed off in the sense the original P1 fix cared about --
+		// but it is still touched (overwritten), which is the whole point of
+		// this fix, so it is still counted.
+		expect(result.consumedAuthorizationCodes).toBe(1);
+
+		const [codeRow] = await database
+			.select({ usedAt: schema.oauthCodes.usedAt })
+			.from(schema.oauthCodes)
+			.where(eq(schema.oauthCodes.code, code))
+			.limit(1);
+		expect(codeRow?.usedAt).not.toBeNull();
+		// The load-bearing assertion: the value actually changed. A
+		// same-millisecond collision with the original `usedAt` is
+		// astronomically unlikely across a real Postgres round trip, and if
+		// it ever happened the failure mode is exactly the pre-fix behavior
+		// (not a new, worse one) -- see the comment in `consent-inventory.ts`.
+		expect(codeRow!.usedAt!.getTime()).not.toBe(originalUsedAt.getTime());
 	});
 });
 

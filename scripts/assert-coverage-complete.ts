@@ -72,21 +72,52 @@ function collectSourceFiles(workspaceDirectory: string): string[] {
 	return results;
 }
 
-interface LcovFileRecord {
+export interface LcovFileRecord {
 	readonly sourceFile: string;
-	readonly linesFound: number;
-	readonly linesHit: number;
+	/**
+	 * Review finding (P2): the previous version of this record carried only
+	 * the `LF`/`LH` SUMMARY counts (lines found / lines hit), not which
+	 * SPECIFIC lines were hit. `--isolate` runs each test file in its own
+	 * subprocess, so a source file exercised by several test files produces
+	 * several separate lcov records for it -- and merging by taking the
+	 * MAXIMUM `LH` across records is not their union: two records that each
+	 * cover a different 5-of-10 lines both report `LH=5`, and
+	 * `max(5, 5) = 5` incorrectly reports 5/10 for a file whose combined
+	 * coverage across both test files is genuinely 10/10. Parsing each
+	 * `DA:<line>,<count>` entry (rather than only the `LF`/`LH` summary)
+	 * gives this script the actual per-line identity it needs to compute a
+	 * REAL union across records: a line counts as hit if hit in ANY record
+	 * that covers this file, not merely in whichever record happened to
+	 * report the highest count.
+	 */
+	readonly lineHits: ReadonlyMap<number, number>;
 	readonly functionsFound: number;
 	readonly functionsHit: number;
 }
 
-/** Minimal LCOV parser -- this repository's coverage runs never need
- * anything beyond `SF`/`LF`/`LH`/`FNF`/`FNH`/`end_of_record`. */
-function parseLcov(lcovContents: string): LcovFileRecord[] {
+/**
+ * Minimal LCOV parser -- this repository's coverage runs never need
+ * anything beyond `SF`/`DA`/`FNF`/`FNH`/`end_of_record`.
+ *
+ * Review finding (P2), function coverage: Bun 1.3.14's `--coverage-reporter=lcov`
+ * output never emits `FN:`/`FNDA:` records (confirmed empirically against
+ * this toolchain's actual output) -- only the `FNF`/`FNH` AGGREGATE counts
+ * per file, with no per-function name or line to give a real union
+ * something to merge by identity. `LF`/`LH` are intentionally not parsed
+ * here either, even though Bun does emit them: they are exactly the
+ * pre-computed summary this fix works around for lines, and are recomputed
+ * from the unioned `DA:` map below instead, once records for the same file
+ * are merged. Function coverage below therefore still uses the
+ * maximum-across-records approximation this fix replaces for lines --
+ * documented as a real, unclosed gap in `runCoverageForWorkspace`'s merge
+ * step and in this script's own end-of-run NOTE, not silently masked, the
+ * same way this file already discloses that Bun has no branch-coverage
+ * metric at all.
+ */
+export function parseLcov(lcovContents: string): LcovFileRecord[] {
 	const records: LcovFileRecord[] = [];
 	let currentFile: string | undefined;
-	let linesFound = 0;
-	let linesHit = 0;
+	let lineHits = new Map<number, number>();
 	let functionsFound = 0;
 	let functionsHit = 0;
 
@@ -94,10 +125,13 @@ function parseLcov(lcovContents: string): LcovFileRecord[] {
 		const line = rawLine.trim();
 		if (line.startsWith('SF:')) {
 			currentFile = line.slice('SF:'.length);
-		} else if (line.startsWith('LF:')) {
-			linesFound = Number.parseInt(line.slice('LF:'.length), 10);
-		} else if (line.startsWith('LH:')) {
-			linesHit = Number.parseInt(line.slice('LH:'.length), 10);
+		} else if (line.startsWith('DA:')) {
+			const [lineNumberText, hitCountText] = line.slice('DA:'.length).split(',');
+			const lineNumber = Number.parseInt(lineNumberText ?? '', 10);
+			const hitCount = Number.parseInt(hitCountText ?? '', 10);
+			if (Number.isFinite(lineNumber) && Number.isFinite(hitCount)) {
+				lineHits.set(lineNumber, hitCount);
+			}
 		} else if (line.startsWith('FNF:')) {
 			functionsFound = Number.parseInt(line.slice('FNF:'.length), 10);
 		} else if (line.startsWith('FNH:')) {
@@ -106,21 +140,100 @@ function parseLcov(lcovContents: string): LcovFileRecord[] {
 			if (currentFile) {
 				records.push({
 					sourceFile: currentFile,
-					linesFound,
-					linesHit,
+					lineHits,
 					functionsFound,
 					functionsHit,
 				});
 			}
 			currentFile = undefined;
-			linesFound = 0;
-			linesHit = 0;
+			lineHits = new Map();
 			functionsFound = 0;
 			functionsHit = 0;
 		}
 	}
 
 	return records;
+}
+
+export interface MergedFileCoverage {
+	readonly linesFound: number;
+	readonly linesHit: number;
+	readonly functionsFound: number;
+	readonly functionsHit: number;
+}
+
+/**
+ * `--isolate` runs each test FILE in its own subprocess, and each
+ * subprocess writes its own `SF:`/`end_of_record` block for every module IT
+ * touched -- so a file exercised across several test files appears as
+ * SEVERAL separate lcov records, not one merged record. `record.sourceFile`
+ * is written relative to the SPAWNED PROCESS's cwd (`workspaceDirectory`),
+ * not this script's own cwd, so it must be used as-is (when relative)
+ * rather than passed through `relative()` a second time -- doing so
+ * previously produced the wrong key for every file and made this gate
+ * report already well-tested files (`env.ts`, `oauth-routes.tsx`,
+ * `mcp-handler.ts`) as never covered at all.
+ *
+ * Review finding (P2): duplicate records for the same file used to be
+ * merged by taking the MAXIMUM `linesHit`/`linesFound` seen across records
+ * -- not their union. Two records that each cover a different 5-of-10
+ * lines both report 5 hit, and `max(5, 5) = 5` incorrectly reports 5/10 for
+ * a file whose combined coverage is genuinely 10/10 -- under-reporting real
+ * coverage and potentially masking which lines are ACTUALLY uncovered (a
+ * false failure hides the true, different gap). Lines are now unioned by
+ * their real per-line identity (`DA:<line>,<count>` from `parseLcov`): a
+ * line counts as hit the moment ANY record covering this file hit it.
+ *
+ * Functions have no such identity available in Bun's lcov output (see
+ * `parseLcov`'s doc comment -- no `FN:`/`FNDA:` records are ever emitted,
+ * only an `FNF`/`FNH` aggregate count per record) and still use the
+ * maximum approximation this fix replaces for lines -- a real, disclosed
+ * gap (see this script's end-of-run NOTE), not silently masked. Exported
+ * and pure specifically so this merge logic -- the actual defect this
+ * review finding is about -- can be tested directly against synthetic
+ * multi-record input, rather than only indirectly through a real
+ * `bun test --coverage` subprocess run.
+ */
+export function mergeLcovRecordsByFile(
+	records: readonly LcovFileRecord[],
+	workspaceDirectory: string,
+): Map<string, MergedFileCoverage> {
+	const merged = new Map<
+		string,
+		{ lineHits: Map<number, number>; functionsFound: number; functionsHit: number }
+	>();
+	for (const record of records) {
+		const key = record.sourceFile.startsWith('/')
+			? relative(workspaceDirectory, record.sourceFile)
+			: record.sourceFile;
+		const existing = merged.get(key);
+		if (!existing) {
+			merged.set(key, {
+				lineHits: new Map(record.lineHits),
+				functionsFound: record.functionsFound,
+				functionsHit: record.functionsHit,
+			});
+			continue;
+		}
+		for (const [lineNumber, hitCount] of record.lineHits) {
+			existing.lineHits.set(lineNumber, Math.max(existing.lineHits.get(lineNumber) ?? 0, hitCount));
+		}
+		existing.functionsFound = Math.max(existing.functionsFound, record.functionsFound);
+		existing.functionsHit = Math.max(existing.functionsHit, record.functionsHit);
+	}
+
+	const result = new Map<string, MergedFileCoverage>();
+	for (const [key, value] of merged) {
+		const linesFound = value.lineHits.size;
+		const linesHit = [...value.lineHits.values()].filter((hitCount) => hitCount > 0).length;
+		result.set(key, {
+			linesFound,
+			linesHit,
+			functionsFound: value.functionsFound,
+			functionsHit: value.functionsHit,
+		});
+	}
+	return result;
 }
 
 async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<boolean> {
@@ -165,38 +278,7 @@ async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<bool
 		}
 
 		const records = parseLcov(lcovContents);
-		// `--isolate` runs each test FILE in its own subprocess, and each
-		// subprocess writes its own `SF:`/`end_of_record` block for every
-		// module IT touched -- so a file exercised across several test files
-		// appears as SEVERAL separate lcov records, not one merged record.
-		// `record.sourceFile` is written relative to the SPAWNED PROCESS's
-		// cwd (`workspace.directory`), not this script's own cwd, so it must
-		// be used as-is (when relative) rather than passed through
-		// `relative()` a second time -- doing so previously produced the
-		// wrong key for every file and made this gate report already
-		// well-tested files (`env.ts`, `oauth-routes.tsx`, `mcp-handler.ts`)
-		// as never covered at all. Duplicate records for the same file are
-		// merged by taking the best (maximum) hit count seen across every
-		// subprocess that touched it -- the union of what all tests covered,
-		// not whichever record happened to be read last.
-		const coveredFiles = new Map<string, LcovFileRecord>();
-		for (const record of records) {
-			const key = record.sourceFile.startsWith('/')
-				? relative(workspace.directory, record.sourceFile)
-				: record.sourceFile;
-			const existing = coveredFiles.get(key);
-			if (!existing) {
-				coveredFiles.set(key, { ...record, sourceFile: key });
-				continue;
-			}
-			coveredFiles.set(key, {
-				sourceFile: key,
-				linesFound: Math.max(existing.linesFound, record.linesFound),
-				linesHit: Math.max(existing.linesHit, record.linesHit),
-				functionsFound: Math.max(existing.functionsFound, record.functionsFound),
-				functionsHit: Math.max(existing.functionsHit, record.functionsHit),
-			});
-		}
+		const coveredFiles = mergeLcovRecordsByFile(records, workspace.directory);
 
 		const sourceFiles = collectSourceFiles(workspace.directory).map((file) =>
 			relative(workspace.directory, file),
@@ -246,7 +328,14 @@ async function main(): Promise<void> {
 			"completeness (every src file must appear in the report). Bun's coverage instrumentation " +
 			'has no branch-coverage metric on the installed toolchain, so branch coverage cannot be ' +
 			'mechanically enforced here -- see TEST-001 in PROGRESS.local.md for the measurability gap ' +
-			'this leaves in the roadmap\'s "line, function, statement, and branch coverage" criterion.',
+			'this leaves in the roadmap\'s "line, function, statement, and branch coverage" criterion. ' +
+			'Line coverage across `--isolate` subprocess records is a real union (per-line identity, ' +
+			"via each record's `DA:` entries). Function coverage is NOT a real union -- Bun's lcov " +
+			'output never emits per-function `FN:`/`FNDA:` identity, only an aggregate `FNF`/`FNH` ' +
+			'count per file per record, so this gate falls back to the maximum count seen across ' +
+			'records for a file. That can still under-report true combined function coverage across ' +
+			'several test files touching disjoint functions in the same file, the same class of gap ' +
+			'this fix closes for lines -- disclosed here rather than silently left looking closed.',
 	);
 
 	if (!allPassed) {
@@ -257,4 +346,15 @@ async function main(): Promise<void> {
 	console.log('\n[test:coverage] All workspaces report complete line and function coverage.');
 }
 
-await main();
+// Sibling defect found while adding a regression test for this item: `parseLcov` and
+// `mergeLcovRecordsByFile` needed to be exported and imported from a test file to be unit
+// tested directly (per the same reasoning `doctor.ts`/`setup.ts` already export their own pure
+// logic for), but this script previously ran `main()` -- which spawns a real `bun test
+// --coverage` subprocess per workspace -- unconditionally at MODULE LOAD, with no
+// `import.meta.main` guard. Importing this file for its pure functions therefore also
+// triggered three full real coverage runs as a side effect, which is both slow (minutes) and
+// wrong for a unit test. `doctor.ts` and `setup.ts` both already guard their own entrypoint
+// this same way; this file was the one gap.
+if (import.meta.main) {
+	await main();
+}

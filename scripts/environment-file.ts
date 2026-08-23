@@ -28,15 +28,31 @@ export function encodeEnvironmentValue(value: string): string {
 /**
  * Decodes the text strictly between a matched pair of quote characters, given the quote style
  * that was used. Double quotes support the same backslash escapes `encodeEnvironmentValue`
- * writes (`\n`, `\r`, `\"`, `\\`); single quotes are entirely literal, matching Bun's own
- * loader. Factored out of `decodeEnvironmentValue` so `parseEnvironmentEntries` can decode a
- * quoted span it has already located by character offset (same-line or spanning several
- * physical lines) without re-deriving the quote boundaries from string content -- which is what
- * let a same-line trailing comment or a value's own `#` fool the boundary detection. See
- * `decodeQuotedValueWithBoundaries` below for that failure mode in detail.
+ * writes (`\n`, `\r`, `\"`, `\\`); single quotes and backticks are entirely literal, matching
+ * Bun's own loader. Factored out of `decodeEnvironmentValue` so `parseEnvironmentEntries` can
+ * decode a quoted span it has already located by character offset (same-line or spanning
+ * several physical lines) without re-deriving the quote boundaries from string content --
+ * which is what let a same-line trailing comment or a value's own `#` fool the boundary
+ * detection. See `decodeQuotedValueWithBoundaries` below for that failure mode in detail.
+ *
+ * Review finding (P2): a Bun-supported backtick-quoted value (`` SECRET=`abc#def` ``) fell all
+ * the way through to the unquoted-comment branch below (`decodeEnvironmentValue` had no
+ * backtick branch at all, and `parseEnvironmentEntries`'s quote-character detection didn't
+ * recognize an opening backtick either), which treated the `#` as a comment marker and
+ * truncated the value to `` `abc `` -- corrupting it on the very next rewrite, the identical
+ * failure mode round 10's single-quote fix closed. Confirmed directly against Bun's own `.env`
+ * loader that backtick is a third, fully-supported quote style with `#`-inside-quotes and
+ * same-line-trailing-comment behavior identical to double/single quotes. Unlike double quotes,
+ * a backtick-quoted value does NOT interpret `\n`/`\r`/`\\` as escapes -- `` `line1\nline2` ``
+ * stays the literal four characters `\`, `n`, not a newline -- so it is literal at DECODE time,
+ * the same as single quotes. It differs from single quotes in one narrow way that matters only
+ * for finding the CLOSING quote (`findClosingQuoteIndex` below, not this function): `` \` ``
+ * inside a backtick-quoted value does not end the value, confirmed empirically (`` `x\`y` ``
+ * decodes to the four literal characters `x`, `\`, `` ` ``, `y` -- the backslash is kept, not
+ * stripped, and the quote it precedes is not treated as the close).
  */
-function decodeQuotedInner(inner: string, quoteChar: '"' | "'"): string {
-	if (quoteChar === "'") return inner;
+function decodeQuotedInner(inner: string, quoteChar: '"' | "'" | '`'): string {
+	if (quoteChar === "'" || quoteChar === '`') return inner;
 
 	let result = '';
 	for (let index = 0; index < inner.length; index++) {
@@ -85,6 +101,26 @@ export function decodeEnvironmentValue(raw: string): string {
 		const closingIndex = trimmed.indexOf("'", 1);
 		if (closingIndex !== -1) {
 			return decodeQuotedInner(trimmed.slice(1, closingIndex), "'");
+		}
+	}
+
+	// Review finding (P2): backtick is Bun's third quote style, with the same
+	// "entirely literal, `#` never a comment" behavior as single quotes above
+	// -- see `decodeQuotedInner`'s doc comment for the full empirical
+	// confirmation. This naive same-line search (no escape-awareness for a
+	// `` \` `` pair) mirrors the single-quote branch immediately above on
+	// purpose: this function is only reached for a value whose quote was
+	// never found ANYWHERE in the rest of the file at all (an unclosed
+	// quote -- `parseEnvironmentEntries`'s own primary path already does
+	// the escape-aware, multi-line-capable search via
+	// `findClosingQuoteIndex` for every value that closes normally,
+	// including a same-line `` \` `` inside the quotes), so this is
+	// deliberately the same reduced-rigor fallback the single-quote branch
+	// already established, not a gap specific to backticks.
+	if (trimmed.startsWith('`') && trimmed.length >= 2) {
+		const closingIndex = trimmed.indexOf('`', 1);
+		if (closingIndex !== -1) {
+			return decodeQuotedInner(trimmed.slice(1, closingIndex), '`');
 		}
 	}
 
@@ -163,6 +199,21 @@ function findClosingQuoteIndex(text: string, openIndex: number, quoteChar: strin
 				continue;
 			}
 		}
+		// Review finding (P2): backtick is Bun's third quote style (see
+		// `decodeQuotedInner`'s doc comment), and confirmed empirically
+		// against Bun's own `.env` loader that -- unlike single quotes,
+		// which close at the very next quote character with no exception --
+		// a `` \` `` pair inside a backtick-quoted value does NOT close it
+		// (`` `x\`y` `` decodes to the four literal characters `x`, `\`,
+		// `` ` ``, `y`, closing only at the SECOND backtick). The backslash
+		// is kept in the decoded output unchanged, unlike the double-quote
+		// escapes above -- this only affects where the CLOSING quote is
+		// found, not how the content between the quotes is decoded
+		// (`decodeQuotedInner` returns a backtick-quoted span verbatim).
+		if (quoteChar === '`' && char === '\\' && index + 1 < text.length && text[index + 1] === '`') {
+			index += 2;
+			continue;
+		}
 		if (char === quoteChar) return index;
 		index++;
 	}
@@ -204,7 +255,9 @@ export function parseEnvironmentEntries(content: string): ParsedEnvironmentEntry
 			? '"'
 			: trimmedValueStart.startsWith("'")
 				? "'"
-				: null;
+				: trimmedValueStart.startsWith('`')
+					? '`'
+					: null;
 
 		if (quoteChar) {
 			const equalsIndexInRawLine = rawLine.indexOf('=');

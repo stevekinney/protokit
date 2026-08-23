@@ -42,6 +42,18 @@ export class McpUserHandlerCache {
 		return this.entries.size;
 	}
 
+	/**
+	 * Returns this user's handler entry if one already exists, without
+	 * creating one and without touching `lastAccessedAt`. Used by
+	 * out-of-request publishers (`publishUserResourceUpdate`) that want to
+	 * reuse an already-live handler's bus when one exists, rather than
+	 * spinning up a handler (and its Redis subscription) purely to publish
+	 * to a channel nothing local is listening on.
+	 */
+	peek(userId: string): McpUserHandlerEntry | undefined {
+		return this.entries.get(userId);
+	}
+
 	/** Returns this user's handler, creating one on first use, and marks it recently accessed. */
 	get(userId: string): McpUserHandlerEntry {
 		let entry = this.entries.get(userId);

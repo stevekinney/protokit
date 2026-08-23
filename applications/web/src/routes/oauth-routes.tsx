@@ -393,6 +393,33 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
+	// Review finding (P2): the parameter-length bound must be enforced
+	// before ANY client lookup — including the CIMD branch below, which
+	// performs an outbound DNS/HTTPS fetch and can upsert a row into
+	// `oauth_clients` for whatever `client_id` it is handed. Checking
+	// length only after that lookup let an oversized CIMD-shaped
+	// `client_id` reach the network and the database before ever being
+	// rejected. This must stay ahead of every redirect added below it too
+	// (see the RFC 6749 §4.1.2.1 note there) so a redirect never bypasses
+	// this cap either.
+	if (
+		clientId.length > oauthMaxClientIdLength ||
+		redirectUri.length > oauthMaxRedirectUriLength ||
+		state.length > oauthMaxStateLength ||
+		// `resource` is not yet known to be present at this point — that
+		// check runs later, after client/redirect_uri verification, so it
+		// can be delivered through the verified redirect per RFC 6749
+		// §4.1.2.1. A missing `resource` is not a length violation.
+		(resource && resource.length > oauthMaxResourceLength) ||
+		(rawScope && rawScope.length > oauthMaxScopeLength)
+	) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
+		});
+	}
+
 	type OauthClientRow = typeof schema.oauthClients.$inferSelect;
 	let client: OauthClientRow | undefined;
 
@@ -505,23 +532,9 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
-	if (
-		clientId.length > oauthMaxClientIdLength ||
-		redirectUri.length > oauthMaxRedirectUriLength ||
-		state.length > oauthMaxStateLength ||
-		resource.length > oauthMaxResourceLength ||
-		(rawScope && rawScope.length > oauthMaxScopeLength)
-	) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
-		});
-	}
-
 	// RFC 6749 §4.1.2.1: `client_id` and `redirect_uri` are now verified
 	// (client lookup and registered-redirect-URI match above) and `state`
-	// is now bounded (the length-cap check immediately above), so an
+	// is now bounded (the length-cap check earlier in this handler), so an
 	// unsupported `response_type` is delivered back to the client through
 	// that verified redirect rather than a local error page — the same
 	// rule the scope, response_types, and grant_types checks below already
@@ -567,21 +580,33 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	}
 	const grantedScope = canonicalizeScopes(scopeRequest.scopes);
 
+	// Review finding (P2): `client_id` and `redirect_uri` are already
+	// verified above (client lookup and registered-redirect-URI match) and
+	// `state` is already bounded (the length-cap check earlier in this
+	// handler), so — same RFC 6749 §4.1.2.1 rule as the scope,
+	// response_types, and grant_types checks above — an unsupported or
+	// malformed PKCE parameter must be delivered back to the client
+	// through the verified redirect rather than rendered as a local 400.
+	// Rendering locally left the client waiting on a callback it would
+	// never receive. This still runs after the length-cap check, not
+	// before it, for the same reason those checks do.
 	if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: (
-				<OauthAuthorizePage mode="error" error="Only S256 code challenge method is supported." />
-			),
+		return authorizeProtocolErrorRedirect({
+			redirectUri,
+			error: 'invalid_request',
+			errorDescription: 'Only S256 code challenge method is supported.',
+			state,
+			issuer,
 		});
 	}
 
 	if (!isValidPkceCodeChallenge(codeChallenge)) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: <OauthAuthorizePage mode="error" error="Malformed code_challenge." />,
+		return authorizeProtocolErrorRedirect({
+			redirectUri,
+			error: 'invalid_request',
+			errorDescription: 'Malformed code_challenge.',
+			state,
+			issuer,
 		});
 	}
 
@@ -1397,6 +1422,32 @@ async function handleOauthTokenAuthorizationCodeGrant(
 		// then reopen the code so the client's retry can mint a fresh pair. No
 		// token was ever generated into a response (the insert itself threw),
 		// so reopening the code cannot cause a token to be issued twice.
+		//
+		// Review finding (P2): this reopen used to be unconditional --
+		// `SET used_at = null WHERE code = X` with no predicate on the row's
+		// current state. `revokeUserClientGrant`/`revokeAllUserGrants`
+		// (`consent-inventory.ts`) used to only consume a code that was
+		// still unused (`used_at IS NULL`), so a code this handler had
+		// already marked used (right above) was left untouched by a
+		// concurrent revocation -- the revocation simply matched no row for
+		// it. If the user revoked this exact grant in the narrow window
+		// between this handler's own `usedAt` consume and this catch block
+		// running, the unconditional reopen would silently clear the only
+		// marker distinguishing "consumed" from "available", making the
+		// code redeemable again on a client retry and resurrecting access
+		// the user had just withdrawn.
+		//
+		// Fixed on both sides of the race: revocation now OVERWRITES
+		// `used_at` unconditionally for every not-yet-expired code (see
+		// `consent-inventory.ts`), rather than skipping one that is already
+		// non-null. This reopen is conditioned on `used_at` still holding
+		// the EXACT value this handler itself wrote when it consumed the
+		// code -- if a concurrent revocation overwrote it with a different
+		// timestamp in between, this predicate matches no row and the code
+		// stays dead instead of being silently reopened. (The reverse
+		// ordering -- revocation running before this handler's own
+		// consume -- was already closed: that consume's `usedAt IS NULL`
+		// check fails once revocation has written a non-null value first.)
 		try {
 			await database
 				.delete(schema.oauthTokens)
@@ -1411,7 +1462,12 @@ async function handleOauthTokenAuthorizationCodeGrant(
 			await database
 				.update(schema.oauthCodes)
 				.set({ usedAt: null })
-				.where(eq(schema.oauthCodes.code, authorizationCodeHash));
+				.where(
+					and(
+						eq(schema.oauthCodes.code, authorizationCodeHash),
+						eq(schema.oauthCodes.usedAt, consumedCode.usedAt!),
+					),
+				);
 		} catch (unconsumeError) {
 			logger.error(
 				{ err: unconsumeError },

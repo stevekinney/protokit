@@ -156,4 +156,32 @@ describe('handleMetricsGet', () => {
 			}),
 		}));
 	});
+
+	// Review finding (P2): a disabled endpoint (METRICS_API_KEY unset) must
+	// return its promised 404 even when Redis -- which the rate limiter
+	// depends on -- is unavailable. Before the fix, the rate-limit check ran
+	// BEFORE the not-configured check, so this scenario threw instead of
+	// returning 404, turning a disabled endpoint into a 500 that depends on
+	// infrastructure it has no other reason to need.
+	it('returns 404 when no API key is configured, even if the rate limiter would throw (Redis unavailable)', async () => {
+		setEnvironment({ METRICS_API_KEY: undefined });
+		mock.module('@web/lib/request-rate-limiter', () => ({
+			enforceMetricsRateLimit: async () => {
+				throw new Error('simulated Redis unavailable');
+			},
+		}));
+
+		const response = await handleMetricsGet(
+			buildContext(new Request('https://app.example.com/metrics')),
+		);
+		expect(response.status).toBe(404);
+
+		mock.module('@web/lib/request-rate-limiter', () => ({
+			enforceMetricsRateLimit: async () => ({
+				allowed: true,
+				retryAfterSeconds: 0,
+				remainingRequests: 10,
+			}),
+		}));
+	});
 });

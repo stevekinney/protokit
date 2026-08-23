@@ -8,7 +8,7 @@ import { PayloadTooLargeError, readBoundedFormUrlEncoded } from '@web/lib/bounde
 import { getBaseUrl } from '@web/lib/base-url';
 import { isTrustedRequestOrigin, isValidSessionCsrfToken } from '@web/lib/csrf-protection';
 import { isExactContentType } from '@web/lib/exact-content-type';
-import { publishUserResourceUpdate } from '@web/lib/mcp-user-event-bus';
+import { publishUserResourceUpdate } from '@web/lib/mcp-handler';
 import {
 	clearGoogleStateCookie,
 	createGoogleSignInRedirectResponse,

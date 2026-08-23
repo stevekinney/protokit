@@ -413,6 +413,58 @@ describe("property-style parity against Bun's own .env loader", () => {
 			content: 'D=#leadinghash\n',
 			keys: ['D'],
 		},
+		// Round 15 review finding (P2, `scripts/environment-file.ts:207`):
+		// backtick is a THIRD quote style Bun's own `.env` loader supports,
+		// with the identical "entirely literal, `#` never a comment"
+		// behavior as single quotes -- and this sweep's own table had no
+		// backtick shape at all, so this exact class was not in the table
+		// it was designed to prevent. Added here rather than as a one-off
+		// test, per this round's own instruction to close the gap in the
+		// mechanism, not just the parser.
+		{
+			name: 'backtick-quoted value containing a hash',
+			content: 'SECRET=`abc#def`\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'backtick-quoted value containing a hash with a trailing comment',
+			content: 'SECRET=`abc#def` # note\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'backtick-quoted value containing a hash with an unspaced trailing comment',
+			content: 'SECRET=`abc#def`#note\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'multi-line backtick-quoted value',
+			content: 'CERT=`line1\nline2`\nOTHER=value\n',
+			keys: ['CERT', 'OTHER'],
+		},
+		{
+			// Unlike double quotes, a backtick-quoted value does NOT unescape
+			// `\n`/`\\`/etc -- it stays the literal backslash-plus-character at
+			// runtime, matching single quotes. Confirmed directly against Bun's
+			// own loader (see `decodeQuotedInner`'s doc comment).
+			name: 'backtick-quoted value with a literal backslash sequence, unescaped',
+			content: 'SECRET=`line1\\nline2`\n',
+			keys: ['SECRET'],
+		},
+		{
+			// The one shape genuinely specific to backticks and not shared with
+			// single quotes: a `` \` `` pair inside the value does NOT end it
+			// (confirmed empirically -- see `findClosingQuoteIndex`'s doc
+			// comment), unlike a single quote, which closes at the very next
+			// quote character with no exception at all.
+			name: 'backtick-quoted value containing an escaped backtick',
+			content: 'SECRET=`ab\\`cd`\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'empty backtick-quoted value',
+			content: 'EMPTY=``\n',
+			keys: ['EMPTY'],
+		},
 	];
 
 	for (const { name, content, keys } of cases) {

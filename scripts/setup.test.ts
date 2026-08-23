@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, test, expect } from 'bun:test';
 import {
+	collectRailwayProductionStartupFailures,
 	isValidNeonRegionIdentifier,
 	isValidProductionBaseUrl,
 	isValidProductionRedisUrl,
@@ -13,6 +14,23 @@ import {
 	shouldPromptForTrustedProxyCidrs,
 	shouldPromptForTrustedProxyHeader,
 } from './setup.ts';
+
+/** A minimal, fully production-valid `.env.local`-shaped variable set, used as the base for the
+ * `collectRailwayProductionStartupFailures` regression tests below — each test knocks out
+ * exactly one field to prove that specific gap is caught. */
+function validProductionVariables(): Record<string, string | undefined> {
+	return {
+		NODE_ENV: 'development',
+		BASE_URL: 'https://example.com',
+		DATABASE_URL: 'postgres://user:pass@db.example.com/db?sslmode=verify-full',
+		DATABASE_URL_UNPOOLED: 'postgres://user:pass@db.example.com/db?sslmode=verify-full',
+		GOOGLE_CLIENT_ID: 'google-client-id',
+		GOOGLE_CLIENT_SECRET: 'google-client-secret',
+		TRUSTED_PROXY_CIDRS: '10.0.0.0/8',
+		TRUSTED_PROXY_HEADER: 'x-forwarded-for',
+		SESSION_SIGNING_SECRET: 'a'.repeat(64),
+	};
+}
 
 describe('isValidNeonRegionIdentifier', () => {
 	test('accepts real Neon region identifiers', () => {
@@ -321,6 +339,79 @@ describe('trusted proxy setup phase ordering', () => {
 			source.indexOf('async function setupGithubSecrets'),
 		);
 		expect(railwayBody).toContain('isValidProductionRedisUrl');
+	});
+
+	// Review finding (P2): `setupRailway` only hand-rolled three checks (BASE_URL,
+	// TRUSTED_PROXY_CIDRS/HEADER, REDIS_URL) before copying the rest of `.env.local` to Railway
+	// and forcing NODE_ENV=production, reporting success even when a setting
+	// `assertProductionStartupInvariants` also requires -- Google credentials, DATABASE_URL's
+	// sslmode=verify-full, SESSION_SIGNING_SECRET -- was missing or invalid. Unlike the
+	// source-inspection tests above (necessary for the earlier three checks, since `setupRailway`
+	// itself is an unexported, interactive, side-effecting function), `collectRailwayProductionStartupFailures`
+	// is pure and exported, so this exercises the REAL collector against a REAL planned variable
+	// set rather than grepping for a function-call string.
+	test('setupRailway calls the shared production-readiness collector before configuring Railway', () => {
+		const railwayBody = source.slice(
+			source.indexOf('async function setupRailway()'),
+			source.indexOf('async function setupGithubSecrets'),
+		);
+		expect(railwayBody).toContain('collectRailwayProductionStartupFailures');
+	});
+
+	describe('collectRailwayProductionStartupFailures', () => {
+		test('reports no failures for a fully valid production configuration', () => {
+			const failures = collectRailwayProductionStartupFailures(validProductionVariables(), {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures).toEqual([]);
+		});
+
+		// The exact gap the review finding named: setupRailway's three ad hoc checks never looked
+		// at Google credentials at all, so a configuration missing them was pushed to Railway and
+		// reported as configured, only for the deployed server to refuse to start.
+		test('reports a failure when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are missing', () => {
+			const variables = validProductionVariables();
+			delete variables.GOOGLE_CLIENT_ID;
+			delete variables.GOOGLE_CLIENT_SECRET;
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures.some((failure) => failure.includes('GOOGLE_CLIENT_ID'))).toBe(true);
+		});
+
+		// The other example the review finding named explicitly: a DATABASE_URL rejected only by
+		// collectProductionStartupFailures's sslmode=verify-full requirement, not by any of
+		// setupRailway's own three checks.
+		test('reports a failure when DATABASE_URL uses sslmode=require instead of sslmode=verify-full', () => {
+			const variables = validProductionVariables();
+			variables.DATABASE_URL = 'postgres://user:pass@db.example.com/db?sslmode=require';
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures.some((failure) => failure.includes('sslmode=verify-full'))).toBe(true);
+		});
+
+		test('reports a failure when SESSION_SIGNING_SECRET is missing', () => {
+			const variables = validProductionVariables();
+			delete variables.SESSION_SIGNING_SECRET;
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures.some((failure) => failure.includes('SESSION_SIGNING_SECRET'))).toBe(true);
+		});
+
+		// Confirms this validates the PLANNED (post-planRailwayVariables) variable set, not
+		// .env.local's raw contents -- DATABASE_LOCAL_PROXY_URL is a real, valid key to have set
+		// locally (every developer has it), but planRailwayVariables strips it before pushing to
+		// Railway, and collectProductionStartupFailures rejects it if still present in production.
+		test('reports no failure for DATABASE_LOCAL_PROXY_URL set locally, since planRailwayVariables strips it', () => {
+			const variables = validProductionVariables();
+			variables.DATABASE_LOCAL_PROXY_URL = 'http://db.localtest.me:4444/sql';
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures).toEqual([]);
+		});
 	});
 });
 

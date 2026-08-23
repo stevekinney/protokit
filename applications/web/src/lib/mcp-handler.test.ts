@@ -44,7 +44,8 @@ mock.module('drizzle-orm', () => ({
 	eq: (column: unknown, value: unknown) => ({ column, value }),
 }));
 
-const { handleMcpRequest, shouldEnableConformanceMode } = await import('@web/lib/mcp-handler');
+const { handleMcpRequest, shouldEnableConformanceMode, publishUserResourceUpdate } =
+	await import('@web/lib/mcp-handler');
 
 /**
  * OBS-001 acceptance criterion 2: "a trace follows one connector action
@@ -467,6 +468,44 @@ describe('subscriptions/listen (PROTO-002 / S-11)', () => {
 		await subscriptionB.close();
 		await clientA.close();
 		await clientB.close();
+	});
+
+	it('review finding (P2): publishUserResourceUpdate delivers to a live subscription on the in-memory (no-Redis) bus', async () => {
+		// This whole file mocks `@web/env` with no `REDIS_URL`, so
+		// `isRedisConfigured()` is false throughout — every handler here
+		// already uses the in-memory `InMemoryServerEventBus` fallback,
+		// exactly the deployment shape (local development, no Redis) the
+		// defect was specific to.
+		//
+		// `publishUserResourceUpdate` is the function callers OUTSIDE the
+		// request path use (e.g. `google-authentication-routes.tsx` after a
+		// real Google profile mutation) — it does not have a `handler`
+		// closure variable to call `.notify` on the way the in-request
+		// `publishResourceUpdate` callback in `createUserHandlerEntry` does.
+		// Before the fix, it constructed a brand-new, disconnected
+		// `InMemoryServerEventBus()` for this call, so this event never
+		// reached the open subscription below.
+		const client = await connectModernClient(
+			'publish-update-modern',
+			'user-publish-update-external',
+		);
+		const received: string[] = [];
+		client.setNotificationHandler('notifications/resources/updated', async (notification) => {
+			received.push(notification.params.uri);
+		});
+		const subscription = await client.listen({ resourceSubscriptions: ['user://profile'] });
+
+		publishUserResourceUpdate('user-publish-update-external', 'user://profile');
+
+		const deadline = Date.now() + 2000;
+		while (received.length === 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		expect(received).toEqual(['user://profile']);
+
+		await subscription.close();
+		await client.close();
 	});
 
 	it('genuinely aborts the underlying operation on client disconnect, not just the wrapper promise (SEC-004 wiring)', async () => {

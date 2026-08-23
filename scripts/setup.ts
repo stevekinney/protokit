@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { isIPv4, isIPv6 } from 'node:net';
 
+import { collectProductionStartupFailures } from '@template/web/lib/production-startup-requirements';
+
 import {
 	commandExists,
 	execute,
@@ -560,6 +562,38 @@ export function planRailwayVariables(
 	return [...plan.entries()];
 }
 
+/**
+ * Review finding (P2): pure and exported (unlike `setupRailway`'s inline interactive logic)
+ * specifically so it can be tested directly against a real `Record<string, string | undefined>`
+ * and real `collectProductionStartupFailures`, rather than only by grepping `setupRailway`'s
+ * source text for a function-call string the way the BASE_URL/TRUSTED_PROXY/REDIS checks above
+ * are covered. Runs the exact same production-readiness collector `scripts/doctor.ts` uses
+ * against the exact variable set `planRailwayVariables` would push to Railway — see
+ * `setupRailway`'s own call site for the full rationale.
+ */
+export function collectRailwayProductionStartupFailures(
+	variables: Record<string, string | undefined>,
+	overrides: Record<string, string> = {},
+): string[] {
+	const plannedVariables = Object.fromEntries(planRailwayVariables(variables, overrides));
+	return collectProductionStartupFailures({
+		nodeEnvironment: plannedVariables.NODE_ENV ?? '(not set)',
+		baseUrl: plannedVariables.BASE_URL,
+		redisUrl: plannedVariables.REDIS_URL,
+		isRedisConfigured: plannedVariables.REDIS_URL !== undefined,
+		databaseUrl: plannedVariables.DATABASE_URL ?? '',
+		databaseUrlUnpooled: plannedVariables.DATABASE_URL_UNPOOLED,
+		databaseLocalProxyUrl: plannedVariables.DATABASE_LOCAL_PROXY_URL,
+		googleClientId: plannedVariables.GOOGLE_CLIENT_ID,
+		googleClientSecret: plannedVariables.GOOGLE_CLIENT_SECRET,
+		trustedProxyCidrs: plannedVariables.TRUSTED_PROXY_CIDRS,
+		trustedProxyHeader: plannedVariables.TRUSTED_PROXY_HEADER,
+		nodeTlsRejectUnauthorized: plannedVariables.NODE_TLS_REJECT_UNAUTHORIZED,
+		sessionSigningSecret: plannedVariables.SESSION_SIGNING_SECRET,
+		mcpConformanceModeConfigured: plannedVariables.MCP_CONFORMANCE_MODE === 'true',
+	});
+}
+
 async function setupRailway() {
 	console.log('\n--- Railway ---\n');
 
@@ -625,6 +659,47 @@ async function setupRailway() {
 			railwayVariableOverrides.REDIS_URL = input;
 			break;
 		}
+	}
+
+	// Review finding (P2): the three checks above (BASE_URL, TRUSTED_PROXY_CIDRS/HEADER, REDIS_URL)
+	// each hand-roll ONE production invariant `assertProductionStartupInvariants` enforces at
+	// real startup — the same shape fixed twice before for BASE_URL alone (rounds 4 and 9) and
+	// once for trusted-proxy (round 11). They are not the complete set: this function was free to
+	// skip past a missing GOOGLE_CLIENT_ID/SECRET, a DATABASE_URL without `sslmode=verify-full`,
+	// a missing SESSION_SIGNING_SECRET, NODE_TLS_REJECT_UNAUTHORIZED=0, or MCP_CONFORMANCE_MODE
+	// left on, silently copy the rest of `.env.local` to Railway, force NODE_ENV=production, and
+	// report success — only for the deployed server to refuse to start, since all of those are
+	// also required by `assertProductionStartupInvariants`.
+	//
+	// Rather than adding a fourth (fifth, sixth, ...) per-setting predicate here, this runs the
+	// SAME shared `collectProductionStartupFailures` collector `scripts/doctor.ts` already uses
+	// as its one production-readiness gate — against the EXACT variable set about to be pushed
+	// (`planRailwayVariables`'s own planned output, not `.env.local`'s raw contents: those differ
+	// in exactly the ways that matter here — `DATABASE_LOCAL_PROXY_URL`/`PROTOKIT_TUNNEL_ACTIVE`
+	// are dropped, `REDIS_URL` is replaced with whatever was just validated/collected above, and
+	// `NODE_ENV` is forced to `production`), as one final gate immediately before `railway init`
+	// runs. The BASE_URL/TRUSTED_PROXY_* checks above are kept rather than deleted even though
+	// this collector would also catch both — they run first specifically because they name the
+	// exact `bun scripts/setup.ts <phase>` command to run next, which this generic collector's
+	// messages do not; this final gate is the authoritative check that nothing else was missed,
+	// not a replacement for that more actionable early guidance.
+	const productionStartupFailures = collectRailwayProductionStartupFailures(
+		readEnvironmentFile(),
+		railwayVariableOverrides,
+	);
+	if (productionStartupFailures.length > 0) {
+		console.error(
+			'Refusing to configure Railway: the planned production configuration would fail ' +
+				'assertProductionStartupInvariants at real startup —',
+		);
+		for (const failure of productionStartupFailures) {
+			console.error(`  - ${failure}`);
+		}
+		console.error(
+			'Fix these in .env.local (or the relevant `bun scripts/setup.ts` phase) and re-run.',
+		);
+		process.exitCode = 1;
+		return;
 	}
 
 	console.log('\nInitializing Railway project...');

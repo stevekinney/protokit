@@ -9,7 +9,7 @@ let mockOauthRefreshTokens: unknown[] = [];
 let mockInsertedValues: unknown[] = [];
 let recordFailedAuthenticationCalls: unknown[] = [];
 let mockInsertShouldThrow = false;
-let mockUpdateCalls: Array<{ table: unknown; set: Record<string, unknown> }> = [];
+let mockUpdateCalls: Array<{ table: unknown; set: Record<string, unknown>; where?: unknown }> = [];
 let mockDeleteCalls: Array<{ table: unknown; where: unknown }> = [];
 // Lets a test simulate losing the refresh-rotation mutex (a concurrent
 // request revoked the row first) without also making the earlier read-only
@@ -32,7 +32,15 @@ let mockFirstRefreshTokenSelectShouldMiss = false;
 let mockOldAccessTokenRevokeShouldThrow = false;
 
 const oauthClientsTable = Symbol('oauthClients');
-const oauthCodesTable = Symbol('oauthCodes');
+// A plain object with real column-name properties (not a bare `Symbol`,
+// unlike some of this file's other table stand-ins) so that a captured
+// `.where(...)` predicate can be asserted against by column, needed to
+// prove the review-finding regression test below (the reopen's `WHERE`
+// clause) targets the right columns rather than just "some predicate ran".
+const oauthCodesTable = {
+	code: 'code',
+	usedAt: 'usedAt',
+};
 const oauthTokensTable = Symbol('oauthTokens');
 const oauthRefreshTokensTable = {
 	refreshToken: 'refreshToken',
@@ -95,9 +103,14 @@ mock.module('@template/database', () => ({
 		}),
 		update: (table: unknown) => ({
 			set: (setValues: Record<string, unknown>) => {
-				mockUpdateCalls.push({ table, set: setValues });
+				const call: { table: unknown; set: Record<string, unknown>; where?: unknown } = {
+					table,
+					set: setValues,
+				};
+				mockUpdateCalls.push(call);
 				return {
-					where: () => {
+					where: (where: unknown) => {
+						call.where = where;
 						// Round 10 review (P2): simulates the post-mutex/post-refresh-
 						// revoke "revoke the paired old access token" step failing --
 						// the specific `oauthTokens` update that never calls
@@ -219,6 +232,7 @@ mock.module('@web/lib/validate-redirect-uri', () => ({
 // drive both branches (document fetched vs. not) without any network or
 // DNS activity.
 const mockCimdState: { document: Record<string, unknown> | null } = { document: null };
+let fetchClientIdMetadataDocumentCallCount = 0;
 mock.module('@web/lib/client-metadata-documents', () => ({
 	isClientIdMetadataDocumentUrl: (clientId: string) => {
 		try {
@@ -228,7 +242,10 @@ mock.module('@web/lib/client-metadata-documents', () => ({
 			return false;
 		}
 	},
-	fetchClientIdMetadataDocument: async () => mockCimdState.document,
+	fetchClientIdMetadataDocument: async () => {
+		fetchClientIdMetadataDocumentCallCount += 1;
+		return mockCimdState.document;
+	},
 }));
 
 mock.module('@web/lib/mcp-protocol-constants', () => ({
@@ -1182,6 +1199,38 @@ describe('authorization GET', () => {
 		expect(mockInsertedValues).toEqual([]);
 	});
 
+	it('review finding (P2): rejects an oversized CIMD-shaped client_id before fetching the document', async () => {
+		// A CIMD `client_id` is a full HTTPS URL, so `oauthMaxClientIdLength`
+		// is 2048 (see request-limits.ts). Anything longer must be rejected
+		// by the length cap BEFORE `isClientIdMetadataDocumentUrl` and any
+		// network/database work — otherwise an authenticated caller could
+		// force an outbound DNS/HTTPS fetch (and even an `oauth_clients`
+		// upsert) for an identifier that was always going to be rejected.
+		fetchClientIdMetadataDocumentCallCount = 0;
+		mockCimdState.document = {
+			clientId: 'placeholder',
+			clientName: 'CIMD App',
+			redirectUris: ['https://app.example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+			applicationType: null,
+		};
+		const oversizedPath = 'a'.repeat(2100);
+		const oversizedClientId = `https://app.example.com/${oversizedPath}`;
+		expect(oversizedClientId.length).toBeGreaterThan(2048);
+		const context = createContext({
+			url: `http://localhost:3000/oauth/authorize?client_id=${encodeURIComponent(oversizedClientId)}&redirect_uri=https://app.example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp`,
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toContain('A parameter exceeded its maximum length');
+		expect(fetchClientIdMetadataDocumentCallCount).toBe(0);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
 	it('redirects to sign-in when user is not authenticated', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
@@ -1331,14 +1380,47 @@ describe('authorization GET', () => {
 		expect(body).not.toContain('name="code_challenge"');
 	});
 
-	it('returns 400 for unsupported code_challenge_method', async () => {
+	it('redirects to the verified client for an unsupported code_challenge_method', async () => {
+		// Regression test for review finding: client_id/redirect_uri are
+		// already verified by this point, so per RFC 6749 §4.1.2.1 this must
+		// be delivered through the client's own redirect_uri, never rendered
+		// as a local error page (which would leave the client waiting on a
+		// callback it never receives). The prior version of this test never
+		// set `mockOauthClients`, so it accidentally exercised the "unknown
+		// client" 400 branch instead of the PKCE check it claimed to cover.
+		mockOauthClients = [authorizeClient];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc&code_challenge_method=plain&resource=http://localhost:3000/mcp',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc&code_challenge_method=plain&resource=http://localhost:3000/mcp&state=xyz',
 			method: 'GET',
-			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+			user: authorizeUser,
 		});
 		const response = await handleOauthAuthorizeGet(context);
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_request');
+		expect(location.searchParams.get('error_description')).toContain(
+			'Only S256 code challenge method is supported',
+		);
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('redirects to the verified client for a malformed code_challenge', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=not-a-valid-pkce-challenge!!&resource=http://localhost:3000/mcp&state=xyz',
+			method: 'GET',
+			user: authorizeUser,
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_request');
+		expect(location.searchParams.get('error_description')).toContain('Malformed code_challenge');
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
 	});
 
 	it('returns 400 when redirect URI does not match client', async () => {
@@ -1455,7 +1537,15 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('rejects a malformed code_challenge', async () => {
+	it('redirects to the verified client for a malformed code_challenge', async () => {
+		// See "redirects to the verified client for a malformed
+		// code_challenge" above (AUTHZ-001/CIMD describe block) for the
+		// dedicated regression coverage with error/state assertions. This
+		// pre-existing test only pins the status code from a different
+		// mock-client shape, updated from 400 to 302 for the same RFC
+		// 6749 §4.1.2.1 reason — see review finding (P2) on the
+		// `code_challenge_method`/`code_challenge` checks in
+		// `handleOauthAuthorizeGet`.
 		mockOauthClients = [
 			{ clientId: 'c1', clientName: 'Test App', redirectUris: ['https://example.com/cb'] },
 		];
@@ -1465,7 +1555,7 @@ describe('authorization GET', () => {
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeGet(context);
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(302);
 	});
 });
 
@@ -1960,8 +2050,46 @@ describe('authorization code token exchange', () => {
 		);
 
 		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		const reopenCall = mockUpdateCalls.find(
+			(call) => call.table === oauthCodesTable && call.set.usedAt === null,
+		);
+		expect(reopenCall).toBeTruthy();
+	});
+
+	it('review finding (P2): the reopen predicate requires usedAt to still hold the exact value this handler wrote, so a concurrent revocation is not silently undone', async () => {
+		// `revokeUserClientGrant`/`revokeAllUserGrants` (`consent-inventory.ts`)
+		// now overwrite `used_at` unconditionally for every not-yet-expired
+		// code, rather than skipping one that is already non-null. Before
+		// this fix, revocation skipped an already-consumed code entirely,
+		// and this `UPDATE` had no predicate at all beyond the code's own
+		// hash -- it would have silently cleared `usedAt` back to `null`
+		// regardless of a concurrent revocation, reopening a code the user
+		// had just told the server to kill. Scoping the reopen to the exact
+		// `usedAt` value this handler itself wrote means a revocation that
+		// overwrites that value first makes the reopen match no row.
+		seedValidAuthorizationCode();
+		mockInsertShouldThrow = true;
+
+		await expect(handleOauthTokenPost(validCodeGrantContext())).rejects.toThrow(
+			'simulated insert failure',
+		);
+
+		const reopenCall = mockUpdateCalls.find(
+			(call) => call.table === oauthCodesTable && call.set.usedAt === null,
+		);
+		expect(reopenCall).toBeTruthy();
+		const predicate = reopenCall!.where as Array<{ column?: unknown; value?: unknown }>;
+		expect(Array.isArray(predicate)).toBe(true);
+		expect(predicate).toHaveLength(2);
+		// The reopen must be scoped to this exact code row...
 		expect(
-			mockUpdateCalls.some((call) => call.table === oauthCodesTable && call.set.usedAt === null),
+			predicate.some((clause) => clause.column === oauthCodesTable.code && 'value' in clause),
+		).toBe(true);
+		// ...and must only clear `usedAt` if it still holds exactly the value
+		// this handler itself wrote when it consumed the code (never an
+		// unconditional clear).
+		expect(
+			predicate.some((clause) => clause.column === oauthCodesTable.usedAt && 'value' in clause),
 		).toBe(true);
 	});
 });
