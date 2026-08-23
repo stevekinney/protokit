@@ -38,8 +38,12 @@ mock.module('drizzle-orm', () => ({
 	isNull: (column: unknown) => ({ column }),
 }));
 
+const hashCredentialCalls: string[] = [];
 mock.module('@web/lib/hash-credential', () => ({
-	hashCredential: (value: string) => `hashed:${value}`,
+	hashCredential: (value: string) => {
+		hashCredentialCalls.push(value);
+		return `hashed:${value}`;
+	},
 }));
 
 mock.module('@web/lib/mcp-handler', () => ({
@@ -188,6 +192,37 @@ describe('handleMcpRequestWithAuthentication', () => {
 		});
 		const response = await handleMcpRequestWithAuthentication(context);
 		expect(response.status).toBe(200);
+	});
+
+	// Round 17 review (P2): RFC 7235 §2.1 permits one or more spaces between
+	// the auth-scheme and the credentials (`1*SP`), not exactly one. A
+	// compliant client sending `Authorization: Bearer   <token>` (multiple
+	// spaces) must still authenticate -- the extra spaces must never become
+	// part of the hashed token.
+	it('delegates to MCP handler when multiple spaces separate the scheme and the token', async () => {
+		mockTokenResult = [
+			{
+				accessToken: 'hashed:valid-token',
+				clientId: 'client-1',
+				userId: 'user-1',
+				scope: 'mcp:read',
+				resource: 'http://localhost:3000/mcp',
+				revokedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+		hashCredentialCalls.length = 0;
+		const context = createContext({
+			headers: { authorization: 'Bearer   valid-token' },
+		});
+		const response = await handleMcpRequestWithAuthentication(context);
+		expect(response.status).toBe(200);
+		// The mocked database query ignores its filter arguments and always
+		// resolves `mockTokenResult`, so a passing `response.status` alone
+		// would not prove the token was parsed correctly. Assert directly on
+		// what was hashed: it must be exactly "valid-token", with no leading
+		// whitespace retained from the multi-space separator.
+		expect(hashCredentialCalls).toEqual(['valid-token']);
 	});
 
 	it('returns 401 when the token was issued for a different resource', async () => {

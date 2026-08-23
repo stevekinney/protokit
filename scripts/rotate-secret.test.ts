@@ -212,14 +212,36 @@ describe('planSessionSecretRailwayRotation', () => {
 	test('always includes SESSION_SIGNING_SECRET, and includes SESSION_SIGNING_SECRET_PREVIOUS only when an overlap value exists', () => {
 		const withOverlap = planSessionSecretRailwayRotation('next-secret', 'previous-secret');
 		expect(withOverlap).toEqual([
-			{ action: 'set', key: 'SESSION_SIGNING_SECRET', value: 'next-secret' },
 			{ action: 'set', key: 'SESSION_SIGNING_SECRET_PREVIOUS', value: 'previous-secret' },
+			{ action: 'set', key: 'SESSION_SIGNING_SECRET', value: 'next-secret' },
 		]);
 
 		const withoutOverlap = planSessionSecretRailwayRotation('next-secret', undefined);
 		expect(withoutOverlap).toEqual([
 			{ action: 'set', key: 'SESSION_SIGNING_SECRET', value: 'next-secret' },
 		]);
+	});
+
+	// B4 regression: `applyRailwayOperations` runs these operations in array order, one
+	// `railway variable set` call each. If the SESSION_SIGNING_SECRET operation ran first and the
+	// SESSION_SIGNING_SECRET_PREVIOUS operation then failed or the process was interrupted between
+	// the two calls, the running Railway service would be left accepting ONLY the new key --
+	// immediately invalidating every existing session, CSRF token, and pending Google OAuth state
+	// signed under the outgoing key, despite the promised overlap window
+	// (`rotateSessionSigningSecretLocally`'s whole purpose). Installing
+	// SESSION_SIGNING_SECRET_PREVIOUS first means an interruption after only the first call still
+	// leaves Railway accepting BOTH keys (the safe, already-overlapping state), never neither.
+	test('installs SESSION_SIGNING_SECRET_PREVIOUS before switching SESSION_SIGNING_SECRET, so an interruption between the two calls never leaves only the new key accepted', () => {
+		const operations = planSessionSecretRailwayRotation('next-secret', 'previous-secret');
+		const previousIndex = operations.findIndex(
+			(operation) => operation.key === 'SESSION_SIGNING_SECRET_PREVIOUS',
+		);
+		const currentIndex = operations.findIndex(
+			(operation) => operation.key === 'SESSION_SIGNING_SECRET',
+		);
+		expect(previousIndex).toBeGreaterThanOrEqual(0);
+		expect(currentIndex).toBeGreaterThanOrEqual(0);
+		expect(previousIndex).toBeLessThan(currentIndex);
 	});
 });
 

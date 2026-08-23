@@ -1973,7 +1973,28 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 
 	const tokenHash = hashCredential(token);
 
-	if (token_type_hint !== 'refresh_token') {
+	/**
+	 * A2: revokes a live access token owned by the authenticated client and,
+	 * best-effort, the refresh token paired with it (the row whose
+	 * `access_token_hash` references this exact access token). Without this,
+	 * revoking a live access token left its paired refresh token completely
+	 * untouched -- a client could immediately call `/oauth/token` with that
+	 * still-live refresh token and mint a replacement access token, undoing
+	 * the revocation the user just requested.
+	 *
+	 * Mirrors the paired-refresh-token-revoke's own established shape below
+	 * (`tryRevokeRefreshTokenAndItsPairedAccessToken`), not a new, stronger
+	 * consistency guarantee: `neon-http` has no multi-statement transaction
+	 * support, so the two `UPDATE`s cannot be folded into one atomic
+	 * statement without introducing a CTE this codebase does not otherwise
+	 * use for this pair. The primary mutation (revoking the presented token)
+	 * is the authoritative, mutex-guarded `UPDATE ... WHERE ... RETURNING`;
+	 * the paired revoke is best-effort, logged and swallowed on failure, same
+	 * as the reverse direction -- RFC 7009 §2.2's unconditional success
+	 * response must never turn into a 500 over a cleanup step for a request
+	 * that already succeeded.
+	 */
+	async function tryRevokeAccessTokenAndItsPairedRefreshToken(): Promise<boolean> {
 		const [revokedAccessToken] = await database
 			.update(schema.oauthTokens)
 			.set({ revokedAt: new Date() })
@@ -1986,13 +2007,30 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 			)
 			.returning();
 
-		if (revokedAccessToken) {
-			metricsCollector.recordEvent('revocation', 'access_token_revoked');
-			return new Response(null, { status: 200, headers: revocationResponseHeaders });
+		if (!revokedAccessToken) return false;
+
+		try {
+			await database
+				.update(schema.oauthRefreshTokens)
+				.set({ revokedAt: new Date() })
+				.where(
+					and(
+						eq(schema.oauthRefreshTokens.accessTokenHash, tokenHash),
+						isNull(schema.oauthRefreshTokens.revokedAt),
+					),
+				);
+		} catch (error) {
+			logger.error(
+				{ err: error },
+				'Failed to revoke the paired refresh token after a successful access token revocation',
+			);
 		}
+
+		metricsCollector.recordEvent('revocation', 'access_token_revoked');
+		return true;
 	}
 
-	if (token_type_hint !== 'access_token') {
+	async function tryRevokeRefreshTokenAndItsPairedAccessToken(): Promise<boolean> {
 		const [revokedRefreshToken] = await database
 			.update(schema.oauthRefreshTokens)
 			.set({ revokedAt: new Date() })
@@ -2005,55 +2043,57 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 			)
 			.returning();
 
-		if (revokedRefreshToken) {
-			// Round 10 review (P2): same shape as the refresh grant's own
-			// post-mutex access-token revoke (see that function's comment for
-			// the full argument) -- the refresh token above is already
-			// revoked and committed by the time this runs, so a failure here
-			// must not turn RFC 7009's own success response into a 500. This
-			// call is best-effort cleanup of the access token the refresh
-			// token was paired with; the caller's actual request (revoke this
-			// refresh token) already succeeded.
-			try {
-				await database
-					.update(schema.oauthTokens)
-					.set({ revokedAt: new Date() })
-					.where(
-						and(
-							eq(schema.oauthTokens.accessToken, revokedRefreshToken.accessTokenHash),
-							isNull(schema.oauthTokens.revokedAt),
-						),
-					);
-			} catch (error) {
-				logger.error(
-					{ err: error },
-					'Failed to revoke the paired access token after a successful refresh token revocation',
-				);
-			}
+		if (!revokedRefreshToken) return false;
 
-			metricsCollector.recordEvent('revocation', 'refresh_token_revoked');
-			return new Response(null, { status: 200, headers: revocationResponseHeaders });
+		// Round 10 review (P2): same shape as the refresh grant's own
+		// post-mutex access-token revoke (see that function's comment for
+		// the full argument) -- the refresh token above is already
+		// revoked and committed by the time this runs, so a failure here
+		// must not turn RFC 7009's own success response into a 500. This
+		// call is best-effort cleanup of the access token the refresh
+		// token was paired with; the caller's actual request (revoke this
+		// refresh token) already succeeded.
+		try {
+			await database
+				.update(schema.oauthTokens)
+				.set({ revokedAt: new Date() })
+				.where(
+					and(
+						eq(schema.oauthTokens.accessToken, revokedRefreshToken.accessTokenHash),
+						isNull(schema.oauthTokens.revokedAt),
+					),
+				);
+		} catch (error) {
+			logger.error(
+				{ err: error },
+				'Failed to revoke the paired access token after a successful refresh token revocation',
+			);
 		}
 
-		// P2 review finding: the mutating predicate above deliberately
-		// excludes an already-revoked row (`isNull(revokedAt)`), so it
-		// matches nothing for a refresh token that was already rotated away
-		// -- the exact same "presented a stale, previously-issued refresh
-		// token" signal `handleOauthTokenRefreshGrant`'s own
-		// `respondToRefreshTokenNotFound` already treats as family
-		// compromise. Without this, a caller could dodge that reuse defense
-		// entirely just by calling `/oauth/revoke` instead of `/oauth/token`
-		// with the same stale token, leaving the live descendant refresh and
-		// access tokens usable despite an explicit revocation request for
-		// their ancestor. Read-only lookup by hash, bound to the
-		// authenticated client -- the same binding the mutating predicate
-		// above uses -- so this can only ever revoke a family the
-		// authenticated client actually owns, never one merely guessed at by
-		// presenting another client's stale token value (see the sibling
-		// cross-client test on the refresh grant for why that binding
-		// matters). RFC 7009 §2.2 is preserved either way: the response
-		// below stays the same unconditional 200 regardless of what this
-		// finds.
+		metricsCollector.recordEvent('revocation', 'refresh_token_revoked');
+		return true;
+	}
+
+	// P2 review finding: the mutating predicate above deliberately
+	// excludes an already-revoked row (`isNull(revokedAt)`), so it
+	// matches nothing for a refresh token that was already rotated away
+	// -- the exact same "presented a stale, previously-issued refresh
+	// token" signal `handleOauthTokenRefreshGrant`'s own
+	// `respondToRefreshTokenNotFound` already treats as family
+	// compromise. Without this, a caller could dodge that reuse defense
+	// entirely just by calling `/oauth/revoke` instead of `/oauth/token`
+	// with the same stale token, leaving the live descendant refresh and
+	// access tokens usable despite an explicit revocation request for
+	// their ancestor. Read-only lookup by hash, bound to the
+	// authenticated client -- the same binding the mutating predicate
+	// above uses -- so this can only ever revoke a family the
+	// authenticated client actually owns, never one merely guessed at by
+	// presenting another client's stale token value (see the sibling
+	// cross-client test on the refresh grant for why that binding
+	// matters). RFC 7009 §2.2 is preserved either way: the response
+	// below stays the same unconditional 200 regardless of what this
+	// finds.
+	async function checkForStaleRefreshTokenReplay(): Promise<void> {
 		const [existingByHash] = await database
 			.select({
 				familyId: schema.oauthRefreshTokens.familyId,
@@ -2083,6 +2123,30 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 			metricsCollector.recordEvent('revocation', 'replay_detected');
 		}
 	}
+
+	// A1 / RFC 7009 §2.1: "token_type_hint is OPTIONAL... the authorization
+	// server MAY use it... to optimize the token lookup. ... the
+	// authorization server MUST still be prepared to handle a token that
+	// does not match the hint by extending its search across all of the
+	// supported token types." A hint therefore only chooses SEARCH ORDER --
+	// it must never suppress the fallback search. Previously, a refresh
+	// token presented with `token_type_hint=access_token` (or the reverse)
+	// hit an access-token lookup that missed and then the refresh-token
+	// branch below was skipped entirely (it was gated on
+	// `token_type_hint !== 'access_token'`), leaving the credential live and
+	// returning the RFC's indistinguishable 200 as if it had been revoked.
+	const tryRefreshTokenFirst = token_type_hint === 'refresh_token';
+	const attemptsInOrder = tryRefreshTokenFirst
+		? [tryRevokeRefreshTokenAndItsPairedAccessToken, tryRevokeAccessTokenAndItsPairedRefreshToken]
+		: [tryRevokeAccessTokenAndItsPairedRefreshToken, tryRevokeRefreshTokenAndItsPairedAccessToken];
+
+	for (const attempt of attemptsInOrder) {
+		if (await attempt()) {
+			return new Response(null, { status: 200, headers: revocationResponseHeaders });
+		}
+	}
+
+	await checkForStaleRefreshTokenReplay();
 
 	// RFC 7009 §2.2: return 200 even if the token was not found, was already
 	// revoked, or belongs to a different client than the one authenticated

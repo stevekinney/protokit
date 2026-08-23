@@ -103,7 +103,11 @@ describeWithRedis(
 				accessToken: hashCredential(accessToken),
 				clientId,
 				userId,
-				scope: 'profile',
+				// A real scope from the server's vocabulary (`packages/mcp/src/scopes.ts`).
+				// This used to seed `'profile'`, which is not a scope this server
+				// issues -- it only passed because `subscriptions/listen` was not
+				// scope-checked at all (the round 17 bypass this gate closes).
+				scope: 'profile:read',
 				resource: `${baseUrl}/mcp`,
 				expiresAt: new Date(Date.now() + 60 * 60 * 1000),
 			});

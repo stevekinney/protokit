@@ -140,6 +140,60 @@ export type ClientMetadataDocumentFetchDependencies = {
 // would tie up the handler well past `cimdFetchTimeoutMs` even though that constant is applied to
 // the fetch that follows. `withDeadline` races the lookup against a timer so the DNS phase is
 // bounded exactly like the fetch phase.
+//
+// `withDeadline` only ever walks away from the lookup -- it cannot cancel the underlying
+// `dns.lookup` call (Node's `getaddrinfo`, serviced by the libuv threadpool). A hostname whose DNS
+// resolution never completes (a black-holed authoritative server, for example) therefore leaves
+// that lookup running for its own resolver-level timeout regardless of what this file does. Two
+// bounds below keep repeated authorization requests from turning that into an ever-growing set of
+// outstanding resolver operations:
+//
+//  - `inFlightDnsLookupsByHostname` coalesces concurrent lookups for the *same* hostname into one
+//    underlying `dns.lookup` call. This is a pure in-flight dedupe, not a result cache: the entry
+//    is removed the instant the lookup settles (success or failure), so it never serves a result
+//    beyond that one lookup's own lifetime and adds no DNS-rebinding or staleness exposure. Do not
+//    turn this into a TTL'd result cache -- caching a failed or successful resolution here would
+//    let a since-rotated or rebound record keep being trusted after the record itself changed.
+//  - `dnsLookupConcurrencyLimit` bounds how many *distinct*-hostname lookups may be outstanding at
+//    once. A request that arrives once the limit is already saturated is rejected immediately
+//    (mapped to the same `dns_resolution_failed` outcome as any other DNS failure below, which
+//    `fetchClientIdMetadataDocument` turns into "no usable document" for the caller) rather than
+//    queued -- an unbounded queue would just be the same unbounded resource wearing a different
+//    hat.
+const dnsLookupConcurrencyLimit = 16;
+let outstandingDnsLookupCount = 0;
+const inFlightDnsLookupsByHostname = new Map<
+	string,
+	Promise<{ address: string; family: number }[]>
+>();
+
+class DnsLookupConcurrencyLimitExceededError extends Error {
+	constructor() {
+		super('DNS lookup concurrency limit exceeded');
+		this.name = 'DnsLookupConcurrencyLimitExceededError';
+	}
+}
+
+function boundedCoalescedLookup(
+	hostname: string,
+	lookupImpl: DnsLookupAllFunction,
+): Promise<{ address: string; family: number }[]> {
+	const inFlight = inFlightDnsLookupsByHostname.get(hostname);
+	if (inFlight) return inFlight;
+
+	if (outstandingDnsLookupCount >= dnsLookupConcurrencyLimit) {
+		return Promise.reject(new DnsLookupConcurrencyLimitExceededError());
+	}
+
+	outstandingDnsLookupCount += 1;
+	const lookupPromise = lookupImpl(hostname, { all: true, verbatim: true }).finally(() => {
+		outstandingDnsLookupCount -= 1;
+		inFlightDnsLookupsByHostname.delete(hostname);
+	});
+
+	inFlightDnsLookupsByHostname.set(hostname, lookupPromise);
+	return lookupPromise;
+}
 
 async function assertHostnameIsPubliclyRoutable(
 	hostname: string,
@@ -155,7 +209,7 @@ async function assertHostnameIsPubliclyRoutable(
 
 	let records: { address: string }[];
 	try {
-		records = await withDeadline(lookupImpl(hostname, { all: true, verbatim: true }), dnsTimeoutMs);
+		records = await withDeadline(boundedCoalescedLookup(hostname, lookupImpl), dnsTimeoutMs);
 	} catch {
 		throw new ClientMetadataDocumentFetchError('dns_resolution_failed');
 	}
@@ -420,4 +474,16 @@ export async function fetchClientIdMetadataDocument(
 /** Test-only: clears the module-local cache so tests don't leak state across files/cases. */
 export function clearClientIdMetadataDocumentCacheForTests(): void {
 	documentCache.clear();
+}
+
+/**
+ * Test-only: resets the DNS lookup concurrency limiter's process-global
+ * state. `outstandingDnsLookupCount` and `inFlightDnsLookupsByHostname` are
+ * shared across every test file in the same process -- without this, a test
+ * that saturates the limiter (or leaves a lookup in flight past its own
+ * test's lifetime) would leak that state into the next test file's run.
+ */
+export function resetDnsLookupConcurrencyLimiterForTests(): void {
+	outstandingDnsLookupCount = 0;
+	inFlightDnsLookupsByHostname.clear();
 }

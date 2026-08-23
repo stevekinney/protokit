@@ -3,6 +3,7 @@ import {
 	clearClientIdMetadataDocumentCacheForTests,
 	fetchClientIdMetadataDocument,
 	isClientIdMetadataDocumentUrl,
+	resetDnsLookupConcurrencyLimiterForTests,
 } from '@web/lib/client-metadata-documents';
 
 const validDocumentUrl = 'https://app.example.com/oauth/client.json';
@@ -58,6 +59,14 @@ describe('isClientIdMetadataDocumentUrl', () => {
 describe('fetchClientIdMetadataDocument', () => {
 	beforeEach(() => {
 		clearClientIdMetadataDocumentCacheForTests();
+		// The DNS lookup concurrency limiter's in-flight map and outstanding
+		// count are process-global module state (see resetDnsLookupConcurrencyLimiterForTests's
+		// own doc comment). Several cases below (including the pre-existing
+		// "never resolves" case) intentionally leave a lookup permanently
+		// pending for the same hostname `validDocumentUrl` uses; without this
+		// reset, that stuck entry would coalesce into -- and hang -- every
+		// later test that looks up the same hostname.
+		resetDnsLookupConcurrencyLimiterForTests();
 	});
 
 	const validDocumentBody = {
@@ -410,6 +419,94 @@ describe('fetchClientIdMetadataDocument', () => {
 			});
 			expect(result).not.toBeNull();
 			expect(observedRedirectMode).toBe('error');
+		});
+
+		describe('DNS lookup resource bounding', () => {
+			it('coalesces concurrent lookups for the same hostname into a single underlying dns.lookup call', async () => {
+				// Two concurrent authorization requests for distinct CIMD document
+				// URLs on the same hostname must not each start their own
+				// uncancellable dns.lookup -- the second should reuse the first's
+				// in-flight lookup rather than issuing a duplicate one.
+				let lookupCallCount = 0;
+				let resolveLookup!: (records: { address: string; family: number }[]) => void;
+				const lookupImpl = () => {
+					lookupCallCount += 1;
+					return new Promise<{ address: string; family: number }[]>((resolve) => {
+						resolveLookup = resolve;
+					});
+				};
+
+				const firstUrl = 'https://app.example.com/oauth/client-one.json';
+				const secondUrl = 'https://app.example.com/oauth/client-two.json';
+
+				const firstPromise = fetchClientIdMetadataDocument(firstUrl, {
+					fetchImpl: async () => jsonResponse({ ...validDocumentBody, client_id: firstUrl }),
+					lookupImpl,
+				});
+				const secondPromise = fetchClientIdMetadataDocument(secondUrl, {
+					fetchImpl: async () => jsonResponse({ ...validDocumentBody, client_id: secondUrl }),
+					lookupImpl,
+				});
+
+				// Let both calls reach the (still-pending) lookup before resolving it.
+				await Promise.resolve();
+				await Promise.resolve();
+				expect(lookupCallCount).toBe(1);
+
+				resolveLookup([publicAddress]);
+				const [first, second] = await Promise.all([firstPromise, secondPromise]);
+				expect(first?.clientId).toBe(firstUrl);
+				expect(second?.clientId).toBe(secondUrl);
+				expect(lookupCallCount).toBe(1);
+			});
+
+			it('fails closed (rejects the authorization request) once the DNS lookup concurrency limit is saturated, instead of queuing', async () => {
+				// Saturate the limiter with lookups for distinct hostnames that
+				// never resolve -- simulating an attacker holding open many
+				// uncancellable resolver operations at once, as the report
+				// describes. A request that arrives once the limit is reached
+				// must fail fast (mapped to "no usable document"), not queue
+				// behind the saturating requests.
+				const stuckLookup = () => new Promise<{ address: string; family: number }[]>(() => {});
+
+				const saturatingPromises = Array.from({ length: 16 }, (_, index) =>
+					fetchClientIdMetadataDocument(
+						`https://saturating-host-${index}.example.com/client.json`,
+						{
+							fetchImpl: async () => jsonResponse(validDocumentBody),
+							lookupImpl: stuckLookup,
+							dnsTimeoutMs: 200, // short so this test doesn't leave a long-lived timer behind
+						},
+					),
+				);
+
+				// Give every saturating lookup a chance to register itself before
+				// the one over the limit is issued.
+				await Promise.resolve();
+				await Promise.resolve();
+
+				const start = Date.now();
+				const overLimitResult = await fetchClientIdMetadataDocument(
+					'https://one-too-many.example.com/client.json',
+					{
+						fetchImpl: async () => jsonResponse(validDocumentBody),
+						lookupImpl: stuckLookup,
+						dnsTimeoutMs: 5000,
+					},
+				);
+				const elapsedMs = Date.now() - start;
+
+				expect(overLimitResult).toBeNull();
+				// Rejected immediately by the limiter, not queued for anywhere
+				// near the 5-second dnsTimeoutMs budget given to this request.
+				expect(elapsedMs).toBeLessThan(1000);
+
+				// Clean up: the 16 saturating lookups never resolve on their own in
+				// this test, so explicitly reset the limiter rather than leaving
+				// them to hang until dnsTimeoutMs (which is not awaited here).
+				resetDnsLookupConcurrencyLimiterForTests();
+				void saturatingPromises;
+			});
 		});
 	});
 });

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, test, expect } from 'bun:test';
 import {
+	applyPlannedRailwayVariables,
 	collectRailwayProductionStartupFailures,
 	isValidNeonRegionIdentifier,
 	isValidProductionBaseUrl,
@@ -8,6 +9,7 @@ import {
 	isValidTrustedProxyCidr,
 	isValidTrustedProxyCidrList,
 	isValidTrustedProxyHeader,
+	isValidTrustedProxyHopCount,
 	planRailwayVariables,
 	RAILWAY_EXCLUDED_ENVIRONMENT_KEYS,
 	shouldPromptForBaseUrl,
@@ -226,6 +228,17 @@ describe('isValidProductionRedisUrl', () => {
 		expect(isValidProductionRedisUrl('not a url')).toBe(false);
 		expect(isValidProductionRedisUrl('')).toBe(false);
 	});
+
+	// B3 regression: `databaseUrlFailures` (production-startup-requirements.ts) already rejects
+	// any host ending in `.localtest.me` — the local Docker/test-stack domain this repository's
+	// own test scripts use (`db.localtest.me`) — but this setup-side Redis validator only checked
+	// a small fixed set of loopback hostnames and let a `.localtest.me` host straight through,
+	// so `setupRailway` could push a Redis endpoint that resolves to the local test stack as
+	// though it were a real production host.
+	test('rejects a .localtest.me host, matching the database check', () => {
+		expect(isValidProductionRedisUrl('rediss://redis.localtest.me:6380')).toBe(false);
+		expect(isValidProductionRedisUrl('rediss://cache.db.localtest.me:6380')).toBe(false);
+	});
 });
 
 describe('isValidTrustedProxyCidr / isValidTrustedProxyCidrList', () => {
@@ -297,6 +310,24 @@ describe('isValidTrustedProxyHeader', () => {
 		expect(isValidTrustedProxyHeader('bogus')).toBe(false);
 		expect(isValidTrustedProxyHeader('')).toBe(false);
 		expect(isValidTrustedProxyHeader(undefined)).toBe(false);
+	});
+});
+
+describe('isValidTrustedProxyHopCount', () => {
+	// Mirrors TRUSTED_PROXY_HOP_COUNT's schema (applications/web/src/environment-schema.ts):
+	// z.coerce.number().int().positive() -- a positive integer, coerced from a string.
+	test('accepts positive integers', () => {
+		expect(isValidTrustedProxyHopCount('1')).toBe(true);
+		expect(isValidTrustedProxyHopCount('2')).toBe(true);
+		expect(isValidTrustedProxyHopCount('42')).toBe(true);
+	});
+
+	test('rejects zero, negative, fractional, and nonnumeric values', () => {
+		expect(isValidTrustedProxyHopCount('0')).toBe(false);
+		expect(isValidTrustedProxyHopCount('-1')).toBe(false);
+		expect(isValidTrustedProxyHopCount('1.5')).toBe(false);
+		expect(isValidTrustedProxyHopCount('not-a-number')).toBe(false);
+		expect(isValidTrustedProxyHopCount('')).toBe(false);
 	});
 });
 
@@ -412,6 +443,112 @@ describe('trusted proxy setup phase ordering', () => {
 			});
 			expect(failures).toEqual([]);
 		});
+
+		// B2 regression: `planRailwayVariables` copies MCP_ALLOWED_ORIGINS to Railway verbatim
+		// (the generic .env.local copy has no reason to exclude it), but this collector never
+		// passed `mcpAllowedOrigins` into `collectProductionStartupFailures`'s configuration
+		// object -- so a value `findInvalidConfiguredOrigins` would reject (a path, not a bare
+		// origin) sailed through the gate silently, even though real startup
+		// (`startup-invariants.ts`) passes the exact same value and rejects it.
+		test('reports a failure when MCP_ALLOWED_ORIGINS contains an entry that is not a canonical Origin', () => {
+			const variables = validProductionVariables();
+			variables.MCP_ALLOWED_ORIGINS = 'https://claude.ai/callback';
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures.some((failure) => failure.includes('MCP_ALLOWED_ORIGINS'))).toBe(true);
+		});
+
+		test('reports no failure when MCP_ALLOWED_ORIGINS is a valid canonical origin', () => {
+			const variables = validProductionVariables();
+			variables.MCP_ALLOWED_ORIGINS = 'https://claude.ai';
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures).toEqual([]);
+		});
+
+		// B1 regression: `planRailwayVariables` also copies TRUSTED_PROXY_HOP_COUNT to Railway
+		// verbatim when it is present in `.env.local`, but nothing in this collector ever
+		// validated it -- the environment schema
+		// (`applications/web/src/environment-schema.ts`) requires a positive integer and refuses
+		// to boot otherwise, so a value of "0" or a nonnumeric string reached this gate with no
+		// signal at all.
+		test('reports a failure when TRUSTED_PROXY_HOP_COUNT is zero', () => {
+			const variables = validProductionVariables();
+			variables.TRUSTED_PROXY_HOP_COUNT = '0';
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures.some((failure) => failure.includes('TRUSTED_PROXY_HOP_COUNT'))).toBe(true);
+		});
+
+		test('reports a failure when TRUSTED_PROXY_HOP_COUNT is nonnumeric', () => {
+			const variables = validProductionVariables();
+			variables.TRUSTED_PROXY_HOP_COUNT = 'not-a-number';
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures.some((failure) => failure.includes('TRUSTED_PROXY_HOP_COUNT'))).toBe(true);
+		});
+
+		test('reports no failure when TRUSTED_PROXY_HOP_COUNT is a valid positive integer', () => {
+			const variables = validProductionVariables();
+			variables.TRUSTED_PROXY_HOP_COUNT = '2';
+			const failures = collectRailwayProductionStartupFailures(variables, {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures).toEqual([]);
+		});
+
+		test('reports no failure when TRUSTED_PROXY_HOP_COUNT is unset (optional, defaults at boot)', () => {
+			const failures = collectRailwayProductionStartupFailures(validProductionVariables(), {
+				REDIS_URL: 'rediss://production-host.example.com:6380',
+			});
+			expect(failures).toEqual([]);
+		});
+	});
+
+	// Class-level regression: B1 and B2 were both instances of the same defect -- a planned
+	// production variable (`MCP_ALLOWED_ORIGINS`, `TRUSTED_PROXY_HOP_COUNT`) that
+	// `planRailwayVariables` copies to Railway, but that `collectRailwayProductionStartupFailures`
+	// never validated because the argument object it hand-builds for
+	// `collectProductionStartupFailures` simply omitted the corresponding field. Two prior rounds
+	// patched this same omission for other fields (BASE_URL, TRUSTED_PROXY_CIDRS/HEADER,
+	// REDIS_URL). Rather than trusting the next reviewer to notice a fourth omission by eye, this
+	// reads BOTH source files and mechanically confirms every field
+	// `ProductionStartupConfiguration` (the shared, single source of truth this gate is supposed
+	// to enforce in full -- production-startup-requirements.ts) declares is actually referenced
+	// by name inside `collectRailwayProductionStartupFailures`'s call to
+	// `collectProductionStartupFailures`. A future field added to that interface (as
+	// `mcpAllowedOrigins` was in round 16) and never wired into this call fails this test
+	// immediately, instead of silently reopening the same gate-omission bug class.
+	test('every ProductionStartupConfiguration field is wired into collectRailwayProductionStartupFailures', () => {
+		const requirementsSource = readFileSync(
+			new URL('../applications/web/src/lib/production-startup-requirements.ts', import.meta.url),
+			'utf8',
+		);
+		const interfaceBody = requirementsSource.slice(
+			requirementsSource.indexOf('export interface ProductionStartupConfiguration {'),
+			requirementsSource.indexOf('export function collectProductionStartupFailures('),
+		);
+		// Field declarations look like `fieldName: type;` or `fieldName?: type;` at the top level
+		// of the interface -- this intentionally only matches lines that start a declaration
+		// (leading whitespace then an identifier then optional `?` then `:`), so it does not
+		// false-match property names mentioned inside doc comments above each field.
+		const fieldNames = [...interfaceBody.matchAll(/^\s*([a-zA-Z][a-zA-Z0-9]*)\??:\s/gm)].map(
+			(match) => match[1],
+		);
+		expect(fieldNames.length).toBeGreaterThan(0);
+
+		const setupSource = readFileSync(new URL('./setup.ts', import.meta.url), 'utf8');
+		const callBody = setupSource.slice(
+			setupSource.indexOf('collectProductionStartupFailures({'),
+			setupSource.indexOf('});', setupSource.indexOf('collectProductionStartupFailures({')),
+		);
+
+		const missingFields = fieldNames.filter((field) => !callBody.includes(`${field}:`));
+		expect(missingFields).toEqual([]);
 	});
 });
 
@@ -464,5 +601,115 @@ describe('GitHub CI/CD secrets phase requires NEON_API_KEY and RAILWAY_TOKEN', (
 
 	test('collects and stores RAILWAY_TOKEN', () => {
 		expect(setupGithubSecretsBody).toContain("setGithubSecret('RAILWAY_TOKEN', railwayToken)");
+	});
+});
+
+describe('applyPlannedRailwayVariables', () => {
+	// B5 regression: `setupRailway` previously caught each `railway variable set` failure inline,
+	// printed a warning, and kept going -- the loop always finished and the unconditional success
+	// message printed afterward, even when a required value (SESSION_SIGNING_SECRET, DATABASE_URL,
+	// NODE_ENV, ...) failed to set. This is the extracted, pure decision logic: which keys failed,
+	// reported by NAME ONLY -- never a value, since these scripts handle secrets.
+	test('returns no failed keys when every setVariable call succeeds', () => {
+		const applied: Array<[string, string]> = [];
+		const failedKeys = applyPlannedRailwayVariables(
+			[
+				['NODE_ENV', 'production'],
+				['DATABASE_URL', 'postgres://x'],
+			],
+			(key, value) => {
+				applied.push([key, value]);
+			},
+		);
+		expect(failedKeys).toEqual([]);
+		expect(applied).toEqual([
+			['NODE_ENV', 'production'],
+			['DATABASE_URL', 'postgres://x'],
+		]);
+	});
+
+	test('collects the key names (never the values) for every setVariable call that throws', () => {
+		const failedKeys = applyPlannedRailwayVariables(
+			[
+				['NODE_ENV', 'production'],
+				['SESSION_SIGNING_SECRET', 'super-secret-value'],
+				['DATABASE_URL', 'postgres://x'],
+			],
+			(key) => {
+				if (key === 'SESSION_SIGNING_SECRET') throw new Error('railway CLI failed');
+			},
+		);
+		expect(failedKeys).toEqual(['SESSION_SIGNING_SECRET']);
+	});
+
+	test('keeps attempting every remaining key after one fails, rather than stopping early', () => {
+		const attempted: string[] = [];
+		const failedKeys = applyPlannedRailwayVariables(
+			[
+				['A', '1'],
+				['B', '2'],
+				['C', '3'],
+			],
+			(key) => {
+				attempted.push(key);
+				if (key === 'B') throw new Error('transient failure');
+			},
+		);
+		expect(attempted).toEqual(['A', 'B', 'C']);
+		expect(failedKeys).toEqual(['B']);
+	});
+});
+
+describe('setupRailway fails the phase when any Railway variable fails to set', () => {
+	// B5 regression, source-inspection half: `setupRailway` itself is unexported, interactive, and
+	// side-effecting (it shells out to the real `railway` CLI), so — matching this file's existing
+	// convention for that class of function (see the BASE_URL/TRUSTED_PROXY_* phase-ordering tests
+	// above) — this reads the real source rather than re-implementing the function, to confirm the
+	// unconditional success message from before the fix cannot be reached without checking
+	// `applyPlannedRailwayVariables`'s result first.
+	const source = readFileSync(new URL('./setup.ts', import.meta.url), 'utf8');
+	const railwayBody = source.slice(
+		source.indexOf('async function setupRailway()'),
+		source.indexOf('async function setupGithubSecrets'),
+	);
+
+	test('uses applyPlannedRailwayVariables rather than swallowing each failure inline', () => {
+		expect(railwayBody).toContain('applyPlannedRailwayVariables(');
+	});
+
+	test('checks for failed keys and sets process.exitCode before the success message can print', () => {
+		const failedKeysCheckIndex = railwayBody.indexOf('failedKeys.length > 0');
+		const successMessageIndex = railwayBody.indexOf(
+			"'Railway environment variables configured (NODE_ENV forced to production).'",
+		);
+		expect(failedKeysCheckIndex).toBeGreaterThan(-1);
+		expect(successMessageIndex).toBeGreaterThan(-1);
+		expect(failedKeysCheckIndex).toBeLessThan(successMessageIndex);
+
+		const failureBranch = railwayBody.slice(
+			failedKeysCheckIndex,
+			railwayBody.indexOf('return;', failedKeysCheckIndex) + 'return;'.length,
+		);
+		expect(failureBranch).toContain('process.exitCode = 1');
+		expect(failureBranch).toContain('return;');
+	});
+});
+
+describe('setupRailway fails the phase when railway init itself fails', () => {
+	// B5 sibling: the outer catch around `railway init` (a failure before any variable-set call is
+	// even attempted) used to only `console.warn` and let the function return normally — exit code
+	// 0 — despite Railway never having been configured. Same "phase must fail, not report success"
+	// shape as the variable-set failures the source B5 report named.
+	const source = readFileSync(new URL('./setup.ts', import.meta.url), 'utf8');
+	const railwayBody = source.slice(
+		source.indexOf('async function setupRailway()'),
+		source.indexOf('async function setupGithubSecrets'),
+	);
+
+	test('sets process.exitCode when railway init fails', () => {
+		const outerCatchIndex = railwayBody.lastIndexOf('} catch {');
+		expect(outerCatchIndex).toBeGreaterThan(-1);
+		const outerCatchBody = railwayBody.slice(outerCatchIndex);
+		expect(outerCatchBody).toContain('process.exitCode = 1');
 	});
 });

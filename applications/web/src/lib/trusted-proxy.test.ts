@@ -268,6 +268,24 @@ describe('resolveNetworkIdentity', () => {
 		expect(identity).not.toBe('spoofed');
 	});
 
+	it('falls back to the trusted socket address when a malformed empty X-Forwarded-For element would otherwise absorb the missing hop', () => {
+		// Configured for 2 trusted hops, but only one proxy actually appends
+		// an address. A client can supply a malformed prefix ("spoofed,")
+		// so the header becomes "spoofed,, 198.51.100.9" -- three
+		// comma-delimited positions, the middle one blank. If the blank
+		// position were dropped before indexing (as `.filter(Boolean)`
+		// used to do), the array would collapse to two entries and hop
+		// count 2 would select "spoofed", the attacker-controlled value,
+		// instead of failing closed.
+		const identity = resolveNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ 'x-forwarded-for': 'spoofed,, 198.51.100.9' }),
+			configuration: { ...trustedXffConfiguration, trustedProxyHopCount: 2 },
+		});
+		expect(identity).toBe('10.0.0.5');
+		expect(identity).not.toBe('spoofed');
+	});
+
 	it('falls back to the trusted socket address when the selected Forwarded hop lacks a for= value', () => {
 		// Hop count 1 selects the last element, which is `by=proxy1` — a
 		// trusted hop that supplied no `for=` value. That must fail closed

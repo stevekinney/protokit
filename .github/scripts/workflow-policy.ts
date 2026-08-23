@@ -152,9 +152,10 @@ export function jobNeeds(job: WorkflowJob): string[] {
  * output — `needs.<upstreamJobName>.outputs.<outputName> == '<approvedValue>'`
  * — where `<upstreamJobName>` is one of the job's own `needs:` entries.
  *
- * Review finding (P2): the previous check, `/needs\.\w*(authoriz)/i`, was a
- * bare substring match against the whole `if:` string. Two ways that let an
- * unauthorized job through the audit as "gated":
+ * Review finding (P2, round sixteen): the previous check,
+ * `/needs\.\w*(authoriz)/i`, was a bare substring match against the whole
+ * `if:` string. Two ways that let an unauthorized job through the audit as
+ * "gated":
  *
  * - It never anchored the matched name to `needs:` — `needs.not_authorized`
  *   (an unrelated job name that merely contains "authoriz" as a substring)
@@ -165,9 +166,26 @@ export function jobNeeds(job: WorkflowJob): string[] {
  *   negation: this job runs precisely when authorization was REJECTED)
  *   matched identically to the correct `== 'true'` form, because the regex
  *   only checked that the output name appeared somewhere in the string.
+ *
+ * Review finding (P2, round seventeen): the round-sixteen fix tightened the
+ * comparison but was STILL a `.exec()` search for an acceptable substring
+ * anywhere inside `job.if`, not a validation of the complete condition. A
+ * disjunctive gate such as `needs.authorize.outputs.authorized == 'true' ||
+ * always()` (or `|| github.event_name == 'push'`, or a bare `always()`
+ * appended after the correct comparison) contains the accepted substring, so
+ * it matched and `isAuthorizationGated` returned true — yet GitHub evaluates
+ * that whole expression to `true` regardless of what `authorize` decided,
+ * because `||` short-circuits past a rejected authorization. A regex can
+ * always be defeated by wrapping the accepted fragment in a larger
+ * expression with an alternate truth path, so this is fixed by requiring
+ * the *entire* (trimmed) `if:` string to be nothing but the single positive
+ * comparison — fully anchored with `^`/`$`, no other characters, operators,
+ * or function calls permitted before or after it. Any `||`, `&&`, `!`,
+ * `always()`, or extra text anywhere in the condition now fails the match
+ * and the job is correctly reported as ungated.
  */
 const POSITIVE_AUTHORIZATION_CONDITION =
-	/needs\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*==\s*['"]true['"]/;
+	/^needs\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*==\s*['"]true['"]$/;
 
 /**
  * A job is authorization-gated when its `if:` requires equality against a
@@ -183,7 +201,7 @@ export function isAuthorizationGated(workflow: Workflow, jobName: string): boole
 	const needs = jobNeeds(job);
 	if (needs.length === 0) return false;
 
-	const match = POSITIVE_AUTHORIZATION_CONDITION.exec(job.if ?? '');
+	const match = POSITIVE_AUTHORIZATION_CONDITION.exec((job.if ?? '').trim());
 	if (!match) return false;
 
 	// The job the condition actually reads from must be one this job

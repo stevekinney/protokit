@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
@@ -72,6 +72,23 @@ const describeWithRedis = redisAvailable
 	: (describe as unknown as { skip: typeof describe }).skip;
 
 let server: TestServerHandle | null = null;
+
+beforeEach(async () => {
+	// Round 17: the module-scope reset above clears state left by OTHER
+	// files, but this file's own cases share one budget too — every case
+	// here makes several `/oauth/token` and `/oauth/revoke` round trips from
+	// the same loopback identity. Adding cases eventually spent the real
+	// limit part-way through the file, and the tests that happened to run
+	// last failed with 429 rather than the status they assert. Resetting per
+	// case removes the coupling between cases without touching the limits
+	// themselves — raising `RATE_LIMIT_*_MAX` for tests would stop this
+	// suite exercising the production limits at all, which is the defect
+	// SEC-003's own masking incident already taught this repository once.
+	if (redisAvailable) {
+		const { resetRateLimitState } = await import('@web/test-support/reset-rate-limit-state');
+		await resetRateLimitState();
+	}
+});
 
 afterEach(() => {
 	server?.stop();
@@ -682,6 +699,94 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		const { accessToken } = await seedTokenPair(handle, clientAId);
 
 		const revokeResponse = await revokeRequest(handle, accessToken, clientAId, clientASecret);
+		expect(revokeResponse.status).toBe(200);
+
+		const mcpResponse = await callMcpToolsList(handle, accessToken);
+		expect(mcpResponse.status).toBe(401);
+	}, 30_000);
+
+	// A2 review finding: revoking a live access token used to only touch the
+	// `oauth_tokens` row for that token -- the `oauth_refresh_tokens` row
+	// paired with it (via `access_token_hash`) was left completely live. A
+	// client could immediately call `/oauth/token` with that still-live
+	// refresh token and mint a brand-new access token, undoing the
+	// revocation the caller just requested. This proves the fix against the
+	// real database: revoking the access token must also kill the refresh
+	// token that minted it, so a subsequent refresh attempt is rejected.
+	it('revoking a live access token also revokes the refresh token paired with it, so it can no longer mint a replacement (A2)', async () => {
+		const handle = startServer();
+		const { accessToken, refreshToken, resource } = await seedTokenPair(handle, clientAId);
+
+		const revokeResponse = await revokeRequest(handle, accessToken, clientAId, clientASecret);
+		expect(revokeResponse.status).toBe(200);
+
+		const mcpResponse = await callMcpToolsList(handle, accessToken);
+		expect(mcpResponse.status).toBe(401);
+
+		const refreshResponse = await refreshRequest(
+			handle,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(refreshResponse.status).toBe(400);
+		const refreshBody = await refreshResponse.json();
+		expect(refreshBody.error).toBe('invalid_grant');
+	}, 30_000);
+
+	// A1 review finding: `token_type_hint` is only an optimization hint per
+	// RFC 7009 §2.1 -- the server MUST still search every supported token
+	// type when the hinted lookup misses. Proves both mismatched directions
+	// against the real database: a refresh token hinted as an access token,
+	// and an access token hinted as a refresh token, must both still end up
+	// revoked.
+	it('revokes a refresh token even when it is mislabeled with token_type_hint=access_token (A1)', async () => {
+		const handle = startServer();
+		const { refreshToken, accessToken, resource } = await seedTokenPair(handle, clientAId);
+
+		const revokeResponse = await fetchFromTestServer(handle, '/oauth/revoke', {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				token: refreshToken,
+				token_type_hint: 'access_token',
+				client_id: clientAId,
+				client_secret: clientASecret,
+			}).toString(),
+		});
+		expect(revokeResponse.status).toBe(200);
+
+		const refreshResponse = await refreshRequest(
+			handle,
+			refreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(refreshResponse.status).toBe(400);
+
+		// The paired access token issued alongside it must have been revoked
+		// too (mirrors the existing, already-correct un-hinted refresh-token
+		// revocation behavior).
+		const mcpResponse = await callMcpToolsList(handle, accessToken);
+		expect(mcpResponse.status).toBe(401);
+	}, 30_000);
+
+	it('revokes an access token even when it is mislabeled with token_type_hint=refresh_token (A1)', async () => {
+		const handle = startServer();
+		const { accessToken } = await seedTokenPair(handle, clientAId);
+
+		const revokeResponse = await fetchFromTestServer(handle, '/oauth/revoke', {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				token: accessToken,
+				token_type_hint: 'refresh_token',
+				client_id: clientAId,
+				client_secret: clientASecret,
+			}).toString(),
+		});
 		expect(revokeResponse.status).toBe(200);
 
 		const mcpResponse = await callMcpToolsList(handle, accessToken);

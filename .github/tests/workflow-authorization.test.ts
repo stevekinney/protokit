@@ -255,3 +255,108 @@ describe('isAuthorizationGated: requires a positive condition naming an actual n
 		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
 	});
 });
+
+/**
+ * Regression test for the round-seventeen review finding: the round-sixteen
+ * fix tightened the accepted comparison but was still a `.exec()` search for
+ * an acceptable substring anywhere inside `job.if`, not a validation of the
+ * complete condition. `needs.authorize.outputs.authorized == 'true' ||
+ * always()` (and similar disjunctions) contain the accepted fragment, so
+ * they matched and the job was misclassified as gated -- even though GitHub
+ * evaluates the whole expression to `true` for a rejected actor, because
+ * `||` short-circuits past the authorization comparison entirely.
+ */
+describe('isAuthorizationGated: rejects disjunctive gates with an alternate truth path', () => {
+	function privilegedJob(
+		overrides: Partial<Workflow['jobs'][string]> = {},
+	): Workflow['jobs'][string] {
+		return {
+			permissions: { contents: 'write' },
+			'timeout-minutes': 5,
+			...overrides,
+		};
+	}
+
+	function readOnlyJob(): Workflow['jobs'][string] {
+		return { permissions: { contents: 'read' }, 'timeout-minutes': 5 };
+	}
+
+	test("rejects `== 'true' || always()`", () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "needs.authorize.outputs.authorized == 'true' || always()",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+	});
+
+	test("rejects `== 'true' || github.event_name == 'push'`", () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "needs.authorize.outputs.authorized == 'true' || github.event_name == 'push'",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+	});
+
+	test('rejects a bare `always()`', () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: 'always()',
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+	});
+
+	test("rejects a negated whole-condition gate (`!(... == 'true')`)", () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "!(needs.authorize.outputs.authorized == 'true')",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+	});
+
+	test("rejects `needs.not_authorized.outputs.authorized == 'true'` when that job is not in needs:", () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				not_authorized: privilegedJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "needs.not_authorized.outputs.authorized == 'true'",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+	});
+
+	test('still accepts the plain correct form with incidental surrounding whitespace', () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "  needs.authorize.outputs.authorized == 'true'  ",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(true);
+	});
+});

@@ -92,6 +92,41 @@ export class McpUserHandlerCache {
 		return toEvict;
 	}
 
+	/**
+	 * Closes and forgets this user's handler, terminating every open
+	 * `subscriptions/listen` stream it is serving. Returns true when an
+	 * entry actually existed.
+	 *
+	 * Round 17 review finding (P2): revoking a client's grant was a
+	 * database-only operation, so a stream opened before the revoke kept
+	 * receiving `resource_updated` events and keepalives indefinitely --
+	 * bearer authentication is checked when the stream opens and never
+	 * again -- and its nonzero listener count also kept the entry pinned
+	 * against idle eviction. Revocation now ends live access, not just
+	 * future access.
+	 *
+	 * Deliberately user-scoped rather than client-scoped, and therefore
+	 * deliberately over-broad: one handler serves every client a given user
+	 * has authorized (see this class's own doc comment for why that
+	 * topology is what makes cross-user delivery impossible), so revoking
+	 * one client also drops that user's other connectors' streams. They
+	 * reconnect and re-authenticate immediately, since their own grants are
+	 * untouched. Keying the cache by `(userId, clientId)` instead would
+	 * avoid that reconnect, but it splits the in-memory fallback bus per
+	 * client -- breaking local delivery between a user's own clients -- and
+	 * reopens the S-11 isolation analysis, all to spare a rare operation a
+	 * reconnect. Failing closed and briefly over-broad is the better trade.
+	 */
+	async closeUser(userId: string): Promise<boolean> {
+		const entry = this.entries.get(userId);
+		if (!entry) return false;
+		this.entries.delete(userId);
+		await entry.handler.close().catch((error: unknown) => {
+			logger.error({ err: error, userId }, 'Failed to close revoked MCP user handler');
+		});
+		return true;
+	}
+
 	/** Starts the periodic idle sweep. Safe to call once; a second call replaces the previous timer. */
 	startSweep(intervalMs: number, idleMs: number): void {
 		if (this.sweepTimer) clearInterval(this.sweepTimer);

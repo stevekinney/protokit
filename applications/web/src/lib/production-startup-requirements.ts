@@ -41,6 +41,21 @@ const knownPlaceholderCredentials = new Set([
 
 const loopbackHostnames = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
 
+/**
+ * Whether `host` is a loopback address or this repository's reserved
+ * `.localtest.me` test domain (which resolves to `127.0.0.1` and is used
+ * throughout local/test configuration as a hostname that still exercises
+ * TLS-hostname-shaped code paths). Shared by every production check below
+ * that rejects a local host so the recognized suffix cannot drift between
+ * checks -- `redisUrlFailures` previously only checked exact loopback
+ * hostnames and missed `.localtest.me`, letting `rediss://cache.localtest.me`
+ * pass a production readiness check that the equivalent database check
+ * already rejected.
+ */
+function isLoopbackHost(host: string): boolean {
+	return loopbackHostnames.has(host) || host.endsWith('.localtest.me');
+}
+
 function extractHostAndCredentials(
 	rawUrl: string,
 ): { host: string; credentials: string | null; scheme: string } | null {
@@ -70,7 +85,7 @@ function databaseUrlFailures(label: string, rawUrl: string): string[] {
 		return failures;
 	}
 
-	if (loopbackHostnames.has(parsed.host) || parsed.host.endsWith('.localtest.me')) {
+	if (isLoopbackHost(parsed.host)) {
 		failures.push(
 			`${label} points at a local host (${parsed.host}). Production requires a real, ` +
 				'remotely reachable database host.',
@@ -142,7 +157,7 @@ function redisUrlFailures(rawUrl: string): string[] {
 		);
 	}
 
-	if (loopbackHostnames.has(parsed.host)) {
+	if (isLoopbackHost(parsed.host)) {
 		failures.push(
 			`REDIS_URL points at a local host (${parsed.host}). Production requires a real, ` +
 				'remotely reachable Redis host.',
@@ -168,6 +183,16 @@ export interface ProductionStartupConfiguration {
 	googleClientSecret: string | undefined;
 	trustedProxyCidrs: string | undefined;
 	trustedProxyHeader: string | undefined;
+	/**
+	 * Round 17 review finding (P2): `TRUSTED_PROXY_HOP_COUNT` reached
+	 * Railway from `.env.local` without any validator seeing it, so
+	 * `scripts/setup.ts` reported success and configured a deployment that
+	 * then refused to boot when `environment-schema.ts` rejected the value.
+	 * It belongs on this shared configuration, alongside the two settings it
+	 * only means anything next to, rather than in a setup-local mirror that
+	 * `doctor` and real startup would not share.
+	 */
+	trustedProxyHopCount: string | undefined;
 	/**
 	 * `session-signing-secret.ts`'s `resolveSessionSigningSecrets` throws at
 	 * module-import time when this is absent in production -- the real
@@ -231,6 +256,18 @@ export interface ProductionStartupConfiguration {
  * secret value in a returned message, only whether a value is present and
  * whether it satisfies its constraint.
  */
+/**
+ * Matches `TRUSTED_PROXY_HOP_COUNT`'s schema in
+ * `applications/web/src/environment-schema.ts` (`z.coerce.number().int().positive()`)
+ * on the raw string, before coercion, so a value like `"1.5"` or `""` is
+ * rejected here exactly as the schema rejects it at boot.
+ */
+export function isPositiveIntegerString(value: string): boolean {
+	const trimmed = value.trim();
+	if (!/^\d+$/.test(trimmed)) return false;
+	return Number.parseInt(trimmed, 10) > 0;
+}
+
 export function collectProductionStartupFailures(
 	configuration: ProductionStartupConfiguration,
 ): string[] {
@@ -351,6 +388,21 @@ export function collectProductionStartupFailures(
 					"family's address width (e.g. 10.0.0.0/8 or 2001:db8::/32).",
 			);
 		}
+	}
+
+	// Deliberately checked independently of the both-set branch above: a
+	// malformed hop count refuses to boot whether or not the CIDR/header
+	// pair is also wrong, and reporting only one of the two would send an
+	// operator through a second failed deploy to discover the other.
+	if (
+		configuration.trustedProxyHopCount !== undefined &&
+		!isPositiveIntegerString(configuration.trustedProxyHopCount)
+	) {
+		failures.push(
+			`TRUSTED_PROXY_HOP_COUNT ("${configuration.trustedProxyHopCount}") must be a positive ` +
+				'integer. The environment schema (applications/web/src/environment-schema.ts) requires ' +
+				'it and refuses to start otherwise.',
+		);
 	}
 
 	if (configuration.databaseLocalProxyUrl) {

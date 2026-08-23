@@ -21,6 +21,7 @@ type StartupWebEnvironment = Writable<
 		| 'GOOGLE_CLIENT_SECRET'
 		| 'TRUSTED_PROXY_CIDRS'
 		| 'TRUSTED_PROXY_HEADER'
+		| 'TRUSTED_PROXY_HOP_COUNT'
 		| 'NODE_TLS_REJECT_UNAUTHORIZED'
 		| 'SESSION_SIGNING_SECRET'
 		| 'MCP_CONFORMANCE_MODE'
@@ -92,6 +93,7 @@ export function assertProductionStartupInvariants(
 		googleClientSecret: source.environment.GOOGLE_CLIENT_SECRET,
 		trustedProxyCidrs: source.environment.TRUSTED_PROXY_CIDRS,
 		trustedProxyHeader: source.environment.TRUSTED_PROXY_HEADER,
+		trustedProxyHopCount: source.environment.TRUSTED_PROXY_HOP_COUNT?.toString(),
 		nodeTlsRejectUnauthorized: source.environment.NODE_TLS_REJECT_UNAUTHORIZED,
 		sessionSigningSecret: source.environment.SESSION_SIGNING_SECRET,
 		mcpConformanceModeConfigured: source.environment.MCP_CONFORMANCE_MODE,

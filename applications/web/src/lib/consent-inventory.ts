@@ -2,6 +2,7 @@ import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
 import { isValidClientName } from '@web/lib/client-name-validation';
+import { publishGrantRevocation } from '@web/lib/mcp-grant-revocation-channel';
 
 const consentLogger = logger.child({ module: 'consent-inventory' });
 
@@ -228,6 +229,15 @@ export async function revokeUserClientGrant(
 	`);
 
 	const result = revocationResultFromRow(rows[0]);
+
+	// Round 17 review finding (P2): the database write above only stops
+	// FUTURE authentication. A `subscriptions/listen` stream opened before
+	// this revoke authenticated once, when it opened, and would otherwise
+	// keep delivering `resource_updated` events and keepalives to a client
+	// the user just disconnected. Announced after the write commits, never
+	// before — a client reconnecting in that window would re-authenticate
+	// successfully against rows that are still live.
+	await publishGrantRevocation(userId);
 	consentLogger.info({ userId, clientId, ...result }, 'User revoked one client connection');
 	return result;
 }
@@ -262,6 +272,15 @@ export async function revokeAllUserGrants(userId: string): Promise<RevocationRes
 	`);
 
 	const result = revocationResultFromRow(rows[0]);
+
+	// Round 17 review finding (P2): the database write above only stops
+	// FUTURE authentication. A `subscriptions/listen` stream opened before
+	// this revoke authenticated once, when it opened, and would otherwise
+	// keep delivering `resource_updated` events and keepalives to a client
+	// the user just disconnected. Announced after the write commits, never
+	// before — a client reconnecting in that window would re-authenticate
+	// successfully against rows that are still live.
+	await publishGrantRevocation(userId);
 	consentLogger.info({ userId, ...result }, 'User revoked all client connections');
 	return result;
 }

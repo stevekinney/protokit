@@ -172,14 +172,21 @@ export interface RailwayVariableOperation {
  * `SESSION_SIGNING_SECRET_PREVIOUS` existing on the instance doing the verifying —
  * `SESSION_SIGNING_SECRET_PREVIOUS` never reaches Railway at all, defeating the whole point of the
  * overlap: it is a plan the running production service must receive, not only `.env.local`.
+ *
+ * B4: operation order matters, not just presence. `applyRailwayOperations` runs these one
+ * `railway variable set` call at a time, in array order. If SESSION_SIGNING_SECRET were installed
+ * first and the SESSION_SIGNING_SECRET_PREVIOUS call then failed (or the process were
+ * interrupted between the two), the running Railway service would be left accepting ONLY the new
+ * key -- invalidating every existing session, CSRF token, and pending Google OAuth state signed
+ * under the outgoing key immediately, despite the promised overlap window. Installing
+ * SESSION_SIGNING_SECRET_PREVIOUS first means an interruption after only the first call still
+ * leaves Railway accepting BOTH keys (the safe, already-overlapping state) instead of neither.
  */
 export function planSessionSecretRailwayRotation(
 	nextValue: string,
 	previousValue: string | undefined,
 ): RailwayVariableOperation[] {
-	const operations: RailwayVariableOperation[] = [
-		{ action: 'set', key: 'SESSION_SIGNING_SECRET', value: nextValue },
-	];
+	const operations: RailwayVariableOperation[] = [];
 	if (previousValue) {
 		operations.push({
 			action: 'set',
@@ -187,6 +194,7 @@ export function planSessionSecretRailwayRotation(
 			value: previousValue,
 		});
 	}
+	operations.push({ action: 'set', key: 'SESSION_SIGNING_SECRET', value: nextValue });
 	return operations;
 }
 

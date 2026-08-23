@@ -30,6 +30,7 @@ function validConfiguration(): ProductionStartupConfiguration {
 		googleClientSecret: 'client-secret',
 		trustedProxyCidrs: '10.0.0.0/8',
 		trustedProxyHeader: 'x-forwarded-for',
+		trustedProxyHopCount: '1',
 		nodeTlsRejectUnauthorized: undefined,
 		sessionSigningSecret: 'a'.repeat(32),
 		mcpConformanceModeConfigured: false,
@@ -146,6 +147,33 @@ describe('collectProductionStartupFailures — bracketed IPv6 loopback hosts', (
 		const failures = collectProductionStartupFailures({
 			...validConfiguration(),
 			redisUrl: 'rediss://[2001:db8::1]:6380',
+		});
+		expect(failures.some((failure) => failure.includes('local host'))).toBe(false);
+	});
+});
+
+describe('collectProductionStartupFailures — .localtest.me Redis host', () => {
+	it('rejects a rediss:// REDIS_URL pointed at a .localtest.me host', () => {
+		// .localtest.me resolves to 127.0.0.1 and is this repository's
+		// reserved loopback test domain (recognized by the DATABASE_URL
+		// check immediately above). Before the fix, redisUrlFailures only
+		// checked exact loopback hostnames (localhost, 127.0.0.1, ::1,
+		// 0.0.0.0) via `loopbackHostnames.has(...)`, so a value such as
+		// rediss://cache.localtest.me:6379 satisfied every check and was
+		// accepted as production-ready.
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			redisUrl: 'rediss://cache.localtest.me:6379',
+		});
+		expect(failures.some((failure) => failure.includes('local host (cache.localtest.me)'))).toBe(
+			true,
+		);
+	});
+
+	it('still accepts a real, non-loopback Redis host that merely contains "localtest" as a substring', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			redisUrl: 'rediss://not-localtest.me.example.com:6379',
 		});
 		expect(failures.some((failure) => failure.includes('local host'))).toBe(false);
 	});
@@ -399,5 +427,44 @@ describe('collectProductionStartupFailures — MCP_ALLOWED_ORIGINS', () => {
 	it('is not checked when mcpAllowedOrigins is not supplied (existing call sites/fixtures need no update)', () => {
 		const failures = collectProductionStartupFailures(validConfiguration());
 		expect(failures.some((failure) => failure.includes('MCP_ALLOWED_ORIGINS'))).toBe(false);
+	});
+});
+
+/**
+ * Round 17 review finding (P2): `TRUSTED_PROXY_HOP_COUNT` reached Railway
+ * from `.env.local` without any validator seeing it, so `scripts/setup.ts`
+ * reported success and configured a deployment that then refused to boot
+ * when `environment-schema.ts` rejected the value. It lives on the shared
+ * configuration now, so real startup, `doctor`, and the Railway readiness
+ * gate all reach the identical check — the first version of this fix was a
+ * setup-local mirror, which is exactly the drift this collector prevents.
+ */
+describe('collectProductionStartupFailures — TRUSTED_PROXY_HOP_COUNT', () => {
+	function failuresFor(trustedProxyHopCount: string | undefined): string[] {
+		return collectProductionStartupFailures({ ...validConfiguration(), trustedProxyHopCount });
+	}
+
+	function namesHopCount(failures: string[]): boolean {
+		return failures.some((failure) => failure.includes('TRUSTED_PROXY_HOP_COUNT'));
+	}
+
+	it('accepts a positive integer', () => {
+		expect(namesHopCount(failuresFor('1'))).toBe(false);
+		expect(namesHopCount(failuresFor('2'))).toBe(false);
+		expect(namesHopCount(failuresFor(' 3 '))).toBe(false);
+	});
+
+	it('accepts the value being unset, which the schema defaults', () => {
+		expect(namesHopCount(failuresFor(undefined))).toBe(false);
+	});
+
+	it('rejects zero, which the schema requires to be positive', () => {
+		expect(namesHopCount(failuresFor('0'))).toBe(true);
+	});
+
+	it('rejects a negative, fractional, empty, or nonnumeric value', () => {
+		for (const value of ['-1', '1.5', '', '   ', 'not-a-number', '1e3']) {
+			expect(namesHopCount(failuresFor(value))).toBe(true);
+		}
 	});
 });

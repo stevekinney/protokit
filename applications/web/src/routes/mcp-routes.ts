@@ -1,3 +1,4 @@
+import { parseAuthorizationHeader } from '@web/lib/authorization-header';
 import { and, eq, gt, isNull } from 'drizzle-orm';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import { database, schema } from '@template/database';
@@ -143,9 +144,8 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 	// Parses the scheme independently of the credential and compares it
 	// case-insensitively; the token itself is never lowercased.
 	const authorizationHeader = context.request.headers.get('authorization');
-	const schemeSeparatorIndex = authorizationHeader?.indexOf(' ') ?? -1;
-	const authorizationScheme =
-		schemeSeparatorIndex === -1 ? undefined : authorizationHeader?.slice(0, schemeSeparatorIndex);
+	const { scheme: authorizationScheme, credential: accessToken } =
+		parseAuthorizationHeader(authorizationHeader);
 	if (authorizationScheme?.toLowerCase() !== 'bearer') {
 		const baseUrl = getBaseUrl(context.request);
 		const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/mcp`;
@@ -161,8 +161,11 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		});
 	}
 
-	const accessToken = authorizationHeader!.slice(schemeSeparatorIndex + 1);
-	if (accessToken.length === 0 || accessToken.length > mcpMaxBearerTokenLength) {
+	// `authorizationScheme` matched `'bearer'` above, which only happens when
+	// `parseAuthorizationHeader` matched its whitespace-separated pattern, so
+	// `accessToken` is always a defined string here (possibly empty).
+	const bearerToken = accessToken ?? '';
+	if (bearerToken.length === 0 || bearerToken.length > mcpMaxBearerTokenLength) {
 		const baseUrl = getBaseUrl(context.request);
 		const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/mcp`;
 		return createMcpProtocolErrorResponse({
@@ -177,7 +180,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		});
 	}
 
-	const accessTokenHash = hashCredential(accessToken);
+	const accessTokenHash = hashCredential(bearerToken);
 	const [oauthToken] = await database
 		.select()
 		.from(schema.oauthTokens)
@@ -254,7 +257,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 	metricsCollector.recordEvent('authorization', 'success');
 
 	return buildMcpAuthInfo({
-		accessToken,
+		accessToken: bearerToken,
 		expiresAt: oauthToken.expiresAt,
 		extra: {
 			userId: oauthToken.userId,

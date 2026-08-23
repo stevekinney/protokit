@@ -147,10 +147,18 @@ function extractForwardedAddress(
 	if (configuration.trustedProxyHeader === 'x-forwarded-for') {
 		const raw = headers.get('x-forwarded-for');
 		if (!raw) return null;
-		const entries = raw
-			.split(',')
-			.map((entry) => stripPort(entry.trim()))
-			.filter(Boolean);
+		// Preserve one array entry per comma-delimited element, just like the
+		// `Forwarded` branch below: a blank element (e.g. the malformed
+		// client-supplied prefix `spoofed,, 198.51.100.9`) is a hop position
+		// with no valid address, not a hop to be dropped. Dropping it would
+		// silently shift every subsequent hop count into the wrong position,
+		// letting a short forwarding chain be padded out with an empty
+		// element so the attacker's own value lands where a trusted proxy's
+		// appended value was expected.
+		const entries = raw.split(',').map((entry) => {
+			const trimmed = entry.trim();
+			return trimmed ? stripPort(trimmed) : null;
+		});
 		return selectHopFromEnd(entries, configuration.trustedProxyHopCount);
 	}
 

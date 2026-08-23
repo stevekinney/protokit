@@ -536,3 +536,109 @@ describe('subscriptions/listen (PROTO-002 / S-11)', () => {
 		await client.close();
 	});
 });
+
+/**
+ * Round 17 review finding (P2). The SDK serves `subscriptions/listen`
+ * outside `McpServer`'s registered-handler dispatch entirely, so
+ * `assertRequiredScope` — which guards `resources/read` — is never reached
+ * for a subscription. A client holding only `prompts:read` could therefore
+ * subscribe to `user://profile` and receive every subsequent
+ * `resource_updated` event for a resource whose scope it was never granted.
+ *
+ * These drive the real HTTP entry point rather than unit-testing the
+ * extractor, because the defect lives in the seam between the two: an
+ * extractor that reads the wrong parameter path would return an empty URI
+ * list, authorize vacuously, and still pass an extractor-only test.
+ */
+describe('subscriptions/listen scope enforcement (round 17)', () => {
+	function listenRequest(resourceSubscriptions: string[], scopes: string[]): Promise<Response> {
+		return handleMcpRequest(
+			new Request('http://localhost:3000/mcp', {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, text/event-stream',
+					'MCP-Protocol-Version': '2026-07-28',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'subscriptions/listen',
+					params: { notifications: { resourceSubscriptions } },
+				}),
+			}),
+			buildAuthInfo({ scopes }),
+		);
+	}
+
+	it('refuses a subscription to a resource whose scope the token does not carry', async () => {
+		const response = await listenRequest(['user://profile'], ['prompts:read']);
+
+		expect(response.status).toBe(403);
+		expect(response.headers.get('WWW-Authenticate')).toContain('error="insufficient_scope"');
+		const body = (await response.json()) as { error: string };
+		expect(body.error).toBe('forbidden');
+	});
+
+	it('refuses a token carrying no scopes at all', async () => {
+		expect((await listenRequest(['user://profile'], [])).status).toBe(403);
+	});
+
+	it('refuses an unrecognized URI identically to an under-scoped one', async () => {
+		// Denial must not confirm or deny that a resource exists — the same
+		// collapse `resources/read` already performs.
+		const unknown = await listenRequest(['user://does-not-exist'], grantedScopes);
+		const underScoped = await listenRequest(['user://profile'], ['prompts:read']);
+
+		expect(unknown.status).toBe(underScoped.status);
+		expect(await unknown.json()).toEqual(await underScoped.json());
+	});
+
+	it('refuses the whole request when only one of several URIs is unauthorized', async () => {
+		// Never attach the permitted subset: a caller could otherwise infer
+		// per-URI authorization by observing which URIs later deliver events.
+		expect((await listenRequest(['user://profile', 'user://nope'], grantedScopes)).status).toBe(
+			403,
+		);
+	});
+
+	it('allows a subscription the token is scoped for', async () => {
+		expect((await listenRequest(['user://profile'], grantedScopes)).status).not.toBe(403);
+	});
+
+	it('allows a list-changed-only subscription, which names no resource', async () => {
+		const response = await handleMcpRequest(
+			new Request('http://localhost:3000/mcp', {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, text/event-stream',
+					'MCP-Protocol-Version': '2026-07-28',
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'subscriptions/listen',
+					params: { notifications: { toolsListChanged: true } },
+				}),
+			}),
+			buildAuthInfo({ scopes: ['prompts:read'] }),
+		);
+
+		expect(response.status).not.toBe(403);
+	});
+
+	it('leaves non-listen requests untouched by this gate', async () => {
+		const response = await fetchThroughHandler('http://localhost:3000/mcp', {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				accept: 'application/json, text/event-stream',
+				'MCP-Protocol-Version': '2026-07-28',
+			},
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+		});
+
+		expect(response.status).not.toBe(403);
+	});
+});

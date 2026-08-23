@@ -4,7 +4,11 @@ import type {
 	McpHandlerRequestOptions,
 	McpHttpHandler,
 } from '@modelcontextprotocol/server';
-import { createMcpServer } from '@template/mcp';
+import {
+	areResourceSubscriptionsAuthorized,
+	createMcpServer,
+	getSupportedScopes,
+} from '@template/mcp';
 import type { McpUserProfile } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { metricsCollector } from '@template/mcp/metrics';
@@ -13,6 +17,7 @@ import { eq } from 'drizzle-orm';
 import { environment } from '@web/env';
 import { createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
 import { McpUserHandlerCache } from '@web/lib/mcp-user-handler-cache';
+import { subscribeToGrantRevocations } from '@web/lib/mcp-grant-revocation-channel';
 import { disconnectRedisSubscriberClient, isRedisConfigured } from '@web/lib/redis-client';
 import { markAsServerOnlyCloseableStream } from '@web/lib/in-flight-request-tracker';
 import { readMcpRequestAuthExtra } from '@web/lib/mcp-request-context';
@@ -157,6 +162,7 @@ function createUserHandlerEntry(userId: string): {
 
 const userHandlers = new McpUserHandlerCache(createUserHandlerEntry);
 userHandlers.startSweep(mcpUserHandlerSweepIntervalMs, mcpUserHandlerIdleMs);
+subscribeToGrantRevocations((userId) => userHandlers.closeUser(userId));
 
 /**
  * Review finding (P2): `createUserHandlerEntry` above advertises
@@ -239,22 +245,51 @@ export function publishUserResourceUpdate(userId: string, uri: string): void {
  * the identical body -- so this never risks the real request seeing a
  * different, already-partially-read stream.
  */
-async function isSubscriptionsListenRequest(request: Request): Promise<boolean> {
-	if (!request.body) return false;
+type SubscriptionsListenInspection = {
+	/** True when any message in the envelope is a `subscriptions/listen` call. */
+	isListenRequest: boolean;
+	/**
+	 * Every resource URI named across those calls. Empty when the request
+	 * subscribes only to list-changed notifications, which carry no
+	 * per-resource authorization of their own.
+	 */
+	requestedResourceUris: string[];
+};
+
+function readRequestedResourceUris(message: object): string[] {
+	const parameters = (message as { params?: unknown }).params;
+	if (typeof parameters !== 'object' || parameters === null) return [];
+	const notifications = (parameters as { notifications?: unknown }).notifications;
+	if (typeof notifications !== 'object' || notifications === null) return [];
+	const uris = (notifications as { resourceSubscriptions?: unknown }).resourceSubscriptions;
+	if (!Array.isArray(uris)) return [];
+	return uris.filter((uri): uri is string => typeof uri === 'string');
+}
+
+async function inspectSubscriptionsListenRequest(
+	request: Request,
+): Promise<SubscriptionsListenInspection> {
+	const none: SubscriptionsListenInspection = { isListenRequest: false, requestedResourceUris: [] };
+	if (!request.body) return none;
 	try {
 		const parsed: unknown = await request.clone().json();
 		const messages = Array.isArray(parsed) ? parsed : [parsed];
-		return messages.some(
-			(message) =>
+		const listenMessages = messages.filter(
+			(message): message is object =>
 				typeof message === 'object' &&
 				message !== null &&
 				(message as { method?: unknown }).method === 'subscriptions/listen',
 		);
+		if (listenMessages.length === 0) return none;
+		return {
+			isListenRequest: true,
+			requestedResourceUris: listenMessages.flatMap(readRequestedResourceUris),
+		};
 	} catch {
 		// Malformed JSON here just means "not a listen request" -- the SDK
 		// still sees the original, unconsumed request and produces its own
 		// real JSON-RPC parse-error response.
-		return false;
+		return none;
 	}
 }
 
@@ -283,8 +318,51 @@ export async function handleMcpRequest(request: Request, authInfo: AuthInfo): Pr
 		throw new Error('MCP request reached the handler without verified auth context.');
 	}
 
+	const { isListenRequest, requestedResourceUris } =
+		await inspectSubscriptionsListenRequest(boundedRequest);
+
+	// Round 17 review finding (P2), and a genuine authorization bypass: the
+	// SDK serves `subscriptions/listen` entirely outside `McpServer`'s
+	// registered-handler dispatch -- `createMcpHandler` builds a server via
+	// the factory purely to read `getCapabilities()`, closes it immediately,
+	// and hands the request to its own listen router, which filters by
+	// resource URI and nothing else. `assertRequiredScope`, which guards
+	// `resources/read`, is therefore never reached, so a client holding only
+	// `prompts:read` could subscribe to `user://profile` and receive every
+	// subsequent `resource_updated` event for a resource whose scope the
+	// user never granted it. This HTTP boundary is the last point that sees
+	// the request before the router does, and it already peeks the
+	// (size-bounded) body, so this is where the check has to live.
+	//
+	// A request naming any unauthorized URI is denied whole rather than
+	// served with the permitted subset attached: partial acceptance would
+	// let a caller infer per-URI authorization state by observing which
+	// URIs later deliver events. An unrecognized URI is denied identically
+	// to a recognized-but-under-scoped one, so the response never confirms
+	// or denies that a resource exists -- the same collapse `resources/read`
+	// already performs.
+	if (
+		isListenRequest &&
+		!areResourceSubscriptionsAuthorized(requestedResourceUris, requestAuthExtra.scopes)
+	) {
+		metricsCollector.recordEvent('mcp_method', 'insufficient_scope');
+		return createMcpProtocolErrorResponse({
+			status: 403,
+			error: 'forbidden',
+			errorDescription:
+				'The access token does not carry the scopes required for the requested resource subscriptions.',
+			headers: {
+				'MCP-Protocol-Version': mcpLatestProtocolVersion,
+				// RFC 6750 §3.1: an authenticated request that lacks the
+				// necessary scope answers 403 with `insufficient_scope` and the
+				// scopes this server supports, matching the `scope` attribute
+				// AUTHZ-001 requires on every challenge this endpoint returns.
+				'WWW-Authenticate': `Bearer error="insufficient_scope", scope="${getSupportedScopes().join(' ')}"`,
+			},
+		});
+	}
+
 	const { handler } = userHandlers.get(requestAuthExtra.userId);
-	const isListenRequest = await isSubscriptionsListenRequest(boundedRequest);
 	const response = await handler.fetch(boundedRequest, options);
 	return isListenRequest ? markAsServerOnlyCloseableStream(response) : response;
 }

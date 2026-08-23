@@ -25,6 +25,7 @@ const mockEnvironment: ProductionStartupInvariantSource['environment'] = {
 	GOOGLE_CLIENT_SECRET: undefined,
 	TRUSTED_PROXY_CIDRS: undefined,
 	TRUSTED_PROXY_HEADER: undefined,
+	TRUSTED_PROXY_HOP_COUNT: 1,
 	NODE_TLS_REJECT_UNAUTHORIZED: undefined,
 	SESSION_SIGNING_SECRET: undefined,
 	MCP_CONFORMANCE_MODE: false,
@@ -252,6 +253,7 @@ function validConfiguration(): ProductionStartupConfiguration {
 		googleClientSecret: 'client-secret',
 		trustedProxyCidrs: '10.0.0.0/8',
 		trustedProxyHeader: 'x-forwarded-for',
+		trustedProxyHopCount: '1',
 		sessionSigningSecret: 'a'.repeat(32),
 		mcpConformanceModeConfigured: false,
 	};

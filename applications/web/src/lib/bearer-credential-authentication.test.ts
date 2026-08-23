@@ -6,6 +6,29 @@ import {
 import type { TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
 
 describe('checkBearerCredential', () => {
+	it('accepts a credential separated by more than one space', () => {
+		// Round 17 review finding: RFC 9110 §11.1 allows `1*SP` between the
+		// scheme and the credential, but slicing at the first space left the
+		// surplus spaces attached to the presented value, so `/metrics` and
+		// `/health/ready` rejected a compliant operator request.
+		expect(
+			checkBearerCredential({
+				configuredKey: 'operator-key',
+				authorizationHeader: 'Bearer   operator-key',
+			}),
+		).toBe('authorized');
+	});
+
+	it('still rejects a credential whose own trailing whitespace differs', () => {
+		// Only the separator run is skipped; the credential is never trimmed,
+		// so a value nobody actually configured cannot be coerced into a match.
+		expect(
+			checkBearerCredential({
+				configuredKey: 'operator-key',
+				authorizationHeader: 'Bearer operator-key ',
+			}),
+		).toBe('unauthorized');
+	});
 	it('returns not_configured when no key is set', () => {
 		expect(
 			checkBearerCredential({ configuredKey: undefined, authorizationHeader: 'Bearer anything' }),

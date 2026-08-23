@@ -129,7 +129,10 @@ describeWithRedis('graceful shutdown (requires Redis, spawns a real subprocess)'
 			accessToken: hashCredential(accessToken),
 			clientId,
 			userId,
-			scope: 'profile',
+			// A real scope from the server's vocabulary (`packages/mcp/src/scopes.ts`).
+			// This used to seed `'profile'`, which is not a scope this server issues --
+			// it only passed while `subscriptions/listen` went unchecked.
+			scope: 'profile:read',
 			resource: `${baseUrl}/mcp`,
 			expiresAt: new Date(Date.now() + 60 * 60 * 1000),
 		});
@@ -256,7 +259,10 @@ describeWithRedis('graceful shutdown (requires Redis, spawns a real subprocess)'
 			accessToken: hashCredential(streamAccessToken),
 			clientId,
 			userId,
-			scope: 'profile',
+			// A real scope from the server's vocabulary (`packages/mcp/src/scopes.ts`).
+			// This used to seed `'profile'`, which is not a scope this server issues --
+			// it only passed while `subscriptions/listen` went unchecked.
+			scope: 'profile:read',
 			resource: `${baseUrl}/mcp`,
 			expiresAt: new Date(Date.now() + 60 * 60 * 1000),
 		});

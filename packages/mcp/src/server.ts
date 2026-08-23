@@ -123,6 +123,72 @@ function hasRequiredScope(grantedScopes: readonly string[], requiredScope: McpSc
 	return grantedScopes.includes(requiredScope);
 }
 
+/**
+ * Round-seventeen review (P2): `resources/read` rejects an under-scoped
+ * request via `assertRequiredScope` before the handler ever runs, but the
+ * `2026-07-28` `subscriptions/listen` stream (the push-notification path a
+ * modern client uses to receive `notifications/resources/updated` for
+ * `resourceSubscriptions: [uri, ...]`) never consulted scopes at all — a
+ * client holding only `prompts:read` could still subscribe to
+ * `user://profile` (which requires `profile:read`) and would receive a
+ * `resource_updated` event the moment that resource actually changed,
+ * despite never having been granted `profile:read`. That is a real
+ * authorization bypass: it leaks the *fact* that a scoped resource changed
+ * to a caller who was never allowed to read its contents.
+ *
+ * Root cause of why this could not simply reuse `assertRequiredScope`
+ * in-place: the installed `@modelcontextprotocol/server@2.0.0` SDK serves
+ * `subscriptions/listen` entirely outside the registered-handler dispatch
+ * this factory wires up. Confirmed by reading the SDK's own bundled
+ * `createMcpHandler` (`dist/index.mjs`): on a `subscriptions/listen`
+ * request it builds a FRESH server via the factory, reads only
+ * `server.getCapabilities()` off it, immediately calls `product.close()`,
+ * and hands the request to its own internal `listenRouter.serve(...)` —
+ * the constructed `McpServer` instance (and therefore anything registered
+ * on it, including `assertRequiredScope`'s call sites) never sees the
+ * request at all, and the factory itself is never even passed the
+ * requested `resourceSubscriptions` URIs to filter against. There is
+ * consequently no request-handler hook inside `createMcpServer` capable of
+ * enforcing this — the enforcement point has to live at the HTTP boundary
+ * that owns the raw request body, before it is ever handed to
+ * `McpHttpHandler.fetch()`.
+ *
+ * This function is the reusable piece `createMcpServer` CAN own: the same
+ * scope-lookup `assertRequiredScope` performs (grantedScopes vs. a
+ * resource definition's `requiredScope`), applied per requested URI against
+ * `allResources`, the single source of truth for which scope each resource
+ * needs. `applications/web/src/lib/mcp-handler.ts` already peeks the
+ * request body to detect a `subscriptions/listen` call before dispatch
+ * (see `isSubscriptionsListenRequest`, added for an unrelated shutdown-
+ * tracking reason) — that is the natural call site for this function: read
+ * `params.notifications.resourceSubscriptions` off the same already-parsed
+ * body, call this with the caller's verified `scopes`, and refuse the
+ * WHOLE request (a single JSON-RPC error, not a per-URI partial ack) when
+ * it returns `false`.
+ *
+ * Design decision — reject the whole request, not a filtered subset:
+ * silently attaching only the permitted URIs while acking the rest would
+ * (a) never inform the client which of its requested subscriptions it
+ * actually got, and (b) let a caller distinguish "URI exists but I lack
+ * scope" from "URI doesn't exist" by comparing which URIs it lists in an
+ * absence-of-updates versus an outright rejection — a probe channel. A
+ * single all-or-nothing rejection, mirroring how `resources/read` already
+ * collapses "expired token" and "wrong audience" into one wire response
+ * (see `mcp-routes.ts`'s `OBS-001` comment), discloses nothing about which
+ * specific URI(s) failed or why. Fails closed: an unrecognized URI is
+ * treated identically to a recognized-but-under-scoped one (both deny),
+ * so denial never confirms or denies a resource's existence either.
+ */
+export function areResourceSubscriptionsAuthorized(
+	uris: readonly string[],
+	scopes: readonly string[],
+): boolean {
+	return uris.every((uri) => {
+		const resource = allResources.find((definition) => definition.uri === uri);
+		return resource !== undefined && hasRequiredScope(scopes, resource.requiredScope);
+	});
+}
+
 export function createMcpServer(context: {
 	userId: string;
 	user: McpUserProfile;
@@ -344,6 +410,21 @@ export function createMcpServer(context: {
 	// and the per-user bus means one user's published update is physically
 	// unreachable from another user's stream. `resources/subscribe` itself
 	// does not need to record anything for that to be true.
+	//
+	// Round-seventeen review: does this unconditional `{}` ack need the same
+	// scope check `areResourceSubscriptionsAuthorized` (below) adds for the
+	// modern `subscriptions/listen` path? No — deliberately checked and
+	// ruled out, not merely overlooked. This handler exists ONLY for the
+	// legacy (`2025-11-25`) era, and PROTO-001 already established that
+	// legacy serving is per-request and stateless: there is no long-lived
+	// session for this era to push a `resource_updated` notification onto,
+	// full stop, regardless of what any legacy `resources/subscribe` call
+	// requested. An unconditional `{}` ack that never leads to delivery
+	// leaks nothing an authorization check could prevent — it doesn't even
+	// confirm the named URI corresponds to a real resource, since it acks
+	// identically for any input. The actual bypass this review round found
+	// lives exclusively on the modern path, where a subscription genuinely
+	// can and does deliver events later.
 	server.server.setRequestHandler('resources/subscribe', async () => ({}));
 	server.server.setRequestHandler('resources/unsubscribe', async () => ({}));
 

@@ -1,4 +1,4 @@
-export { createMcpServer } from './server.js';
+export { createMcpServer, areResourceSubscriptionsAuthorized } from './server.js';
 // PROTO-002: test-only observability for the `test_cancellable_operation`
 // conformance fixture — see the comment above it in
 // `conformance-fixture-registration.ts`. Exported so

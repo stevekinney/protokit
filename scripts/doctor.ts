@@ -156,6 +156,7 @@ export function evaluateProductionReadiness(
 		googleClientSecret: variables.GOOGLE_CLIENT_SECRET,
 		trustedProxyCidrs: variables.TRUSTED_PROXY_CIDRS,
 		trustedProxyHeader: variables.TRUSTED_PROXY_HEADER,
+		trustedProxyHopCount: variables.TRUSTED_PROXY_HOP_COUNT,
 		nodeTlsRejectUnauthorized: variables.NODE_TLS_REJECT_UNAUTHORIZED,
 		sessionSigningSecret: variables.SESSION_SIGNING_SECRET,
 		mcpConformanceModeConfigured: variables.MCP_CONFORMANCE_MODE === 'true',

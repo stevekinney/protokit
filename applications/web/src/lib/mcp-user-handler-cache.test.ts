@@ -143,3 +143,103 @@ describe('McpUserHandlerCache', () => {
 		expect(closedFlags.every((flag) => flag.closed)).toBe(true);
 	});
 });
+
+/**
+ * Round 17 review finding (P2): revoking a grant was a database-only
+ * operation, so a `subscriptions/listen` stream opened before the revoke
+ * kept receiving events indefinitely — bearer authentication is checked
+ * only when the stream opens — and its nonzero listener count also pinned
+ * the entry against idle eviction, which is what these tests pin down.
+ */
+describe('McpUserHandlerCache#closeUser', () => {
+	function cacheWithClosableHandlers() {
+		const closed: string[] = [];
+		const cache = new McpUserHandlerCache((userId) => ({
+			handler: {
+				fetch: async () => new Response(null),
+				close: async () => {
+					closed.push(userId);
+				},
+				notify: {
+					toolsChanged: () => {},
+					promptsChanged: () => {},
+					resourcesChanged: () => {},
+					resourceUpdated: () => {},
+				},
+				bus: fakeBus(),
+			} as unknown as McpHttpHandler,
+			// A live `subscriptions/listen` stream — the exact state that
+			// makes idle eviction refuse to touch this entry.
+			bus: fakeBus(1),
+		}));
+		return { cache, closed };
+	}
+
+	it('closes and forgets the handler of a user whose grants were revoked', async () => {
+		const { cache, closed } = cacheWithClosableHandlers();
+		cache.get('user-1');
+
+		expect(await cache.closeUser('user-1')).toBe(true);
+
+		expect(closed).toEqual(['user-1']);
+		expect(cache.size).toBe(0);
+	});
+
+	it('closes a handler idle eviction would never reclaim', async () => {
+		// The listener count is nonzero, so `evictIdle` deliberately leaves
+		// this entry alone no matter how much time passes. Revocation has to
+		// be able to close it anyway.
+		const { cache, closed } = cacheWithClosableHandlers();
+		cache.get('user-1');
+
+		expect(cache.evictIdle(0)).toEqual([]);
+		await cache.closeUser('user-1');
+
+		expect(closed).toEqual(['user-1']);
+	});
+
+	it('leaves every other user connected', async () => {
+		const { cache, closed } = cacheWithClosableHandlers();
+		cache.get('user-1');
+		cache.get('user-2');
+
+		await cache.closeUser('user-1');
+
+		expect(closed).toEqual(['user-1']);
+		expect(cache.size).toBe(1);
+	});
+
+	it('reports that nothing was closed when this instance holds no entry', async () => {
+		// The common multi-instance case: the revoke lands on an instance
+		// that never served this user an MCP request.
+		const { cache, closed } = cacheWithClosableHandlers();
+
+		expect(await cache.closeUser('user-1')).toBe(false);
+		expect(closed).toEqual([]);
+	});
+
+	it('still forgets the entry when the handler fails to close', async () => {
+		const cache = new McpUserHandlerCache(() => ({
+			handler: {
+				fetch: async () => new Response(null),
+				close: async () => {
+					throw new Error('close failed');
+				},
+				notify: {
+					toolsChanged: () => {},
+					promptsChanged: () => {},
+					resourcesChanged: () => {},
+					resourceUpdated: () => {},
+				},
+				bus: fakeBus(),
+			} as unknown as McpHttpHandler,
+			bus: fakeBus(1),
+		}));
+		cache.get('user-1');
+
+		// A close failure must not leave a revoked user's entry behind for
+		// the next request to reuse.
+		expect(await cache.closeUser('user-1')).toBe(true);
+		expect(cache.size).toBe(0);
+	});
+});

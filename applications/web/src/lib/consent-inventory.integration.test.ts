@@ -329,3 +329,87 @@ describe('revokeAllUserGrants', () => {
 		expect(codeRow?.usedAt).not.toBeNull();
 	}, 30_000);
 });
+
+/**
+ * Round 17 review finding (P2): both revoke paths were database-only, so a
+ * `subscriptions/listen` stream opened before the revoke kept receiving
+ * `resource_updated` events and keepalives — bearer authentication is
+ * checked when the stream opens and never again — and its nonzero listener
+ * count also pinned that user's handler against idle eviction.
+ *
+ * Asserted through the real control channel against real Redis rather than
+ * by mocking the announcement away, because the defect this closes lives
+ * precisely in whether the announcement actually reaches the instance
+ * holding the stream.
+ */
+describe('revocation ends live MCP access', () => {
+	async function collectRevokedUserIds(act: () => Promise<unknown>): Promise<string[]> {
+		const { grantRevocationTestHooks, subscribeToGrantRevocations } =
+			await import('@web/lib/mcp-grant-revocation-channel');
+		const closed: string[] = [];
+		grantRevocationTestHooks.reset();
+		// Stands in for whichever instance holds this user's open stream.
+		subscribeToGrantRevocations((userId) => {
+			closed.push(userId);
+		});
+		// Redis discards a publish to a channel with no subscriber yet, so
+		// settle the SUBSCRIBE first — otherwise this asserts timing, not
+		// behavior.
+		await new Promise((resolve) => setTimeout(resolve, 250));
+
+		await act();
+
+		const deadline = Date.now() + 5_000;
+		while (closed.length === 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		grantRevocationTestHooks.reset();
+		return closed;
+	}
+
+	it('announces the revoked user when one client connection is revoked', async () => {
+		const { userId, clientId } = await seedUserWithConnection('Round 17 single revoke');
+
+		const closed = await collectRevokedUserIds(() => revokeUserClientGrant(userId, clientId));
+
+		expect(closed).toEqual([userId]);
+	});
+
+	it('announces the revoked user when every connection is revoked', async () => {
+		const { userId } = await seedUserWithConnection('Round 17 revoke all');
+
+		const closed = await collectRevokedUserIds(() => revokeAllUserGrants(userId));
+
+		expect(closed).toEqual([userId]);
+	});
+
+	it('announces only after the revoking write has committed', async () => {
+		// A client reconnecting between a premature close and the write
+		// would re-authenticate successfully against rows that are still
+		// live, so this ordering is the guarantee — not an implementation
+		// detail. Reads the row at the moment the announcement lands.
+		const { userId, clientId } = await seedUserWithConnection('Round 17 ordering');
+		let revokedAtAnnouncement: Date | null | undefined;
+
+		const { grantRevocationTestHooks, subscribeToGrantRevocations } =
+			await import('@web/lib/mcp-grant-revocation-channel');
+		grantRevocationTestHooks.reset();
+		const announced = new Promise<void>((resolve) => {
+			subscribeToGrantRevocations(async () => {
+				const [row] = await database
+					.select({ revokedAt: schema.oauthTokens.revokedAt })
+					.from(schema.oauthTokens)
+					.where(eq(schema.oauthTokens.userId, userId));
+				revokedAtAnnouncement = row?.revokedAt ?? null;
+				resolve();
+			});
+		});
+		await new Promise((resolve) => setTimeout(resolve, 250));
+
+		await revokeUserClientGrant(userId, clientId);
+		await announced;
+		grantRevocationTestHooks.reset();
+
+		expect(revokedAtAnnouncement).toBeInstanceOf(Date);
+	});
+});

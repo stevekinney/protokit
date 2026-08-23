@@ -30,6 +30,12 @@ let mockExecuteCalls: unknown[] = [];
 let mockOauthRefreshTokensSelectCallCount = 0;
 let mockFirstRefreshTokenSelectShouldMiss = false;
 let mockOldAccessTokenRevokeShouldThrow = false;
+// A2 regression coverage: simulates the best-effort paired-refresh-token
+// revoke (the `oauthRefreshTokens` update triggered by successfully
+// revoking an access token) failing, mirroring
+// `mockOldAccessTokenRevokeShouldThrow`'s existing shape for the reverse
+// direction.
+let mockPairedRefreshTokenRevokeShouldThrow = false;
 
 const oauthClientsTable = Symbol('oauthClients');
 // A plain object with real column-name properties (not a bare `Symbol`,
@@ -119,6 +125,9 @@ mock.module('@template/database', () => ({
 						// `handleOauthRevokePostInner`.
 						if (mockOldAccessTokenRevokeShouldThrow && table === oauthTokensTable) {
 							return Promise.reject(new Error('simulated old access token revoke failure'));
+						}
+						if (mockPairedRefreshTokenRevokeShouldThrow && table === oauthRefreshTokensTable) {
+							return Promise.reject(new Error('simulated paired refresh token revoke failure'));
 						}
 						return {
 							returning: () => {
@@ -851,6 +860,8 @@ describe('token revocation', () => {
 		mockOauthClients = [];
 		recordFailedAuthenticationCalls = [];
 		mockOldAccessTokenRevokeShouldThrow = false;
+		mockPairedRefreshTokenRevokeShouldThrow = false;
+		mockUpdateCalls = [];
 	});
 
 	it('returns 400 when token parameter is missing', async () => {
@@ -1052,6 +1063,115 @@ describe('token revocation', () => {
 		});
 		const response = await handleOauthRevokePost(context);
 		expect(response.status).toBe(200);
+	});
+
+	// A1 / RFC 7009 §2.1: "the authorization server MUST still be prepared
+	// to handle a token that does not match the hint by extending its
+	// search across all of the supported token types." The hint is only
+	// allowed to choose search ORDER; it must never suppress the fallback
+	// search. Before the fix, `token_type_hint=access_token` gated the
+	// refresh-token branch on `token_type_hint !== 'access_token'`, which
+	// was false here, so a refresh token mislabeled with that hint was never
+	// even looked up in the refresh-token table -- it stayed fully live.
+	it('A1: falls back to the refresh-token table when a refresh token is presented with token_type_hint=access_token', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		// No access token exists -- the hinted lookup must miss.
+		mockOauthTokens = [];
+		mockOauthRefreshTokens = [
+			{
+				refreshToken: 'hashed:some-refresh-token',
+				clientId: 'c1',
+				accessTokenHash: 'hashed-access',
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-refresh-token&client_id=c1&token_type_hint=access_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+		// The fallback fired: the refresh-token table was actually revoked,
+		// not merely skipped and silently reported as "success" via the
+		// generic 200.
+		const refreshRevokeCall = mockUpdateCalls.find(
+			(call) => call.table === oauthRefreshTokensTable && call.set.revokedAt !== undefined,
+		);
+		expect(refreshRevokeCall).toBeTruthy();
+	});
+
+	// The symmetric mistake: an access token presented with
+	// token_type_hint=refresh_token used to skip the access-token table
+	// entirely once the (mislabeled) refresh-token lookup missed.
+	it('A1: falls back to the access-token table when an access token is presented with token_type_hint=refresh_token', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthRefreshTokens = [];
+		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-access-token&client_id=c1&token_type_hint=refresh_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+		const accessRevokeCall = mockUpdateCalls.find(
+			(call) => call.table === oauthTokensTable && call.set.revokedAt !== undefined,
+		);
+		expect(accessRevokeCall).toBeTruthy();
+	});
+
+	// A2: revoking a live access token must also revoke the refresh token
+	// paired with it (the row whose accessTokenHash references this access
+	// token) -- otherwise the client can immediately use that still-live
+	// refresh token to mint a replacement access token, undoing the
+	// revocation. Mirrors the existing refresh-token-revoke -> paired
+	// access-token-revoke direction below.
+	it('A2: revoking a live access token also revokes its paired refresh token', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
+		mockOauthRefreshTokens = [
+			{
+				refreshToken: 'hashed:some-refresh-token',
+				clientId: 'c1',
+				accessTokenHash: 'hashed:some-access-token',
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-access-token&client_id=c1&token_type_hint=access_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+		const pairedRefreshRevokeCall = mockUpdateCalls.find(
+			(call) => call.table === oauthRefreshTokensTable && call.set.revokedAt !== undefined,
+		);
+		expect(pairedRefreshRevokeCall).toBeTruthy();
+	});
+
+	it('A2: still returns 200 when revoking the paired refresh token fails after a successful access token revocation', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
+		mockOauthRefreshTokens = [
+			{
+				refreshToken: 'hashed:some-refresh-token',
+				clientId: 'c1',
+				accessTokenHash: 'hashed:some-access-token',
+			},
+		];
+		mockOldAccessTokenRevokeShouldThrow = false;
+		mockPairedRefreshTokenRevokeShouldThrow = true;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/revoke',
+				body: 'token=some-access-token&client_id=c1&token_type_hint=access_token',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthRevokePost(context);
+			expect(response.status).toBe(200);
+		} finally {
+			mockPairedRefreshTokenRevokeShouldThrow = false;
+		}
 	});
 });
 

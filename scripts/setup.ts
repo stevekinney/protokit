@@ -370,6 +370,12 @@ export function isValidProductionRedisUrl(value: string): boolean {
 	const host = parsed.hostname.toLowerCase();
 	const unbracketed = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 	if (loopbackRedisHostnames.has(unbracketed)) return false;
+	// Mirrors `databaseUrlFailures`'s `.localtest.me` suffix rejection
+	// (`applications/web/src/lib/production-startup-requirements.ts`): `*.localtest.me` always
+	// resolves to a loopback address (it is the local Docker/test-stack domain this repository's
+	// own test scripts use, e.g. `db.localtest.me`), so it is exactly as local as the fixed
+	// hostnames above even though it is not one of them literally.
+	if (unbracketed.endsWith('.localtest.me')) return false;
 	const credentials =
 		parsed.username || parsed.password ? `${parsed.username}:${parsed.password}` : null;
 	if (credentials && knownPlaceholderRedisCredentials.has(credentials.toLowerCase())) return false;
@@ -406,6 +412,14 @@ export function isValidTrustedProxyCidrList(value: string): boolean {
 		.filter(Boolean);
 	return entries.length > 0 && entries.every(isValidTrustedProxyCidr);
 }
+
+/**
+ * Re-exported rather than reimplemented: `TRUSTED_PROXY_HOP_COUNT` is now a field on
+ * `ProductionStartupConfiguration`, so real startup, `doctor`, and this Railway readiness gate
+ * all reach the identical check. A setup-local mirror was the first version of this fix and was
+ * exactly the drift the shared collector exists to prevent.
+ */
+export { isPositiveIntegerString as isValidTrustedProxyHopCount } from '@template/web/lib/production-startup-requirements';
 
 const trustedProxyHeaderChoices = ['x-forwarded-for', 'forwarded', 'cf-connecting-ip'] as const;
 
@@ -576,7 +590,7 @@ export function collectRailwayProductionStartupFailures(
 	overrides: Record<string, string> = {},
 ): string[] {
 	const plannedVariables = Object.fromEntries(planRailwayVariables(variables, overrides));
-	return collectProductionStartupFailures({
+	const failures = collectProductionStartupFailures({
 		nodeEnvironment: plannedVariables.NODE_ENV ?? '(not set)',
 		baseUrl: plannedVariables.BASE_URL,
 		redisUrl: plannedVariables.REDIS_URL,
@@ -588,10 +602,43 @@ export function collectRailwayProductionStartupFailures(
 		googleClientSecret: plannedVariables.GOOGLE_CLIENT_SECRET,
 		trustedProxyCidrs: plannedVariables.TRUSTED_PROXY_CIDRS,
 		trustedProxyHeader: plannedVariables.TRUSTED_PROXY_HEADER,
+		trustedProxyHopCount: plannedVariables.TRUSTED_PROXY_HOP_COUNT,
 		nodeTlsRejectUnauthorized: plannedVariables.NODE_TLS_REJECT_UNAUTHORIZED,
 		sessionSigningSecret: plannedVariables.SESSION_SIGNING_SECRET,
 		mcpConformanceModeConfigured: plannedVariables.MCP_CONFORMANCE_MODE === 'true',
+		mcpAllowedOrigins: plannedVariables.MCP_ALLOWED_ORIGINS,
 	});
+
+	return failures;
+}
+
+/**
+ * B5: applies a planned Railway variable set one key at a time and returns the key names (never
+ * values -- these scripts handle secrets and must never print, echo, or log one) that failed to
+ * set. Pure with respect to how it decides success/failure and exported so it can be unit tested
+ * with a fake `setVariable` that throws for a chosen key, instead of only exercising the real
+ * `railway` CLI.
+ *
+ * Previously `setupRailway` caught each `railway variable set` failure inline, printed a warning,
+ * and moved on -- so a transient failure setting a required value (SESSION_SIGNING_SECRET,
+ * DATABASE_URL, NODE_ENV, ...) still let the loop finish and the unconditional
+ * "Railway environment variables configured" success message print afterward, leaving Railway
+ * with an incomplete or stale configuration while the phase reported success and returned
+ * normally.
+ */
+export function applyPlannedRailwayVariables(
+	plan: ReadonlyArray<readonly [string, string]>,
+	setVariable: (key: string, value: string) => void,
+): string[] {
+	const failedKeys: string[] = [];
+	for (const [key, value] of plan) {
+		try {
+			setVariable(key, value);
+		} catch {
+			failedKeys.push(key);
+		}
+	}
+	return failedKeys;
 }
 
 async function setupRailway() {
@@ -707,18 +754,31 @@ async function setupRailway() {
 		execute('railway', ['init', '-y'], { stdio: 'inherit' });
 
 		const variables = readEnvironmentFile();
-		for (const [key, value] of planRailwayVariables(variables, railwayVariableOverrides)) {
-			try {
+		const failedKeys = applyPlannedRailwayVariables(
+			planRailwayVariables(variables, railwayVariableOverrides),
+			(key, value) => {
 				// `--stdin` delivers the value over stdin rather than as an argv element, so a
 				// credential never appears in `ps` output while Railway is configuring it.
 				execute('railway', ['variable', 'set', key, '--stdin'], { input: value });
-			} catch {
-				console.warn(`  Failed to set ${key} on Railway`);
-			}
+			},
+		);
+		if (failedKeys.length > 0) {
+			console.error(
+				`Failed to set the following Railway variable(s): ${failedKeys.join(', ')}. Railway's ` +
+					'environment configuration is incomplete or stale — re-run `bun scripts/setup.ts ' +
+					'railway` once the underlying issue is resolved.',
+			);
+			process.exitCode = 1;
+			return;
 		}
 		console.log('Railway environment variables configured (NODE_ENV forced to production).');
 	} catch {
-		console.warn('Railway setup failed. Configure manually with: railway init');
+		// B5 sibling: `railway init` itself failing (before any variable is even attempted) is the
+		// same "phase must fail, not report success" shape as the variable-set failures above —
+		// nothing here prints a false success message, but this used to return normally (exit code
+		// 0) despite Railway never having been configured at all.
+		console.error('Railway setup failed. Configure manually with: railway init');
+		process.exitCode = 1;
 	}
 }
 
