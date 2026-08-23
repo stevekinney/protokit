@@ -2,9 +2,30 @@ import type { JSX } from 'react';
 import type { ApplicationUser } from '@web/types/user';
 import { CopyButton } from '@web/components/copy-button';
 
+export type ConnectionSummaryView = {
+	clientId: string;
+	clientName: string;
+	earliestExpiresAt: string;
+};
+
 type HomePageProps = {
 	user: ApplicationUser | null;
 	baseUrl: string;
+	/**
+	 * SEC-005: a session-bound, one-time-per-session CSRF value for the
+	 * sign-out form (`csrf-protection.ts`'s `deriveSessionCsrfToken`). Only
+	 * present when `user` is, since there is no session to protect
+	 * otherwise.
+	 */
+	signOutCsrfToken?: string;
+	/**
+	 * DATA-001 / S-18: the connector/consent inventory — every OAuth client
+	 * currently holding at least one live access or refresh token for this
+	 * user. Empty when signed out or when nothing is connected.
+	 */
+	connections?: ConnectionSummaryView[];
+	/** Same session-bound CSRF token as `signOutCsrfToken`, reused for the revoke and revoke-all forms below. */
+	connectionsCsrfToken?: string;
 };
 
 export function HomePage(props: HomePageProps): JSX.Element {
@@ -24,13 +45,22 @@ export function HomePage(props: HomePageProps): JSX.Element {
 						<p className="text-sm font-medium text-slate-500">Signed in as</p>
 						<p className="mt-2 text-xl font-bold text-slate-900">{props.user.email}</p>
 						<div className="mt-5 flex flex-wrap items-center gap-3">
-							<a
-								href="/oauth/authorize"
-								className="inline-flex items-center rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white hover:bg-sky-500"
-							>
-								Review OAuth Request
-							</a>
+							{/*
+							 * Review round 4 / P2: a "Review OAuth Request" link to a
+							 * bare `/oauth/authorize` (no `client_id`, `redirect_uri`,
+							 * `response_type`, PKCE, or `resource`) always rendered
+							 * that route's invalid-parameters error -- OAuth consent
+							 * can only be initiated by a client carrying those
+							 * parameters, never by the resource server itself. Removed
+							 * rather than replaced: nothing on this page can supply a
+							 * valid, configured authorization request, and the
+							 * "Connected Applications" section below already covers
+							 * reviewing/revoking existing grants.
+							 */}
 							<form method="POST" action="/auth/sign-out">
+								{props.signOutCsrfToken && (
+									<input type="hidden" name="csrf_token" value={props.signOutCsrfToken} />
+								)}
 								<button
 									type="submit"
 									className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100"
@@ -51,6 +81,47 @@ export function HomePage(props: HomePageProps): JSX.Element {
 						</a>
 					</section>
 				)}
+
+				{props.user && props.connections && props.connections.length > 0 ? (
+					<section className="mt-8 rounded-2xl border border-slate-200 p-6">
+						<div className="flex items-center justify-between">
+							<p className="font-semibold text-slate-900">Connected Applications</p>
+							<form method="POST" action="/account/connections/revoke-all">
+								{props.connectionsCsrfToken && (
+									<input type="hidden" name="csrf_token" value={props.connectionsCsrfToken} />
+								)}
+								<button
+									type="submit"
+									className="text-sm font-semibold text-rose-600 hover:text-rose-500"
+								>
+									Revoke All
+								</button>
+							</form>
+						</div>
+						<ul className="mt-4 divide-y divide-slate-200">
+							{props.connections.map((connection) => (
+								<li
+									key={connection.clientId}
+									className="flex items-center justify-between gap-4 py-3"
+								>
+									<span className="text-sm text-slate-700">{connection.clientName}</span>
+									<form method="POST" action="/account/connections/revoke">
+										{props.connectionsCsrfToken && (
+											<input type="hidden" name="csrf_token" value={props.connectionsCsrfToken} />
+										)}
+										<input type="hidden" name="client_id" value={connection.clientId} />
+										<button
+											type="submit"
+											className="text-sm font-medium text-slate-500 hover:text-rose-600"
+										>
+											Revoke
+										</button>
+									</form>
+								</li>
+							))}
+						</ul>
+					</section>
+				) : null}
 
 				<section className="mt-8 grid gap-4 rounded-2xl border border-slate-200 p-6 text-sm text-slate-600 md:grid-cols-2">
 					<div>

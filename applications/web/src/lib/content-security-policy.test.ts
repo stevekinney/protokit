@@ -22,4 +22,14 @@ describe('getContentSecurityPolicy', () => {
 		const csp = getContentSecurityPolicy({ allowScripts: false });
 		expect(csp).toContain("frame-ancestors 'none'");
 	});
+
+	it('never permits unsafe-inline styles', () => {
+		const csp = getContentSecurityPolicy({ allowScripts: true });
+		expect(csp).not.toContain('unsafe-inline');
+	});
+
+	it('scopes style-src to self', () => {
+		const csp = getContentSecurityPolicy({ allowScripts: true });
+		expect(csp).toContain("style-src 'self'");
+	});
 });

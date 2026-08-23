@@ -27,33 +27,30 @@ describe('metricsCollector', () => {
 		expect(snapshot.tools.perf_tool.p99).toBe(99);
 	});
 
-	it('clears durations after snapshot', () => {
+	it('preserves latency samples across repeated snapshots (a scrape must not destroy data for the next reader)', () => {
 		metricsCollector.recordToolInvocation('clear_test', 42, false);
-		metricsCollector.snapshot();
+		const first = metricsCollector.snapshot();
 		const second = metricsCollector.snapshot();
-		expect(second.tools.clear_test.p50).toBe(0);
+		expect(first.tools.clear_test.p50).toBe(42);
+		expect(second.tools.clear_test.p50).toBe(42);
+		expect(second.tools.clear_test.invocations).toBe(1);
 	});
 
-	it('tracks active sessions', () => {
-		metricsCollector.incrementActiveSessions();
-		metricsCollector.incrementActiveSessions();
-		metricsCollector.decrementActiveSessions();
-
-		const snapshot = metricsCollector.snapshot();
-		expect(snapshot.activeSessions).toBe(1);
-	});
-
-	it('does not decrement below zero', () => {
-		metricsCollector.decrementActiveSessions();
-		metricsCollector.decrementActiveSessions();
-		const snapshot = metricsCollector.snapshot();
-		expect(snapshot.activeSessions).toBe(0);
+	it('keeps the latency window bounded to the most recent MAX_DURATIONS samples without a read clearing it', () => {
+		for (let i = 1; i <= 1005; i++) {
+			metricsCollector.recordToolInvocation('bounded_tool', i, false);
+		}
+		const first = metricsCollector.snapshot();
+		const second = metricsCollector.snapshot();
+		// The oldest 5 samples (1..5) fell out of the 1000-sample window; the
+		// window's own p99 is stable across reads because nothing cleared it.
+		expect(first.tools.bounded_tool.p99).toBe(second.tools.bounded_tool.p99);
+		expect(first.tools.bounded_tool.invocations).toBe(1005);
 	});
 
 	it('returns the expected snapshot shape', () => {
 		const snapshot = metricsCollector.snapshot();
 		expect(snapshot).toHaveProperty('tools');
-		expect(snapshot).toHaveProperty('activeSessions');
 		expect(snapshot).toHaveProperty('uptimeSeconds');
 		expect(snapshot).toHaveProperty('collectedAt');
 		expect(typeof snapshot.collectedAt).toBe('string');
@@ -61,11 +58,9 @@ describe('metricsCollector', () => {
 
 	it('resets all state', () => {
 		metricsCollector.recordToolInvocation('reset_test', 10, false);
-		metricsCollector.incrementActiveSessions();
 		metricsCollector.reset();
 
 		const snapshot = metricsCollector.snapshot();
 		expect(Object.keys(snapshot.tools)).toHaveLength(0);
-		expect(snapshot.activeSessions).toBe(0);
 	});
 });

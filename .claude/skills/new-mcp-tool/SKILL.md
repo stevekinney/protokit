@@ -1,62 +1,78 @@
 # Skill: New MCP Tool
 
-Scaffold a new MCP tool in the template.
+Scaffold a new MCP tool in the template. `packages/mcp/CLAUDE.md`'s "Adding a New Tool" section is
+the canonical, actively-maintained step list — read it first. This file is a matching quick-start
+template.
 
 ## Steps
 
-1. Create `packages/mcp/src/tools/<tool-name>.ts` (kebab-case filename)
-2. Define the tool object with:
-   - `name`: snake_case (e.g., `my_tool_name`)
-   - `description`: Clear, concise description of what the tool does
-   - `inputSchema`: Zod schema for input validation
-   - `handler`: Async function with `(input, context: { userId: string })` signature
-3. Follow the error handling pattern:
-   - Create a child logger: `logger.child({ tool: 'tool_name', userId: context.userId })`
-   - Wrap handler body in try/catch
-   - On success: return `{ content: [{ type: 'text', text: JSON.stringify(result) }] }`
-   - On failure: log `requestLogger.error({ err }, 'Tool failed')` and return `{ content: [...], isError: true }`
-   - Tools must never throw — always return a structured MCP response
-4. Register in `packages/mcp/src/server.ts`:
-   ```typescript
-   server.registerTool(
-   	myTool.name,
-   	{
-   		description: myTool.description,
-   		inputSchema: myTool.inputSchema,
-   	},
-   	async (input) => myTool.handler(input, context),
-   );
-   ```
-5. Re-export from `packages/mcp/src/index.ts`
+1. Create `packages/mcp/src/tools/<tool-name>.ts` (kebab-case filename).
+2. Build it with `defineTool({ ... })` from `../types/primitives.js` — not a bare object literal.
+   `title`, `description`, `annotations` (all four hints), and `requiredScope` are required fields on
+   `McpToolDefinition`; omitting any of them is a `tsc` error, not a silent gap.
+3. Give it a snake_case `name` (at most 64 characters), a `title`, and an outcome-focused "use this
+   when…" `description`.
+4. Define `inputSchema` with Zod, giving every parameter its own `.describe()`. If the tool returns
+   machine-readable data, also define `outputSchema` and return `structuredContent` via
+   `createToolStructuredResponse` (`../tool-response.js`) — a tool with no structured result can omit
+   `outputSchema` entirely.
+5. Set `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`)
+   accurately — never both `readOnlyHint: true` and `destructiveHint: true`.
+6. Set `requiredScope` to one value from `mcpScopes` (`../scopes.js`) — checked before every
+   invocation; an under-scoped call never reaches `handler`.
+7. `handler` takes `(input, context: McpContext)`. Tools must never throw — catch errors, log via
+   `logger.error({ err }, 'description')`, and return `{ content: [...], isError: true }`.
+8. Add it to `src/tools/index.ts`'s `allTools` array — unless it returns synthetic/generated data
+   purely to exercise a protocol behavior (like the conformance-only `list_audit_events`), in which
+   case append it to `conformanceOnlyTools` instead. Nothing else needs to change in `server.ts`:
+   every entry in `allTools`/`conformanceOnlyTools` is auto-registered with metrics wrapping and
+   scope enforcement already applied.
 
 ## Template
 
 ```typescript
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { defineTool } from '../types/primitives.js';
+import { createToolStructuredResponse, createToolErrorResponse } from '../tool-response.js';
 
-export const myToolNameTool = {
-	name: 'my_tool_name' as const,
-	description: 'Description of what this tool does.',
+const outputSchema = z.object({
+	// Define the structured result shape
+});
+
+export const myToolNameTool = defineTool({
+	name: 'my_tool_name',
+	title: 'My Tool Name',
+	description: 'Use this when… — describe the outcome, not just the mechanism.',
 	inputSchema: z.object({
-		// Define input parameters
+		// Define input parameters, each with its own .describe('...')
 	}),
-	handler: async (input: {/* typed input */}, context: { userId: string }) => {
+	outputSchema,
+	annotations: {
+		readOnlyHint: true,
+		destructiveHint: false,
+		idempotentHint: true,
+		openWorldHint: false,
+	},
+	requiredScope: 'profile:read',
+	handler: async (input, context) => {
 		const requestLogger = logger.child({ tool: 'my_tool_name', userId: context.userId });
 		const start = Date.now();
 		try {
-			// Tool logic here
-			const durationMs = Date.now() - start;
-			requestLogger.info({ durationMs }, 'Tool completed');
-			return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+			const result = {/* build the outputSchema-shaped result */};
+			requestLogger.info({ durationMs: Date.now() - start }, 'Tool completed');
+			return createToolStructuredResponse(result, 'Short human-readable summary.');
 		} catch (error) {
-			const durationMs = Date.now() - start;
-			requestLogger.error({ err: error, durationMs }, 'Tool failed');
-			return {
-				content: [{ type: 'text' as const, text: 'User-safe error message.' }],
-				isError: true,
-			};
+			requestLogger.error({ err: error, durationMs: Date.now() - start }, 'Tool failed');
+			return createToolErrorResponse('User-safe error message.');
 		}
 	},
-};
+});
 ```
+
+## Testing
+
+Add `packages/mcp/src/tools/my-tool-name.test.ts` covering the shape (name/title/annotations
+present), a success case asserting `structuredContent` validates against the tool's own
+`outputSchema`, and an error case. `metadata-contract.test.ts` (`bun run test:metadata`) enforces the
+registry-wide contract automatically — no new assertions needed there for an ordinary tool.

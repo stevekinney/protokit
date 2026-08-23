@@ -1,0 +1,51 @@
+title = "protokit gitleaks config"
+
+# SUPPLY-001: gitleaks scans the full git history, not just the working
+# tree, so a full-history baseline sweep is a one-time exercise — new
+# findings after this point must be fixed, not allowlisted. Every entry
+# below is a reviewed false positive: a fixed placeholder string used only
+# to satisfy a minimum-length validation rule in a test or a CI
+# fail-closed check, never a value that authenticates against anything.
+# Re-review this file whenever `bun run audit:secrets` reports a new
+# finding rather than widening an existing rule.
+#
+# Note the plural `[[allowlists]]` form below. A single `[allowlist]` table
+# applies its `commits`/`paths` constraints to every regex it contains, so
+# folding a commit-scoped entry into the shared block would silently narrow
+# the unscoped entries to that same commit — an allowlist that quietly stops
+# allowing what it used to. Separate blocks keep each entry's scope its own.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Reviewed placeholder strings — not real credentials"
+regexes = [
+  # `SESSION_SIGNING_SECRET`/`BETTER_AUTH_SECRET` fixtures used only to
+  # satisfy a minimum-length check in tests and in CI's fail-closed
+  # startup-invariant assertion; never a value anything authenticates with.
+  '''a-very-secret-key-that-is-at-least-32-chars-long''',
+  '''ci-placeholder-secret-at-least-32-chars''',
+]
+
+[[allowlists]]
+description = "Historical synthetic JWT canary in commit 747e4fd (OBS-001 redaction test)"
+# `packages/mcp/src/redaction.test.ts` in commit 747e4fd contained a literal
+# three-segment synthetic JWT used as a canary proving the logger redacts ID
+# tokens. gitleaks scans full history, so fixing the working tree cannot clear
+# a finding already inside a pushed commit, and rewriting 27 pushed commits to
+# erase a fake token is the wrong trade.
+#
+# The source is fixed: the fixture is now assembled at runtime, so no future
+# commit carries the shape. This entry covers only the one historical
+# occurrence, and is scoped by commit AND path AND exact string rather than by
+# a regex on JWT shape — a rule broad enough to match "a JWT" would blind the
+# scanner to every real token in this repository forever.
+#
+# The payload decodes to `{"sub":"canary-id-token-subject"}` and the signature
+# segment is the literal text `canary-id-token-signature-abc123`. It verifies
+# against nothing and authenticates to nothing.
+commits = ["747e4fd29a611c5ad4560b3728c10410c27c9e56"]
+paths = ['''packages/mcp/src/redaction\.test\.ts''']
+regexes = [
+  '''eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiJjYW5hcnktaWQtdG9rZW4tc3ViamVjdCJ9\.canary-id-token-signature-abc123''',
+]

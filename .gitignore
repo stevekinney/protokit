@@ -3,14 +3,32 @@ node_modules
 build
 dist
 .turbo
-.env.local
-.env.*.local
+.env
+.env.*
+!.env.example
+# CONTENT-001: `server.json.example` is the checked-in registry-descriptor
+# template (with placeholder domain values, matching .env.example's
+# pattern). `server.json` is the real, filled-in descriptor a consumer
+# creates for their own deployment and must never be committed with someone
+# else's domain in it.
+server.json
+!server.json.example
 *.db
 *.db-journal
 .DS_Store
 coverage
 .vercel
-applications/web/public/assets/application.css
-applications/web/public/assets/client.js
-applications/web/public/assets/client.js.map
+applications/web/public/assets/
 applications/web/test-results
+
+# SECRETS-001 (S-12): provider credentials, local certificates, and other generated secret
+# artifacts this tooling can create outside `.env.local` — none of these should ever be
+# committed, matching the equivalent entries in .dockerignore.
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+.aws
+.ssh
+.env.local.seed-client-secret

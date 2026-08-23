@@ -1,15 +1,63 @@
 import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import { hashCredential } from '@web/lib/hash-credential';
 
 const mockEnvironment: Record<string, unknown> = {};
 let mockOauthClients: unknown[] = [];
-const mockOauthCodes: unknown[] = [];
+let mockOauthCodes: unknown[] = [];
 let mockOauthTokens: unknown[] = [];
 let mockOauthRefreshTokens: unknown[] = [];
 let mockInsertedValues: unknown[] = [];
+let recordFailedAuthenticationCalls: unknown[] = [];
+let mockInsertShouldThrow = false;
+let mockUpdateCalls: Array<{ table: unknown; set: Record<string, unknown>; where?: unknown }> = [];
+let mockDeleteCalls: Array<{ table: unknown; where: unknown }> = [];
+// Lets a test simulate losing the refresh-rotation mutex (a concurrent
+// request revoked the row first) without also making the earlier read-only
+// lookup that gathers insert values come back empty -- the real mutex
+// UPDATE's `WHERE ... RETURNING` can match nothing even when a moment-old
+// read saw the row as live.
+let mockRefreshRotationMutexShouldMiss = false;
+let mockExecuteCalls: unknown[] = [];
+// Distinguishes the refresh grant's two, sequential `select()` calls
+// against `oauthRefreshTokensTable` -- the first is the read-only "is this
+// exact token currently live" lookup (`currentRefreshToken`), the second
+// (only reached when the first comes back empty) is
+// `respondToRefreshTokenNotFound`'s "was this token already used" replay
+// lookup (`existingByHash`). The mock otherwise can't tell them apart,
+// since it ignores `.where()` predicates entirely -- the same limitation
+// `mockRefreshRotationMutexShouldMiss` above was already introduced to work
+// around.
+let mockOauthRefreshTokensSelectCallCount = 0;
+let mockFirstRefreshTokenSelectShouldMiss = false;
+let mockOldAccessTokenRevokeShouldThrow = false;
+// A2 regression coverage: simulates the best-effort paired-refresh-token
+// revoke (the `oauthRefreshTokens` update triggered by successfully
+// revoking an access token) failing, mirroring
+// `mockOldAccessTokenRevokeShouldThrow`'s existing shape for the reverse
+// direction.
+let mockPairedRefreshTokenRevokeShouldThrow = false;
 
 const oauthClientsTable = Symbol('oauthClients');
-const oauthCodesTable = Symbol('oauthCodes');
+// A plain object with real column-name properties (not a bare `Symbol`,
+// unlike some of this file's other table stand-ins) so that a captured
+// `.where(...)` predicate can be asserted against by column, needed to
+// prove the review-finding regression test below (the reopen's `WHERE`
+// clause) targets the right columns rather than just "some predicate ran".
+const oauthCodesTable = {
+	code: 'code',
+	usedAt: 'usedAt',
+};
 const oauthTokensTable = Symbol('oauthTokens');
+const oauthRefreshTokensTable = {
+	refreshToken: 'refreshToken',
+	clientId: 'clientId',
+	resource: 'resource',
+	scope: 'scope',
+	familyId: 'familyId',
+	accessTokenHash: 'accessTokenHash',
+	revokedAt: 'revokedAt',
+	expiresAt: 'expiresAt',
+};
 
 mock.module('@web/env', () => ({
 	environment: mockEnvironment,
@@ -24,33 +72,100 @@ mock.module('@template/database', () => ({
 						if (table === oauthClientsTable) return Promise.resolve(mockOauthClients);
 						if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
 						if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
+						if (table === oauthRefreshTokensTable) {
+							mockOauthRefreshTokensSelectCallCount += 1;
+							if (
+								mockFirstRefreshTokenSelectShouldMiss &&
+								mockOauthRefreshTokensSelectCallCount === 1
+							) {
+								return Promise.resolve([]);
+							}
+							return Promise.resolve(mockOauthRefreshTokens);
+						}
 						return Promise.resolve([]);
 					},
 				}),
 			}),
 		}),
 		insert: () => ({
-			values: async (values: unknown) => {
+			values: (values: unknown) => {
 				mockInsertedValues.push(values);
+				// Supports both call shapes used across this file: a bare
+				// `await database.insert(...).values(...)` (registration), and
+				// the CIMD upsert chain `.values(...).onConflictDoUpdate(...).returning()`.
+				return {
+					then: (resolve: (value: undefined) => void, reject: (reason: unknown) => void) => {
+						if (mockInsertShouldThrow) {
+							reject(new Error('simulated insert failure'));
+							return;
+						}
+						resolve(undefined);
+					},
+					onConflictDoUpdate: () => ({
+						returning: () => Promise.resolve([{ ...(values as Record<string, unknown>) }]),
+					}),
+				};
 			},
 		}),
-		update: () => ({
-			set: () => ({
-				where: () => ({
-					returning: () => Promise.resolve(mockOauthRefreshTokens),
-				}),
-			}),
+		update: (table: unknown) => ({
+			set: (setValues: Record<string, unknown>) => {
+				const call: { table: unknown; set: Record<string, unknown>; where?: unknown } = {
+					table,
+					set: setValues,
+				};
+				mockUpdateCalls.push(call);
+				return {
+					where: (where: unknown) => {
+						call.where = where;
+						// Round 10 review (P2): simulates the post-mutex/post-refresh-
+						// revoke "revoke the paired old access token" step failing --
+						// the specific `oauthTokens` update that never calls
+						// `.returning()`, awaited bare, in both
+						// `handleOauthTokenRefreshGrant` and
+						// `handleOauthRevokePostInner`.
+						if (mockOldAccessTokenRevokeShouldThrow && table === oauthTokensTable) {
+							return Promise.reject(new Error('simulated old access token revoke failure'));
+						}
+						if (mockPairedRefreshTokenRevokeShouldThrow && table === oauthRefreshTokensTable) {
+							return Promise.reject(new Error('simulated paired refresh token revoke failure'));
+						}
+						return {
+							returning: () => {
+								if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
+								if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
+								if (table === oauthRefreshTokensTable) {
+									return Promise.resolve(
+										mockRefreshRotationMutexShouldMiss ? [] : mockOauthRefreshTokens,
+									);
+								}
+								return Promise.resolve([]);
+							},
+						};
+					},
+				};
+			},
 		}),
+		delete: (table: unknown) => ({
+			where: (where: unknown) => {
+				mockDeleteCalls.push({ table, where });
+				return Promise.resolve(undefined);
+			},
+		}),
+		// OAUTH-003 / round 10: `revokeOauthRefreshTokenFamily` now issues a
+		// single atomic CTE statement via `database.execute(sql\`...\`)`
+		// instead of two separate `update()` calls -- see that function's own
+		// comment. Records the call so tests can assert it ran without
+		// needing to parse the raw SQL string.
+		execute: async (query: unknown) => {
+			mockExecuteCalls.push(query);
+			return { rows: [] };
+		},
 	},
 	schema: {
 		oauthClients: oauthClientsTable,
 		oauthCodes: oauthCodesTable,
 		oauthTokens: oauthTokensTable,
-		oauthRefreshTokens: {
-			refreshToken: 'refreshToken',
-			revokedAt: 'revokedAt',
-			expiresAt: 'expiresAt',
-		},
+		oauthRefreshTokens: oauthRefreshTokensTable,
 		users: { id: 'id', email: 'email' },
 	},
 }));
@@ -60,27 +175,55 @@ mock.module('drizzle-orm', () => ({
 	eq: (column: unknown, value: unknown) => ({ column, value }),
 	gt: (column: unknown, value: unknown) => ({ column, value }),
 	isNull: (column: unknown) => ({ column }),
+	inArray: (column: unknown, values: unknown) => ({ column, values }),
+	sql: Object.assign(
+		(strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+		{ raw: (value: string) => value },
+	),
 }));
+
+const mockRateLimitState = {
+	registrationAllowed: true,
+	tokenNetworkAllowed: true,
+	tokenClientAllowed: true,
+	revokeAllowed: true,
+	authorizeAllowed: true,
+};
 
 mock.module('@web/lib/request-rate-limiter', () => ({
 	enforceOauthRegistrationRateLimit: async () => ({
-		allowed: true,
-		retryAfterSeconds: 0,
+		allowed: mockRateLimitState.registrationAllowed,
+		retryAfterSeconds: mockRateLimitState.registrationAllowed ? 0 : 30,
 		remainingRequests: 10,
 	}),
-	enforceOauthTokenRateLimit: async () => ({
-		allowed: true,
-		retryAfterSeconds: 0,
+	enforceOauthTokenNetworkRateLimit: async () => ({
+		allowed: mockRateLimitState.tokenNetworkAllowed,
+		retryAfterSeconds: mockRateLimitState.tokenNetworkAllowed ? 0 : 30,
 		remainingRequests: 10,
 	}),
+	enforceOauthTokenClientRateLimit: async () => ({
+		allowed: mockRateLimitState.tokenClientAllowed,
+		retryAfterSeconds: mockRateLimitState.tokenClientAllowed ? 0 : 30,
+		remainingRequests: 10,
+	}),
+	enforceOauthRevokeRateLimit: async () => ({
+		allowed: mockRateLimitState.revokeAllowed,
+		retryAfterSeconds: mockRateLimitState.revokeAllowed ? 0 : 30,
+		remainingRequests: 10,
+	}),
+	enforceOauthAuthorizeRateLimit: async () => ({
+		allowed: mockRateLimitState.authorizeAllowed,
+		retryAfterSeconds: mockRateLimitState.authorizeAllowed ? 0 : 30,
+		remainingRequests: 10,
+	}),
+	isAuthenticationLockedOut: async () => false,
+	recordFailedAuthentication: async (input: unknown) => {
+		recordFailedAuthenticationCalls.push(input);
+	},
 }));
 
 mock.module('@web/lib/base-url', () => ({
 	getBaseUrl: () => 'http://localhost:3000',
-}));
-
-mock.module('@web/lib/enterprise-authorization-policy', () => ({
-	evaluateEnterpriseAuthorizationPolicy: async () => ({ allowed: true }),
 }));
 
 mock.module('@web/lib/hash-credential', () => ({
@@ -92,16 +235,88 @@ mock.module('@web/lib/validate-redirect-uri', () => ({
 		uri.startsWith('https://') || uri.startsWith('http://localhost'),
 }));
 
+// The actual fetch/DNS/SSRF/schema logic is covered directly and
+// exhaustively by client-metadata-documents.test.ts with injected
+// dependencies. Mocked here so this file's authorize-handler tests can
+// drive both branches (document fetched vs. not) without any network or
+// DNS activity.
+const mockCimdState: { document: Record<string, unknown> | null } = { document: null };
+let fetchClientIdMetadataDocumentCallCount = 0;
+mock.module('@web/lib/client-metadata-documents', () => ({
+	isClientIdMetadataDocumentUrl: (clientId: string) => {
+		try {
+			const parsed = new URL(clientId);
+			return parsed.protocol === 'https:' && parsed.pathname !== '' && parsed.pathname !== '/';
+		} catch {
+			return false;
+		}
+	},
+	fetchClientIdMetadataDocument: async () => {
+		fetchClientIdMetadataDocumentCallCount += 1;
+		return mockCimdState.document;
+	},
+}));
+
 mock.module('@web/lib/mcp-protocol-constants', () => ({
-	mcpProtocolVersion: '2025-11-25',
+	mcpSupportedProtocolVersions: ['2025-11-25', '2026-07-28'],
+	mcpLatestProtocolVersion: '2026-07-28',
 	mcpUiExtensionIdentifier: 'io.modelcontextprotocol/ui',
-	mcpOauthClientCredentialsExtensionIdentifier: 'io.modelcontextprotocol/oauth-client-credentials',
-	mcpEnterpriseAuthorizationExtensionIdentifier:
-		'io.modelcontextprotocol/enterprise-managed-authorization',
 }));
 
 mock.module('@web/lib/cors', () => ({
 	oauthCorsHeaders: { 'Access-Control-Allow-Origin': '*' },
+}));
+
+// Not mocked: isValidClientName is a small pure function, real-tested by
+// client-name-validation.test.ts; using the real implementation here lets
+// this suite prove the DCR schema actually enforces it end to end.
+
+// Not mocked: isTrustedRequestOrigin is covered directly by
+// csrf-protection.test.ts. bun's mock.module patches the shared module
+// registry for the whole test process (not just this file), so mocking it
+// here would leak into every other test file that imports the real
+// module -- tests below instead set a real `sec-fetch-site` header.
+
+// `createAuthorizationTransaction`/`consumeAuthorizationTransaction` have
+// their own real-database coverage via `test:authorization-transaction`;
+// mocked here so the route-level suite can drive every accept/reject path
+// (missing, mismatched, expired, replayed, cross-session, cross-user)
+// without standing up Postgres.
+const mockAuthorizationTransactionState: {
+	created: { transactionId: string; csrfToken: string };
+	consumeResult: {
+		clientId: string;
+		redirectUri: string;
+		codeChallenge: string;
+		codeChallengeMethod: string;
+		state: string | null;
+		issuer: string;
+		resource: string;
+		scope: string;
+	} | null;
+} = {
+	created: { transactionId: 'transaction-id', csrfToken: 'csrf-token' },
+	consumeResult: null,
+};
+const consumeAuthorizationTransactionCalls: unknown[] = [];
+const unconsumeAuthorizationTransactionCalls: unknown[] = [];
+// AUTHZ-001: captures what `handleOauthAuthorizeGet` actually resolved and
+// passed as `scope` -- the default-when-omitted set or the caller's own
+// (already-validated) narrower request -- so tests below can assert on it
+// without standing up Postgres.
+const createAuthorizationTransactionCalls: unknown[] = [];
+mock.module('@web/lib/authorization-transaction', () => ({
+	createAuthorizationTransaction: async (input: unknown) => {
+		createAuthorizationTransactionCalls.push(input);
+		return mockAuthorizationTransactionState.created;
+	},
+	consumeAuthorizationTransaction: async (input: unknown) => {
+		consumeAuthorizationTransactionCalls.push(input);
+		return mockAuthorizationTransactionState.consumeResult;
+	},
+	unconsumeAuthorizationTransaction: async (transactionId: string) => {
+		unconsumeAuthorizationTransactionCalls.push(transactionId);
+	},
 }));
 
 const {
@@ -124,8 +339,6 @@ function setEnvironment(overrides: Record<string, unknown>) {
 	}
 	Object.assign(mockEnvironment, {
 		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_ENABLE_CLIENT_CREDENTIALS: true,
-		MCP_ENABLE_ENTERPRISE_AUTH: false,
 		MCP_TOKEN_TTL_SECONDS: 3600,
 		MCP_REFRESH_TOKEN_TTL_SECONDS: 2592000,
 		...overrides,
@@ -139,20 +352,28 @@ function createContext(
 		headers: Record<string, string>;
 		body: string;
 		user: RequestContext['user'];
+		sessionToken: string | null;
 	}> = {},
 ): RequestContext {
 	const url = overrides.url ?? 'http://localhost:3000/oauth/register';
 	const request = new Request(url, {
 		method: overrides.method ?? 'POST',
-		headers: overrides.headers ?? { 'content-type': 'application/json' },
+		// `sec-fetch-site: same-origin` by default so every existing test stays
+		// same-origin for `isTrustedRequestOrigin` (approve/deny/CSRF checks);
+		// a test proving the cross-site-rejection path overrides it explicitly.
+		headers: {
+			'sec-fetch-site': 'same-origin',
+			...(overrides.headers ?? { 'content-type': 'application/json' }),
+		},
 		body: overrides.body,
 	});
 	return {
 		request,
 		requestUrl: new URL(url),
 		requestId: 'req-1',
+		networkIdentity: '203.0.113.1',
 		user: overrides.user ?? null,
-		sessionToken: null,
+		sessionToken: overrides.sessionToken ?? (overrides.user ? 'session-token' : null),
 	};
 }
 
@@ -174,24 +395,50 @@ describe('authorization metadata endpoint', () => {
 		expect(body.registration_endpoint).toBe('http://localhost:3000/oauth/register');
 	});
 
-	it('includes client_credentials in grant types when enabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: true });
+	it('never advertises client_credentials in grant types', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
 		});
 		const response = await handleOauthAuthorizationMetadataGet(context);
 		const body = await response.json();
-		expect(body.grant_types_supported).toContain('client_credentials');
+		expect(body.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+		expect((body.grant_types_supported as string[]).includes('client_credentials')).toBe(false);
 	});
 
-	it('excludes client_credentials when disabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: false });
+	it('never advertises the client_credentials extension', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthAuthorizationMetadataGet(context);
+		const body = (await response.json()) as { extensions: Record<string, unknown> };
+		expect(body.extensions['io.modelcontextprotocol/oauth-client-credentials']).toBeUndefined();
+	});
+
+	it('advertises client_id_metadata_document_supported (OAUTH-002)', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
 		});
 		const response = await handleOauthAuthorizationMetadataGet(context);
 		const body = await response.json();
-		expect((body.grant_types_supported as string[]).includes('client_credentials')).toBe(false);
+		expect(body.client_id_metadata_document_supported).toBe(true);
+	});
+
+	it('publishes scopes_supported (AUTHZ-001), never including the conformance-only audit:read scope', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthAuthorizationMetadataGet(context);
+		const body = (await response.json()) as { scopes_supported: string[] };
+		expect(body.scopes_supported).toEqual(['profile:read', 'prompts:read']);
+	});
+
+	it('OAUTH-004: advertises authorization_response_iss_parameter_supported (RFC 9207)', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthAuthorizationMetadataGet(context);
+		const body = await response.json();
+		expect(body.authorization_response_iss_parameter_supported).toBe(true);
 	});
 });
 
@@ -209,6 +456,24 @@ describe('protected resource metadata endpoint', () => {
 		expect(body.resource).toBe('http://localhost:3000/mcp');
 		expect(body.authorization_servers).toEqual(['http://localhost:3000']);
 	});
+
+	it('publishes the exact same scopes_supported as the authorization server metadata (AUTHZ-001)', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-protected-resource',
+		});
+		const authorizationServerContext = createContext({
+			url: 'http://localhost:3000/.well-known/oauth-authorization-server',
+		});
+		const response = await handleOauthProtectedResourceMetadataGet(context);
+		const authorizationServerResponse = await handleOauthAuthorizationMetadataGet(
+			authorizationServerContext,
+		);
+		const body = (await response.json()) as { scopes_supported: string[] };
+		const authorizationServerBody = (await authorizationServerResponse.json()) as {
+			scopes_supported: string[];
+		};
+		expect(body.scopes_supported).toEqual(authorizationServerBody.scopes_supported);
+	});
 });
 
 describe('protected resource MCP metadata endpoint', () => {
@@ -222,7 +487,7 @@ describe('protected resource MCP metadata endpoint', () => {
 		});
 		const response = await handleOauthProtectedResourceMcpMetadataGet(context);
 		const body = await response.json();
-		expect(body.mcp_protocol_version).toBe('2025-11-25');
+		expect(body.mcp_protocol_version).toBe('2026-07-28');
 		expect(body.bearer_methods_supported).toEqual(['header']);
 	});
 });
@@ -265,10 +530,22 @@ describe('client registration', () => {
 		expect(body.client_name).toBe('My App');
 		expect(typeof body.client_id).toBe('string');
 		expect(typeof body.client_secret).toBe('string');
+		// SEC-005 / S-10: a client secret is a credential; the response
+		// carrying it must never be cacheable.
+		expect(response.headers.get('Cache-Control')).toBe('no-store, private');
+		expect(response.headers.get('Vary')).toBe('Cookie');
+		// DATA-001 / S-18: "client secrets never expire" no longer holds -- a
+		// real, future, non-zero epoch-seconds expiry is now returned instead
+		// of RFC 7591's "0 means never expires" sentinel.
+		expect(typeof body.client_secret_expires_at).toBe('number');
+		expect(body.client_secret_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+		expect(mockInsertedValues).toHaveLength(1);
+		expect(
+			(mockInsertedValues[0] as { clientSecretExpiresAt: Date }).clientSecretExpiresAt,
+		).toBeInstanceOf(Date);
 	});
 
-	it('returns 400 when client_credentials is disabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: false });
+	it('rejects client_credentials in grant_types and creates no rows', async () => {
 		const context = createContext({
 			body: JSON.stringify({
 				client_name: 'My App',
@@ -281,24 +558,10 @@ describe('client registration', () => {
 		expect(response.status).toBe(400);
 		const body = await response.json();
 		expect(body.error).toBe('invalid_client_metadata');
+		expect(mockInsertedValues).toEqual([]);
 	});
 
-	it('returns 400 when client_credentials with auth_method none', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: true });
-		const context = createContext({
-			body: JSON.stringify({
-				client_name: 'My App',
-				redirect_uris: ['https://example.com/callback'],
-				grant_types: ['authorization_code', 'client_credentials'],
-				token_endpoint_auth_method: 'none',
-			}),
-			headers: { 'content-type': 'application/json' },
-		});
-		const response = await handleOauthRegisterPost(context);
-		expect(response.status).toBe(400);
-	});
-
-	it('returns 400 when refresh_token with auth_method none', async () => {
+	it('OAUTH-002: allows refresh_token for a public client (auth_method none) and issues no client_secret', async () => {
 		const context = createContext({
 			body: JSON.stringify({
 				client_name: 'My App',
@@ -309,7 +572,42 @@ describe('client registration', () => {
 			headers: { 'content-type': 'application/json' },
 		});
 		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(201);
+		const body = await response.json();
+		expect(body.token_endpoint_auth_method).toBe('none');
+		expect(body.client_secret).toBeUndefined();
+		expect(body.client_secret_expires_at).toBeUndefined();
+		expect(mockInsertedValues).toHaveLength(1);
+		expect((mockInsertedValues[0] as { clientSecret: unknown }).clientSecret).toBeNull();
+	});
+
+	it('OAUTH-002: rejects application_type "web" combined with a loopback redirect_uri', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: ['http://localhost:3000/callback'],
+				application_type: 'web',
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
 		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('OAUTH-002: accepts application_type "native" with a loopback redirect_uri and echoes it back', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: ['http://localhost:3000/callback'],
+				application_type: 'native',
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(201);
+		const body = await response.json();
+		expect(body.application_type).toBe('native');
 	});
 
 	it('returns 400 for invalid redirect URI scheme', async () => {
@@ -323,11 +621,82 @@ describe('client registration', () => {
 		const response = await handleOauthRegisterPost(context);
 		expect(response.status).toBe(400);
 	});
+
+	it('returns 429 and performs no database write when rate-limited', async () => {
+		mockRateLimitState.registrationAllowed = false;
+		try {
+			const context = createContext({
+				body: JSON.stringify({
+					client_name: 'My App',
+					redirect_uris: ['https://example.com/callback'],
+				}),
+				headers: { 'content-type': 'application/json' },
+			});
+			const response = await handleOauthRegisterPost(context);
+			expect(response.status).toBe(429);
+			expect(mockInsertedValues).toEqual([]);
+		} finally {
+			mockRateLimitState.registrationAllowed = true;
+		}
+	});
+
+	it('returns 413 and performs no database write for a body over the byte limit', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: ['https://example.com/callback'],
+				// The registration byte limit is 16KB; this padding alone is well over it.
+				padding: 'x'.repeat(32 * 1024),
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(413);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a Content-Type other than application/json and performs no database write', async () => {
+		const context = createContext({
+			body: JSON.stringify({ client_name: 'My App', redirect_uris: ['https://example.com/cb'] }),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a client_name over the maximum length and performs no database write', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'x'.repeat(500),
+				redirect_uris: ['https://example.com/callback'],
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects more redirect_uris than the maximum count and performs no database write', async () => {
+		const context = createContext({
+			body: JSON.stringify({
+				client_name: 'My App',
+				redirect_uris: Array.from({ length: 20 }, (_, index) => `https://example.com/cb${index}`),
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthRegisterPost(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
 });
 
 describe('token exchange', () => {
 	beforeEach(() => {
 		setEnvironment({});
+		mockInsertedValues = [];
+		recordFailedAuthenticationCalls = [];
 	});
 
 	it('returns 400 for unsupported grant type', async () => {
@@ -342,6 +711,39 @@ describe('token exchange', () => {
 		expect(body.error).toBe('unsupported_grant_type');
 	});
 
+	it('does not count an ordinary protocol error (400) toward the failed-authentication lockout', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: 'grant_type=implicit&client_id=c1',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		// Ten of these from one network identity must not trigger the shared
+		// lockout: an unsupported grant type never attempted client
+		// authentication.
+		expect(recordFailedAuthenticationCalls).toEqual([]);
+	});
+
+	it('counts an actual client-authentication failure (401) toward the failed-authentication lockout', async () => {
+		mockOauthClients = [];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code: 'some-code',
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'unknown',
+				code_verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(401);
+		expect(recordFailedAuthenticationCalls.length).toBe(1);
+	});
+
 	it('returns 400 for unsupported content type', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/token',
@@ -353,6 +755,101 @@ describe('token exchange', () => {
 		const body = await response.json();
 		expect(body.error).toBe('unsupported_content_type');
 	});
+
+	it('returns 429 before parsing the body when the network-scoped limit is exceeded', async () => {
+		mockRateLimitState.tokenNetworkAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/token',
+				body: 'grant_type=authorization_code&client_id=c1',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthTokenPost(context);
+			expect(response.status).toBe(429);
+			expect(mockInsertedValues).toEqual([]);
+		} finally {
+			mockRateLimitState.tokenNetworkAllowed = true;
+		}
+	});
+
+	it('returns 429 and performs no database write when the client-scoped limit is exceeded', async () => {
+		mockRateLimitState.tokenClientAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/token',
+				body: 'grant_type=authorization_code&client_id=c1&code=abc',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthTokenPost(context);
+			expect(response.status).toBe(429);
+			expect(mockInsertedValues).toEqual([]);
+		} finally {
+			mockRateLimitState.tokenClientAllowed = true;
+		}
+	});
+
+	it('rejects a duplicate parameter before any grant handling runs, with no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: 'grant_type=authorization_code&code=a&code=b&client_id=c1',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('returns 413 and performs no database write for a body over the byte limit', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			// The token endpoint byte limit is 8KB.
+			body: `grant_type=authorization_code&code=${'x'.repeat(16 * 1024)}`,
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(413);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a malformed code_verifier before any client lookup, with no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code: 'some-code',
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'c1',
+				code_verifier: 'too-short',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_grant');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a JSON body where a parameter is an array instead of a scalar string', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: JSON.stringify({
+				grant_type: 'authorization_code',
+				code: ['a', 'b'],
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'c1',
+			}),
+			headers: { 'content-type': 'application/json' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+		expect(mockInsertedValues).toEqual([]);
+	});
 });
 
 describe('token revocation', () => {
@@ -360,6 +857,11 @@ describe('token revocation', () => {
 		setEnvironment({});
 		mockOauthTokens = [];
 		mockOauthRefreshTokens = [];
+		mockOauthClients = [];
+		recordFailedAuthenticationCalls = [];
+		mockOldAccessTokenRevokeShouldThrow = false;
+		mockPairedRefreshTokenRevokeShouldThrow = false;
+		mockUpdateCalls = [];
 	});
 
 	it('returns 400 when token parameter is missing', async () => {
@@ -372,14 +874,304 @@ describe('token revocation', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('returns 200 even when token is not found (RFC 7009)', async () => {
+	it('does not count an ordinary protocol error (missing client_id, 400) toward the shared lockout', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/revoke',
-			body: 'token=unknown-token',
+			body: 'token=some-token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
+		expect(recordFailedAuthenticationCalls).toEqual([]);
+	});
+
+	it('counts an actual client-authentication failure (401) toward the shared lockout', async () => {
+		mockOauthClients = [];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-token&client_id=unknown-client',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(401);
+		expect(recordFailedAuthenticationCalls.length).toBe(1);
+	});
+
+	it('returns 400 when client_id parameter is missing (OAUTH-003)', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+	});
+
+	it('returns 401 for an unregistered client (OAUTH-003)', async () => {
+		mockOauthClients = [];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-token&client_id=unknown-client',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(401);
+	});
+
+	it('returns 200 for an authenticated client revoking an unknown token (RFC 7009)', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});
 		const response = await handleOauthRevokePost(context);
 		expect(response.status).toBe(200);
+	});
+
+	it('DATA-001 / S-18: accepts a confidential client whose secret has not yet expired', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: [],
+				tokenEndpointAuthMethod: 'client_secret_post',
+				clientSecret: hashCredential('correct-secret'),
+				clientSecretExpiresAt: new Date(Date.now() + 60_000),
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1&client_secret=correct-secret',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+	});
+
+	it('DATA-001 / S-18: rejects a confidential client whose secret is correct but past clientSecretExpiresAt', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: [],
+				tokenEndpointAuthMethod: 'client_secret_post',
+				clientSecret: hashCredential('correct-secret'),
+				clientSecretExpiresAt: new Date(Date.now() - 1000),
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1&client_secret=correct-secret',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(401);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_client');
+	});
+
+	it('DATA-001 / S-18: a client with no recorded clientSecretExpiresAt (legacy row) is not treated as expired', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: [],
+				tokenEndpointAuthMethod: 'client_secret_post',
+				clientSecret: hashCredential('correct-secret'),
+				clientSecretExpiresAt: null,
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=unknown-token&client_id=c1&client_secret=correct-secret',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+	});
+
+	it('returns 429 before parsing the body when revocation is rate-limited', async () => {
+		mockRateLimitState.revokeAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/revoke',
+				body: 'token=some-token',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthRevokePost(context);
+			expect(response.status).toBe(429);
+		} finally {
+			mockRateLimitState.revokeAllowed = true;
+		}
+	});
+
+	it('returns 413 for a body over the byte limit', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			// The revoke endpoint byte limit is 4KB.
+			body: `token=${'x'.repeat(8 * 1024)}`,
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(413);
+	});
+
+	it('rejects a duplicate token parameter', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=a&token=b',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_request');
+	});
+
+	it('rejects a token over the maximum length', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: `token=${'a'.repeat(1000)}`,
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(400);
+	});
+
+	// Round 10 review (P2): the same shape as the refresh grant's own
+	// post-mutex access-token revoke (this file's "still returns the new
+	// tokens when revoking the old access token fails after a successful
+	// rotation" test) -- a sibling this branch shares, flagged explicitly
+	// per the standing lesson on this pull request that a fix on one path
+	// while its sibling goes untouched has recurred. The refresh token
+	// revocation above already committed by the time the paired
+	// access-token revoke runs; a failure there must not turn RFC 7009's
+	// unconditional success response into a 500.
+	it('still returns 200 when revoking the paired access token fails after a successful refresh token revocation', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthRefreshTokens = [
+			{ refreshToken: 'hashed-refresh', clientId: 'c1', accessTokenHash: 'hashed-access' },
+		];
+		mockOldAccessTokenRevokeShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-refresh-token&client_id=c1&token_type_hint=refresh_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+	});
+
+	// A1 / RFC 7009 §2.1: "the authorization server MUST still be prepared
+	// to handle a token that does not match the hint by extending its
+	// search across all of the supported token types." The hint is only
+	// allowed to choose search ORDER; it must never suppress the fallback
+	// search. Before the fix, `token_type_hint=access_token` gated the
+	// refresh-token branch on `token_type_hint !== 'access_token'`, which
+	// was false here, so a refresh token mislabeled with that hint was never
+	// even looked up in the refresh-token table -- it stayed fully live.
+	it('A1: falls back to the refresh-token table when a refresh token is presented with token_type_hint=access_token', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		// No access token exists -- the hinted lookup must miss.
+		mockOauthTokens = [];
+		mockOauthRefreshTokens = [
+			{
+				refreshToken: 'hashed:some-refresh-token',
+				clientId: 'c1',
+				accessTokenHash: 'hashed-access',
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-refresh-token&client_id=c1&token_type_hint=access_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+		// The fallback fired: the refresh-token table was actually revoked,
+		// not merely skipped and silently reported as "success" via the
+		// generic 200.
+		const refreshRevokeCall = mockUpdateCalls.find(
+			(call) => call.table === oauthRefreshTokensTable && call.set.revokedAt !== undefined,
+		);
+		expect(refreshRevokeCall).toBeTruthy();
+	});
+
+	// The symmetric mistake: an access token presented with
+	// token_type_hint=refresh_token used to skip the access-token table
+	// entirely once the (mislabeled) refresh-token lookup missed.
+	it('A1: falls back to the access-token table when an access token is presented with token_type_hint=refresh_token', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthRefreshTokens = [];
+		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-access-token&client_id=c1&token_type_hint=refresh_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+		const accessRevokeCall = mockUpdateCalls.find(
+			(call) => call.table === oauthTokensTable && call.set.revokedAt !== undefined,
+		);
+		expect(accessRevokeCall).toBeTruthy();
+	});
+
+	// A2: revoking a live access token must also revoke the refresh token
+	// paired with it (the row whose accessTokenHash references this access
+	// token) -- otherwise the client can immediately use that still-live
+	// refresh token to mint a replacement access token, undoing the
+	// revocation. Mirrors the existing refresh-token-revoke -> paired
+	// access-token-revoke direction below.
+	it('A2: revoking a live access token also revokes its paired refresh token', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
+		mockOauthRefreshTokens = [
+			{
+				refreshToken: 'hashed:some-refresh-token',
+				clientId: 'c1',
+				accessTokenHash: 'hashed:some-access-token',
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-access-token&client_id=c1&token_type_hint=access_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
+		const pairedRefreshRevokeCall = mockUpdateCalls.find(
+			(call) => call.table === oauthRefreshTokensTable && call.set.revokedAt !== undefined,
+		);
+		expect(pairedRefreshRevokeCall).toBeTruthy();
+	});
+
+	it('A2: still returns 200 when revoking the paired refresh token fails after a successful access token revocation', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
+		mockOauthRefreshTokens = [
+			{
+				refreshToken: 'hashed:some-refresh-token',
+				clientId: 'c1',
+				accessTokenHash: 'hashed:some-access-token',
+			},
+		];
+		mockOldAccessTokenRevokeShouldThrow = false;
+		mockPairedRefreshTokenRevokeShouldThrow = true;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/revoke',
+				body: 'token=some-access-token&client_id=c1&token_type_hint=access_token',
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			});
+			const response = await handleOauthRevokePost(context);
+			expect(response.status).toBe(200);
+		} finally {
+			mockPairedRefreshTokenRevokeShouldThrow = false;
+		}
 	});
 });
 
@@ -387,11 +1179,181 @@ describe('authorization GET', () => {
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
+		mockInsertedValues = [];
+		mockCimdState.document = null;
+		mockAuthorizationTransactionState.created = {
+			transactionId: 'transaction-id',
+			csrfToken: 'csrf-token',
+		};
+		createAuthorizationTransactionCalls.length = 0;
+	});
+
+	const authorizeClient = {
+		clientId: 'c1',
+		clientName: 'Test App',
+		redirectUris: ['https://example.com/cb'],
+		responseTypes: ['code'],
+		grantTypes: ['authorization_code', 'refresh_token'],
+	};
+	const authorizeUrlBase =
+		'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp';
+	const authorizeUser = {
+		id: 'u1',
+		email: 'alice@example.com',
+		name: 'Alice',
+		image: null,
+		role: 'user',
+	};
+
+	describe('AUTHZ-001 scope resolution', () => {
+		it('defaults to every supported scope when the client omits scope entirely', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({ url: authorizeUrlBase, method: 'GET', user: authorizeUser }),
+			);
+			expect(response.status).toBe(200);
+			expect(createAuthorizationTransactionCalls).toHaveLength(1);
+			const call = createAuthorizationTransactionCalls[0] as { scope: string };
+			expect(call.scope).toBe('profile:read prompts:read');
+		});
+
+		it('narrows to exactly the client-requested, canonicalized subset', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=${encodeURIComponent('prompts:read profile:read prompts:read')}`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			expect(response.status).toBe(200);
+			const call = createAuthorizationTransactionCalls[0] as { scope: string };
+			expect(call.scope).toBe('profile:read prompts:read');
+		});
+
+		it('rejects an unsupported scope token before creating a transaction, redirected back to the client per RFC 6749 §4.1.2.1', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=${encodeURIComponent('profile:read admin:everything')}&state=xyz`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			// Review finding (P2): a client with a verified client_id/redirect_uri
+			// must receive protocol errors through that redirect, not a local
+			// HTML page it can never see -- it would otherwise wait forever on a
+			// callback that never arrives.
+			expect(response.status).toBe(302);
+			const location = new URL(response.headers.get('location')!);
+			expect(location.origin + location.pathname).toBe('https://example.com/cb');
+			expect(location.searchParams.get('error')).toBe('invalid_scope');
+			expect(location.searchParams.get('error_description')).toContain('Unsupported scope');
+			expect(location.searchParams.get('state')).toBe('xyz');
+			expect(createAuthorizationTransactionCalls).toHaveLength(0);
+		});
+
+		it('rejects a duplicate scope query parameter', async () => {
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=profile:read&scope=prompts:read`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			expect(response.status).toBe(400);
+		});
+
+		it('renders a human-readable description for every granted scope on the consent page', async () => {
+			mockOauthClients = [authorizeClient];
+			const response = await handleOauthAuthorizeGet(
+				createContext({
+					url: `${authorizeUrlBase}&scope=${encodeURIComponent('profile:read')}`,
+					method: 'GET',
+					user: authorizeUser,
+				}),
+			);
+			const body = await response.text();
+			expect(body).toContain('Read your profile information');
+		});
+	});
+
+	it('OAUTH-002: an https client_id with no matching row fetches and upserts a Client ID Metadata Document', async () => {
+		mockCimdState.document = {
+			clientId: 'https://app.example.com/oauth/client.json',
+			clientName: 'CIMD App',
+			redirectUris: ['https://app.example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+			applicationType: null,
+		};
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=https%3A%2F%2Fapp.example.com%2Foauth%2Fclient.json&redirect_uri=https://app.example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(200);
+		const body = await response.text();
+		expect(body).toContain('CIMD App');
+		expect(mockInsertedValues).toHaveLength(1);
+		const inserted = mockInsertedValues[0] as Record<string, unknown>;
+		expect(inserted.clientId).toBe('https://app.example.com/oauth/client.json');
+		expect(inserted.clientSecret).toBeNull();
+		expect(inserted.tokenEndpointAuthMethod).toBe('none');
+		expect(inserted.clientType).toBe('public');
+		expect(inserted.clientIdMetadataUrl).toBe('https://app.example.com/oauth/client.json');
+	});
+
+	it('OAUTH-002: renders "Unknown OAuth client" when a Client ID Metadata Document cannot be fetched or fails validation, and writes no row', async () => {
+		mockCimdState.document = null;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=https%3A%2F%2Fapp.example.com%2Foauth%2Fclient.json&redirect_uri=https://app.example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toContain('Unknown OAuth client');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('review finding (P2): rejects an oversized CIMD-shaped client_id before fetching the document', async () => {
+		// A CIMD `client_id` is a full HTTPS URL, so `oauthMaxClientIdLength`
+		// is 2048 (see request-limits.ts). Anything longer must be rejected
+		// by the length cap BEFORE `isClientIdMetadataDocumentUrl` and any
+		// network/database work — otherwise an authenticated caller could
+		// force an outbound DNS/HTTPS fetch (and even an `oauth_clients`
+		// upsert) for an identifier that was always going to be rejected.
+		fetchClientIdMetadataDocumentCallCount = 0;
+		mockCimdState.document = {
+			clientId: 'placeholder',
+			clientName: 'CIMD App',
+			redirectUris: ['https://app.example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+			applicationType: null,
+		};
+		const oversizedPath = 'a'.repeat(2100);
+		const oversizedClientId = `https://app.example.com/${oversizedPath}`;
+		expect(oversizedClientId.length).toBeGreaterThan(2048);
+		const context = createContext({
+			url: `http://localhost:3000/oauth/authorize?client_id=${encodeURIComponent(oversizedClientId)}&redirect_uri=https://app.example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp`,
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toContain('A parameter exceeded its maximum length');
+		expect(fetchClientIdMetadataDocumentCallCount).toBe(0);
+		expect(mockInsertedValues).toEqual([]);
 	});
 
 	it('redirects to sign-in when user is not authenticated', async () => {
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: null,
 		});
@@ -413,7 +1375,7 @@ describe('authorization GET', () => {
 	it('returns 400 when client is unknown', async () => {
 		mockOauthClients = [];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -421,16 +1383,141 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('renders consent page when client is valid', async () => {
+	it('redirects an unsupported response_type from a known client with a verified redirect URI per RFC 6749 §4.1.2.1', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=token&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp&state=xyz',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('unsupported_response_type');
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('redirects a missing resource parameter from a known client with a verified redirect URI per RFC 6749 §4.1.2.1', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&state=xyz',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_target');
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('redirects a resource parameter naming a different resource from a known client with a verified redirect URI', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=https://other.example.com/mcp&state=xyz',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_target');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('rejects an unsupported response_type with an oversized state locally, never echoing the oversized value into a redirect', async () => {
+		mockOauthClients = [authorizeClient];
+		const oversizedState = 'x'.repeat(600); // oauthMaxStateLength is 512
+		const context = createContext({
+			url: `http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=token&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp&state=${oversizedState}`,
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		// The length-cap check must run BEFORE the response_type redirect --
+		// otherwise an oversized state would be echoed unbounded into the
+		// Location header, bypassing SEC-004's bound on this parameter.
+		expect(response.status).toBe(400);
+		expect(response.headers.get('location')).toBeNull();
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('rejects response_type=code for a client registered with an empty response_types array', async () => {
 		mockOauthClients = [
 			{
 				clientId: 'c1',
 				clientName: 'Test App',
 				redirectUris: ['https://example.com/cb'],
+				responseTypes: [],
 			},
 		];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		// client_id/redirect_uri are verified before this check runs, so per
+		// RFC 6749 §4.1.2.1 the error is delivered through that redirect.
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('unauthorized_client');
+		expect(location.searchParams.get('error_description')).toContain(
+			'not registered for the code response type',
+		);
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('round-7 review: rejects a client (e.g. an inconsistent CIMD document) registered with response_types=[code] but grant_types that omit authorization_code', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['https://example.com/cb'],
+				responseTypes: ['code'],
+				grantTypes: ['refresh_token'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		// client_id/redirect_uri are verified before this check runs, so per
+		// RFC 6749 §4.1.2.1 the error is delivered through that redirect.
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('unauthorized_client');
+		expect(location.searchParams.get('error_description')).toContain(
+			'not registered for the authorization_code grant type',
+		);
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('renders consent page with an opaque transaction id and csrf token, never the raw client/redirect/PKCE values', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['https://example.com/cb'],
+				responseTypes: ['code'],
+				grantTypes: ['authorization_code', 'refresh_token'],
+			},
+		];
+		mockAuthorizationTransactionState.created = {
+			transactionId: 'created-transaction-id',
+			csrfToken: 'created-csrf-token',
+		};
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -438,16 +1525,53 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(200);
 		const body = await response.text();
 		expect(body).toContain('Test App');
+		expect(body).toContain('created-transaction-id');
+		expect(body).toContain('created-csrf-token');
+		expect(body).not.toContain('name="client_id"');
+		expect(body).not.toContain('name="code_challenge"');
 	});
 
-	it('returns 400 for unsupported code_challenge_method', async () => {
+	it('redirects to the verified client for an unsupported code_challenge_method', async () => {
+		// Regression test for review finding: client_id/redirect_uri are
+		// already verified by this point, so per RFC 6749 §4.1.2.1 this must
+		// be delivered through the client's own redirect_uri, never rendered
+		// as a local error page (which would leave the client waiting on a
+		// callback it never receives). The prior version of this test never
+		// set `mockOauthClients`, so it accidentally exercised the "unknown
+		// client" 400 branch instead of the PKCE check it claimed to cover.
+		mockOauthClients = [authorizeClient];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc&code_challenge_method=plain',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc&code_challenge_method=plain&resource=http://localhost:3000/mcp&state=xyz',
 			method: 'GET',
-			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+			user: authorizeUser,
 		});
 		const response = await handleOauthAuthorizeGet(context);
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_request');
+		expect(location.searchParams.get('error_description')).toContain(
+			'Only S256 code challenge method is supported',
+		);
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('redirects to the verified client for a malformed code_challenge', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=not-a-valid-pkce-challenge!!&resource=http://localhost:3000/mcp&state=xyz',
+			method: 'GET',
+			user: authorizeUser,
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_request');
+		expect(location.searchParams.get('error_description')).toContain('Malformed code_challenge');
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
 	});
 
 	it('returns 400 when redirect URI does not match client', async () => {
@@ -459,45 +1583,211 @@ describe('authorization GET', () => {
 			},
 		];
 		const context = createContext({
-			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc',
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
 			method: 'GET',
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeGet(context);
 		expect(response.status).toBe(400);
 	});
+
+	it('OAUTH-004: accepts a loopback redirect_uri whose port differs from the registered one', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['http://localhost:1234/callback'],
+				responseTypes: ['code'],
+				grantTypes: ['authorization_code', 'refresh_token'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=http://localhost:54321/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(200);
+	});
+
+	it('OAUTH-004: rejects a loopback redirect_uri whose path differs from every registered entry, even with port flexibility', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['http://localhost:1234/callback'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=http://localhost:54321/other&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+	});
+
+	it('OAUTH-004: rejects a hosted HTTPS redirect_uri whose host is merely a lookalike suffix of the registered one', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://claude.ai.evil.com/api/mcp/auth_callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+	});
+
+	it("OAUTH-004: accepts Claude's hosted callback URI when registered exactly", async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Claude',
+				redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
+				responseTypes: ['code'],
+				grantTypes: ['authorization_code', 'refresh_token'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://claude.ai/api/mcp/auth_callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(200);
+	});
+
+	it('returns 429 when rate-limited', async () => {
+		mockRateLimitState.authorizeAllowed = false;
+		try {
+			const context = createContext({
+				url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+				method: 'GET',
+				user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+			});
+			const response = await handleOauthAuthorizeGet(context);
+			expect(response.status).toBe(429);
+		} finally {
+			mockRateLimitState.authorizeAllowed = true;
+		}
+	});
+
+	it('rejects a duplicate client_id query parameter', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&client_id=c2&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+	});
+
+	it('redirects to the verified client for a malformed code_challenge', async () => {
+		// See "redirects to the verified client for a malformed
+		// code_challenge" above (AUTHZ-001/CIMD describe block) for the
+		// dedicated regression coverage with error/state assertions. This
+		// pre-existing test only pins the status code from a different
+		// mock-client shape, updated from 400 to 302 for the same RFC
+		// 6749 §4.1.2.1 reason — see review finding (P2) on the
+		// `code_challenge_method`/`code_challenge` checks in
+		// `handleOauthAuthorizeGet`.
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: ['https://example.com/cb'] },
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=too-short&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+	});
 });
 
 describe('authorization approve', () => {
+	const validTransaction = {
+		clientId: 'c1',
+		redirectUri: 'https://example.com/cb',
+		codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+		codeChallengeMethod: 'S256',
+		state: 'state-xyz',
+		issuer: 'http://localhost:3000',
+		resource: 'http://localhost:3000/mcp',
+		scope: 'profile:read',
+	};
+
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
 		mockInsertedValues = [];
+		mockAuthorizationTransactionState.consumeResult = validTransaction;
+		consumeAuthorizationTransactionCalls.length = 0;
+		unconsumeAuthorizationTransactionCalls.length = 0;
+		mockInsertShouldThrow = false;
 	});
 
-	it('returns 401 when user is not authenticated', async () => {
-		const formData = new FormData();
-		formData.set('client_id', 'c1');
-		formData.set('redirect_uri', 'https://example.com/cb');
-		formData.set('code_challenge', 'abc');
+	it('reopens the authorization transaction when the code insert fails, so the approval form can be retried', async () => {
+		mockInsertShouldThrow = true;
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
-				code_challenge: 'abc',
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+
+		// The transaction was already consumed by the time the insert fails
+		// (this codebase's atomic revoke-then-check pattern); without the
+		// fix, that consumption is permanent and the same form can never be
+		// resubmitted. This asserts the compensating un-consume runs.
+		await expect(handleOauthAuthorizeApprove(context)).rejects.toThrow('simulated insert failure');
+		expect(unconsumeAuthorizationTransactionCalls).toEqual(['transaction-id']);
+	});
+
+	it('returns 401 when user is not authenticated', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: null,
 		});
 		const response = await handleOauthAuthorizeApprove(context);
 		expect(response.status).toBe(401);
+	});
+
+	it('returns 403 for a cross-site request even with valid fields', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'cross-site',
+			},
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(403);
+		expect(mockInsertedValues).toEqual([]);
 	});
 
 	it('returns 400 when required fields are missing', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
-			body: new URLSearchParams({ client_id: 'c1' }).toString(),
+			body: new URLSearchParams({ transaction_id: 'transaction-id' }).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
@@ -505,35 +1795,151 @@ describe('authorization approve', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('returns 400 for unsupported code_challenge_method', async () => {
+	it('returns 400 and performs no database write when the transaction cannot be consumed (missing, mismatched, expired, replayed, cross-session, or cross-user)', async () => {
+		mockAuthorizationTransactionState.consumeResult = null;
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/approve',
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
-				code_challenge: 'abc',
-				code_challenge_method: 'plain',
+				transaction_id: 'transaction-id',
+				csrf_token: 'wrong-csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeApprove(context);
 		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('passes the session token and user id to the atomic consume call', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+			sessionToken: 'the-session-token',
+		});
+		await handleOauthAuthorizeApprove(context);
+		expect(consumeAuthorizationTransactionCalls).toEqual([
+			{
+				transactionId: 'transaction-id',
+				csrfToken: 'csrf-token',
+				userId: 'u1',
+				sessionToken: 'the-session-token',
+			},
+		]);
+	});
+
+	it('returns 413 and performs no database write for a body over the byte limit', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'x'.repeat(8 * 1024),
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(413);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a duplicate parameter and performs no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'transaction_id=t1&transaction_id=t2&csrf_token=csrf-token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('rejects a transaction_id over the maximum length and performs no database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: new URLSearchParams({
+				transaction_id: 'x'.repeat(1024),
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(400);
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('issues a code and redirects using only the transaction record, ignoring any other posted field', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'transaction_id=transaction-id&csrf_token=csrf-token&redirect_uri=https://evil.example.com/steal',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(302);
+		const location = response.headers.get('Location')!;
+		expect(location.startsWith('https://example.com/cb?')).toBe(true);
+		expect(location).toContain('code=');
+		expect(location).toContain('state=state-xyz');
+		expect(mockInsertedValues).toHaveLength(1);
+	});
+
+	it('OAUTH-004: includes the transaction-bound issuer as iss (RFC 9207), never re-derived from the request', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'transaction_id=transaction-id&csrf_token=csrf-token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		const location = new URL(response.headers.get('Location')!);
+		expect(location.searchParams.get('iss')).toBe('http://localhost:3000');
+	});
+
+	it('AUTHZ-001: copies the transaction record scope onto the issued code, never re-deriving it from the form', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/approve',
+			body: 'transaction_id=transaction-id&csrf_token=csrf-token&scope=admin:everything',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeApprove(context);
+		expect(response.status).toBe(302);
+		expect((mockInsertedValues[0] as { scope: string }).scope).toBe('profile:read');
 	});
 });
 
 describe('authorization deny', () => {
+	const validTransaction = {
+		clientId: 'c1',
+		redirectUri: 'https://example.com/cb',
+		codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+		codeChallengeMethod: 'S256',
+		state: 'state-xyz',
+		issuer: 'http://localhost:3000',
+		resource: 'http://localhost:3000/mcp',
+		scope: 'profile:read',
+	};
+
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
+		mockAuthorizationTransactionState.consumeResult = validTransaction;
 	});
 
 	it('returns 401 when user is not authenticated', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/deny',
 			body: new URLSearchParams({
-				client_id: 'c1',
-				redirect_uri: 'https://example.com/cb',
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: null,
@@ -542,15 +1948,81 @@ describe('authorization deny', () => {
 		expect(response.status).toBe(401);
 	});
 
-	it('returns 400 when redirect_uri is missing', async () => {
+	it('returns 403 for a cross-site request', async () => {
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/authorize/deny',
-			body: new URLSearchParams({ client_id: 'c1' }).toString(),
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'cross-site',
+			},
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		expect(response.status).toBe(403);
+	});
+
+	it('returns 400 when required fields are missing', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({ transaction_id: 'transaction-id' }).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeDeny(context);
 		expect(response.status).toBe(400);
+	});
+
+	it('returns 400 when the transaction cannot be consumed', async () => {
+		mockAuthorizationTransactionState.consumeResult = null;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		expect(response.status).toBe(400);
+	});
+
+	it('redirects with access_denied using only the transaction record', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+				redirect_uri: 'https://evil.example.com/steal',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		expect(response.status).toBe(302);
+		const location = response.headers.get('Location')!;
+		expect(location.startsWith('https://example.com/cb?')).toBe(true);
+		expect(location).toContain('error=access_denied');
+		expect(location).toContain('state=state-xyz');
+	});
+
+	it('OAUTH-004: includes the transaction-bound issuer as iss (RFC 9207) on the error response too', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize/deny',
+			body: new URLSearchParams({
+				transaction_id: 'transaction-id',
+				csrf_token: 'csrf-token',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeDeny(context);
+		const location = new URL(response.headers.get('Location')!);
+		expect(location.searchParams.get('iss')).toBe('http://localhost:3000');
 	});
 });
 
@@ -558,6 +2030,13 @@ describe('authorization code token exchange', () => {
 	beforeEach(() => {
 		setEnvironment({});
 		mockOauthClients = [];
+		mockOauthCodes = [];
+		mockOauthTokens = [];
+		mockOauthRefreshTokens = [];
+		mockInsertedValues = [];
+		mockInsertShouldThrow = false;
+		mockUpdateCalls = [];
+		mockDeleteCalls = [];
 	});
 
 	it('returns 400 for missing required parameters', async () => {
@@ -584,7 +2063,8 @@ describe('authorization code token exchange', () => {
 				code: 'some-code',
 				redirect_uri: 'https://example.com/cb',
 				client_id: 'unknown',
-				code_verifier: 'verifier',
+				code_verifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+				resource: 'http://localhost:3000/mcp',
 			}).toString(),
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});
@@ -605,8 +2085,8 @@ describe('authorization code token exchange', () => {
 		expect(response.status).toBe(400);
 	});
 
-	it('returns 400 for client_credentials when disabled', async () => {
-		setEnvironment({ MCP_ENABLE_CLIENT_CREDENTIALS: false });
+	it('returns unsupported_grant_type for client_credentials and mints no token', async () => {
+		mockInsertedValues = [];
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/token',
 			body: new URLSearchParams({
@@ -618,5 +2098,401 @@ describe('authorization code token exchange', () => {
 		});
 		const response = await handleOauthTokenPost(context);
 		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('unsupported_grant_type');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	// RFC 7636 Appendix B's canonical example verifier/challenge pair.
+	const validCodeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+	const validCodeChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+	function seedValidAuthorizationCode(): void {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				tokenEndpointAuthMethod: 'none',
+				clientSecret: null,
+				grantTypes: ['authorization_code', 'refresh_token'],
+			},
+		];
+		mockOauthCodes = [
+			{
+				code: 'hashed:valid-code',
+				clientId: 'c1',
+				userId: 'u1',
+				redirectUri: 'https://example.com/cb',
+				codeChallenge: validCodeChallenge,
+				codeChallengeMethod: 'S256',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read',
+				usedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+	}
+	function validCodeGrantContext(): ReturnType<typeof createContext> {
+		return createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				code: 'valid-code',
+				redirect_uri: 'https://example.com/cb',
+				client_id: 'c1',
+				code_verifier: validCodeVerifier,
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+	}
+
+	it('mints an access token and a refresh token from a valid authorization code', async () => {
+		seedValidAuthorizationCode();
+		const response = await handleOauthTokenPost(validCodeGrantContext());
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.access_token).toBeTruthy();
+		expect(body.refresh_token).toBeTruthy();
+		expect(mockInsertedValues).toHaveLength(2);
+	});
+
+	it('omits refresh_token when the client is not registered for the refresh_token grant', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				tokenEndpointAuthMethod: 'none',
+				clientSecret: null,
+				grantTypes: ['authorization_code'],
+			},
+		];
+		mockOauthCodes = [
+			{
+				code: 'hashed:valid-code',
+				clientId: 'c1',
+				userId: 'u1',
+				redirectUri: 'https://example.com/cb',
+				codeChallenge: validCodeChallenge,
+				codeChallengeMethod: 'S256',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read',
+				usedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+		const response = await handleOauthTokenPost(validCodeGrantContext());
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.access_token).toBeTruthy();
+		expect(body.refresh_token).toBeUndefined();
+		// Only the access-token row is written -- no unusable refresh token is
+		// stored or returned for a client that cannot ever redeem it.
+		expect(mockInsertedValues).toHaveLength(1);
+	});
+
+	it('reopens the authorization code and removes the orphaned access-token row when token issuance fails after the code is consumed', async () => {
+		seedValidAuthorizationCode();
+		mockInsertShouldThrow = true;
+
+		// Without the fix, the `usedAt` update above (which already ran before
+		// the insert failed) is permanent -- the code can never be retried,
+		// and any access-token row the first (successful) insert wrote before
+		// the second insert threw would be left orphaned and undisclosed.
+		await expect(handleOauthTokenPost(validCodeGrantContext())).rejects.toThrow(
+			'simulated insert failure',
+		);
+
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		const reopenCall = mockUpdateCalls.find(
+			(call) => call.table === oauthCodesTable && call.set.usedAt === null,
+		);
+		expect(reopenCall).toBeTruthy();
+	});
+
+	it('review finding (P2): the reopen predicate requires usedAt to still hold the exact value this handler wrote, so a concurrent revocation is not silently undone', async () => {
+		// `revokeUserClientGrant`/`revokeAllUserGrants` (`consent-inventory.ts`)
+		// now overwrite `used_at` unconditionally for every not-yet-expired
+		// code, rather than skipping one that is already non-null. Before
+		// this fix, revocation skipped an already-consumed code entirely,
+		// and this `UPDATE` had no predicate at all beyond the code's own
+		// hash -- it would have silently cleared `usedAt` back to `null`
+		// regardless of a concurrent revocation, reopening a code the user
+		// had just told the server to kill. Scoping the reopen to the exact
+		// `usedAt` value this handler itself wrote means a revocation that
+		// overwrites that value first makes the reopen match no row.
+		seedValidAuthorizationCode();
+		mockInsertShouldThrow = true;
+
+		await expect(handleOauthTokenPost(validCodeGrantContext())).rejects.toThrow(
+			'simulated insert failure',
+		);
+
+		const reopenCall = mockUpdateCalls.find(
+			(call) => call.table === oauthCodesTable && call.set.usedAt === null,
+		);
+		expect(reopenCall).toBeTruthy();
+		const predicate = reopenCall!.where as Array<{ column?: unknown; value?: unknown }>;
+		expect(Array.isArray(predicate)).toBe(true);
+		expect(predicate).toHaveLength(2);
+		// The reopen must be scoped to this exact code row...
+		expect(
+			predicate.some((clause) => clause.column === oauthCodesTable.code && 'value' in clause),
+		).toBe(true);
+		// ...and must only clear `usedAt` if it still holds exactly the value
+		// this handler itself wrote when it consumed the code (never an
+		// unconditional clear).
+		expect(
+			predicate.some((clause) => clause.column === oauthCodesTable.usedAt && 'value' in clause),
+		).toBe(true);
+	});
+});
+
+describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
+	beforeEach(() => {
+		setEnvironment({});
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				tokenEndpointAuthMethod: 'none',
+				clientSecret: null,
+				grantTypes: ['authorization_code', 'refresh_token'],
+			},
+		];
+		mockOauthRefreshTokens = [
+			{
+				refreshToken: 'hashed:refresh-token-value',
+				clientId: 'c1',
+				userId: 'u1',
+				scope: 'profile:read',
+				resource: 'http://localhost:3000/mcp',
+				accessTokenHash: 'hashed:old-access-token',
+				familyId: 'family-1',
+				revokedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+		mockOauthTokens = [
+			{
+				accessToken: 'hashed:old-access-token',
+				revokedAt: null,
+			},
+		];
+		mockInsertedValues = [];
+		mockInsertShouldThrow = false;
+		mockUpdateCalls = [];
+		mockDeleteCalls = [];
+		mockRefreshRotationMutexShouldMiss = false;
+		mockExecuteCalls = [];
+		mockOauthRefreshTokensSelectCallCount = 0;
+		mockFirstRefreshTokenSelectShouldMiss = false;
+		mockOldAccessTokenRevokeShouldThrow = false;
+	});
+
+	it('carries the stored scope forward when the refresh request omits scope entirely', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.scope).toBe('profile:read');
+	});
+
+	it('rejects a refresh scope request that exceeds the originally granted scope, minting no new token', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read prompts:read',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_scope');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('accepts a refresh scope request that narrows to a subset of the original grant', async () => {
+		mockOauthRefreshTokens = [
+			{
+				...(mockOauthRefreshTokens[0] as Record<string, unknown>),
+				scope: 'profile:read prompts:read',
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.scope).toBe('profile:read');
+	});
+
+	it('rejects an unrecognized scope token before any database write', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'admin:everything',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_scope');
+		expect(mockInsertedValues).toEqual([]);
+	});
+
+	it('does not revoke the old refresh token when minting its replacement fails, so the original stays usable', async () => {
+		mockInsertShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		// P1 (review round 6): the replacement pair is now inserted *before*
+		// the mutex revoke, precisely so a failed insert never needs to
+		// un-revoke anything -- nothing was revoked yet. Without that
+		// ordering, the old revoke-then-insert code would have already
+		// burned the client's only refresh token by the time this insert
+		// failure surfaced.
+		await expect(handleOauthTokenPost(context)).rejects.toThrow('simulated insert failure');
+
+		// Best-effort cleanup of whatever was written before the throw.
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(true);
+		// Nothing was ever revoked -- the mutex UPDATE against
+		// `oauthRefreshTokensTable` never ran, so there is no `revokedAt`
+		// write to compensate for.
+		expect(mockUpdateCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(false);
+	});
+
+	it('deletes the speculative replacement pair, without touching the old token, when it loses the rotation race', async () => {
+		// Simulate losing the mutex: the read-only lookup that gathers insert
+		// values still sees the token as live, but the mutex UPDATE's own
+		// `WHERE ... RETURNING` matches nothing -- exactly like a concurrent
+		// winner having already revoked the row a moment after this request's
+		// own read.
+		mockRefreshRotationMutexShouldMiss = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_grant');
+
+		// The speculative replacement pair this request inserted before
+		// attempting the mutex must be deleted once the mutex loses.
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(true);
+	});
+
+	// Round 10 review (P1): `revokeOauthRefreshTokenFamily` used to be two
+	// separate `update()` calls -- revoke the family, then revoke its access
+	// tokens -- which could leave a family revoked with its access token
+	// still live if the second call failed. Fixed by combining both
+	// mutations into one atomic `database.execute(sql\`...\`)` CTE
+	// statement, so the two-statement partial-failure window this finding
+	// describes can no longer be reached at all. This proves the
+	// CONSTRUCTION, not just the outcome: presenting an already-rotated
+	// (replayed) refresh token must trigger exactly one `database.execute`
+	// call and zero direct `update()` calls against either token table for
+	// the family-revocation path -- not the old two-`update()`-call shape.
+	it('revokes a replayed refresh token family with exactly one atomic statement, not two separate updates', async () => {
+		mockFirstRefreshTokenSelectShouldMiss = true;
+		mockOauthRefreshTokens = [
+			{
+				...(mockOauthRefreshTokens[0] as Record<string, unknown>),
+				familyId: 'family-1',
+				revokedAt: new Date(Date.now() - 60_000),
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_grant');
+
+		// The atomic construction: one `database.execute` call for the whole
+		// family revocation, not two separate `update()` calls against
+		// `oauthRefreshTokensTable`/`oauthTokensTable`.
+		expect(mockExecuteCalls).toHaveLength(1);
+		expect(mockUpdateCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(false);
+		expect(mockUpdateCalls.some((call) => call.table === oauthTokensTable)).toBe(false);
+	});
+
+	// Round 10 review (P2): the previous code awaited the old-access-token
+	// revoke unguarded, AFTER the replacement pair was already inserted and
+	// AFTER the mutex had already revoked the old refresh token -- both
+	// committed. If this last step then threw, the whole handler threw too,
+	// so the client received a 500 with no tokens at all while its old
+	// refresh token was already dead: no usable retry path. Proves the fix:
+	// a successful rotation still returns 200 with the new credentials even
+	// when this best-effort cleanup step fails.
+	it('still returns the new tokens when revoking the old access token fails after a successful rotation', async () => {
+		mockOldAccessTokenRevokeShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.access_token).toBeTruthy();
+		expect(body.refresh_token).toBeTruthy();
 	});
 });

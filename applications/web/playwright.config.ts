@@ -15,11 +15,13 @@ export default defineConfig({
 		},
 	],
 	webServer: {
-		command: 'SKIP_ENV_VALIDATION=true bun run src/server.ts',
+		command: 'bun run src/server.ts',
 		port: 3456,
 		env: {
+			NODE_ENV: 'test',
 			PORT: '3456',
-			SKIP_ENV_VALIDATION: 'true',
+			DATABASE_URL: 'postgresql://protokit:protokit@db.localtest.me:5432/protokit_test',
+			DATABASE_LOCAL_PROXY_URL: 'http://db.localtest.me:4444/sql',
 			GOOGLE_CLIENT_ID: 'test-google-client-id',
 			GOOGLE_CLIENT_SECRET: 'test-google-client-secret',
 			SESSION_SIGNING_SECRET: 'development-session-secret-with-at-least-32-characters',

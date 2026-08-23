@@ -6,11 +6,15 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./schema": "./src/schema.ts",
-		"./env": "./src/env.ts"
+		"./env": "./src/env.ts",
+		"./migrate": "./src/migrate.ts",
+		"./baseline": "./src/baseline.ts",
+		"./environment-schema": "./src/environment-schema.ts",
+		"./local-proxy": "./src/local-proxy.ts"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"test": "bun test",
+		"test": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test",
 		"lint": "eslint src/",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",
@@ -25,6 +29,7 @@
 	"devDependencies": {
 		"@types/node": "^26.2.0",
 		"drizzle-kit": "^0.31.10",
+		"postgres": "^3.4.9",
 		"typescript": "6.0.3"
 	}
 }

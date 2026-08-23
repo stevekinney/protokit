@@ -1,45 +1,45 @@
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 
-export function readProgressToken(extra: unknown): string | number | undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	const meta = (extra as { _meta?: { progressToken?: string | number } })._meta;
+type NotificationSender = (notification: {
+	method: string;
+	params: Record<string, unknown>;
+}) => Promise<void>;
+
+type RequestSender = (request: {
+	method: string;
+	params: Record<string, unknown>;
+}) => Promise<unknown>;
+
+function readMcpReq(ctx: unknown): Record<string, unknown> | undefined {
+	if (!ctx || typeof ctx !== 'object') return undefined;
+	const mcpReq = (ctx as { mcpReq?: unknown }).mcpReq;
+	if (!mcpReq || typeof mcpReq !== 'object') return undefined;
+	return mcpReq as Record<string, unknown>;
+}
+
+export function readProgressToken(ctx: unknown): string | number | undefined {
+	const mcpReq = readMcpReq(ctx);
+	const meta = mcpReq?._meta as { progressToken?: string | number } | undefined;
 	return meta?.progressToken;
 }
 
-export function readSessionIdentifier(extra: unknown): string | undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	return (extra as { sessionId?: string }).sessionId;
+export function readSessionIdentifier(ctx: unknown): string | undefined {
+	if (!ctx || typeof ctx !== 'object') return undefined;
+	return (ctx as { sessionId?: string }).sessionId;
 }
 
-export function readNotificationSender(
-	extra: unknown,
-):
-	| ((notification: { method: string; params: Record<string, unknown> }) => Promise<void>)
-	| undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	const sendNotification = (extra as { sendNotification?: unknown }).sendNotification;
-	if (typeof sendNotification !== 'function') return undefined;
-	return sendNotification as (notification: {
-		method: string;
-		params: Record<string, unknown>;
-	}) => Promise<void>;
+export function readNotificationSender(ctx: unknown): NotificationSender | undefined {
+	const mcpReq = readMcpReq(ctx);
+	const notify = mcpReq?.notify;
+	if (typeof notify !== 'function') return undefined;
+	return notify as NotificationSender;
 }
 
-export function readRequestSender(
-	extra: unknown,
-):
-	| ((
-			request: { method: string; params: Record<string, unknown> },
-			resultSchema: unknown,
-	  ) => Promise<unknown>)
-	| undefined {
-	if (!extra || typeof extra !== 'object') return undefined;
-	const sendRequest = (extra as { sendRequest?: unknown }).sendRequest;
-	if (typeof sendRequest !== 'function') return undefined;
-	return sendRequest as (
-		request: { method: string; params: Record<string, unknown> },
-		resultSchema: unknown,
-	) => Promise<unknown>;
+export function readRequestSender(ctx: unknown): RequestSender | undefined {
+	const mcpReq = readMcpReq(ctx);
+	const send = mcpReq?.send;
+	if (typeof send !== 'function') return undefined;
+	return send as RequestSender;
 }
 
 export function stringifyUnknown(value: unknown): string {
@@ -68,9 +68,9 @@ export function parseSampledText(result: unknown): string {
 	return stringifyUnknown(result);
 }
 
-export function assertSamplingSupport(extra: unknown): void {
-	const requestSender = readRequestSender(extra);
+export function assertSamplingSupport(ctx: unknown): void {
+	const requestSender = readRequestSender(ctx);
 	if (!requestSender) {
-		throw new McpError(ErrorCode.InvalidRequest, 'Client does not support sampling');
+		throw new ProtocolError(ProtocolErrorCode.InvalidRequest, 'Client does not support sampling');
 	}
 }

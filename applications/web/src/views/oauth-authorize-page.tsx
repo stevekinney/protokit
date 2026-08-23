@@ -1,6 +1,12 @@
 import type { JSX } from 'react';
 import type { ApplicationUser } from '@web/lib/session-authentication';
 
+/** AUTHZ-001: one requested scope, resolved to a human-readable description, for display on the consent screen. */
+export type OAuthAuthorizePageScope = {
+	scope: string;
+	description: string;
+};
+
 type OAuthAuthorizePageInput =
 	| {
 			mode: 'error';
@@ -9,12 +15,12 @@ type OAuthAuthorizePageInput =
 	| {
 			mode: 'form';
 			clientName: string;
-			clientId: string;
 			redirectUri: string;
-			codeChallenge: string;
-			codeChallengeMethod: string;
-			state: string;
+			transactionId: string;
+			csrfToken: string;
 			user: ApplicationUser;
+			/** AUTHZ-001: the exact scopes this authorization will grant if approved — never more than what is shown here. */
+			scopes: OAuthAuthorizePageScope[];
 	  };
 
 export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element {
@@ -32,6 +38,14 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 		);
 	}
 
+	const redirectHost = (() => {
+		try {
+			return new URL(input.redirectUri).host;
+		} catch {
+			return input.redirectUri;
+		}
+	})();
+
 	return (
 		<main className="mx-auto mt-12 w-full max-w-3xl px-6">
 			<div className="rounded-3xl border border-slate-200 bg-white p-10 shadow-lg shadow-slate-200/40">
@@ -43,14 +57,31 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 					{input.clientName} is requesting access as{' '}
 					<strong className="text-slate-900">{input.user.email}</strong>.
 				</p>
+				<p className="mt-2 text-sm text-slate-500">
+					You will be redirected to <strong className="text-slate-700">{redirectHost}</strong> after
+					you decide.
+				</p>
+
+				<div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-6">
+					<p className="text-sm font-semibold text-slate-700">
+						This will allow {input.clientName} to:
+					</p>
+					<ul className="mt-3 space-y-2">
+						{input.scopes.map((scope) => (
+							<li key={scope.scope} className="flex items-start gap-2 text-sm text-slate-600">
+								<span aria-hidden="true" className="mt-0.5 text-indigo-600">
+									&bull;
+								</span>
+								<span>{scope.description}</span>
+							</li>
+						))}
+					</ul>
+				</div>
 
 				<div className="mt-8 flex flex-wrap items-center gap-4">
 					<form method="POST" action="/oauth/authorize/approve" className="inline">
-						<input type="hidden" name="client_id" value={input.clientId} />
-						<input type="hidden" name="redirect_uri" value={input.redirectUri} />
-						<input type="hidden" name="code_challenge" value={input.codeChallenge} />
-						<input type="hidden" name="code_challenge_method" value={input.codeChallengeMethod} />
-						<input type="hidden" name="state" value={input.state} />
+						<input type="hidden" name="transaction_id" value={input.transactionId} />
+						<input type="hidden" name="csrf_token" value={input.csrfToken} />
 						<button
 							type="submit"
 							className="rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-500"
@@ -60,9 +91,8 @@ export function OauthAuthorizePage(input: OAuthAuthorizePageInput): JSX.Element 
 					</form>
 
 					<form method="POST" action="/oauth/authorize/deny" className="inline">
-						<input type="hidden" name="client_id" value={input.clientId} />
-						<input type="hidden" name="redirect_uri" value={input.redirectUri} />
-						<input type="hidden" name="state" value={input.state} />
+						<input type="hidden" name="transaction_id" value={input.transactionId} />
+						<input type="hidden" name="csrf_token" value={input.csrfToken} />
 						<button
 							type="submit"
 							className="rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100"

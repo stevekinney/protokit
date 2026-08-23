@@ -28,11 +28,9 @@ describe('OauthAuthorizePage', () => {
 		const formInput = {
 			mode: 'form' as const,
 			clientName: 'Test App',
-			clientId: 'client-123',
 			redirectUri: 'https://example.com/callback',
-			codeChallenge: 'challenge-abc',
-			codeChallengeMethod: 'S256',
-			state: 'state-xyz',
+			transactionId: 'transaction-id-abc',
+			csrfToken: 'csrf-token-xyz',
 			user: {
 				id: 'user-1',
 				email: 'alice@example.com',
@@ -40,6 +38,7 @@ describe('OauthAuthorizePage', () => {
 				image: null,
 				role: 'user',
 			},
+			scopes: [{ scope: 'profile:read', description: 'Read your profile information.' }],
 		};
 
 		it('renders the client name', () => {
@@ -52,6 +51,11 @@ describe('OauthAuthorizePage', () => {
 			expect(markup).toContain('alice@example.com');
 		});
 
+		it('renders the redirect host', () => {
+			const markup = renderToStaticMarkup(<OauthAuthorizePage {...formInput} />);
+			expect(markup).toContain('example.com');
+		});
+
 		it('renders the approve form with correct action', () => {
 			const markup = renderToStaticMarkup(<OauthAuthorizePage {...formInput} />);
 			expect(markup).toContain('action="/oauth/authorize/approve"');
@@ -62,12 +66,47 @@ describe('OauthAuthorizePage', () => {
 			expect(markup).toContain('action="/oauth/authorize/deny"');
 		});
 
-		it('includes hidden inputs with correct values', () => {
+		it('carries only the transaction id and CSRF token as hidden inputs, never the client or redirect metadata', () => {
 			const markup = renderToStaticMarkup(<OauthAuthorizePage {...formInput} />);
-			expect(markup).toContain('value="client-123"');
-			expect(markup).toContain('value="https://example.com/callback"');
-			expect(markup).toContain('value="challenge-abc"');
-			expect(markup).toContain('value="state-xyz"');
+			expect(markup).toContain('value="transaction-id-abc"');
+			expect(markup).toContain('value="csrf-token-xyz"');
+			expect(markup).not.toContain('name="client_id"');
+			expect(markup).not.toContain('name="redirect_uri"');
+			expect(markup).not.toContain('name="code_challenge"');
+			expect(markup).not.toContain('name="state"');
+		});
+
+		it('renders the same transaction id and CSRF token in both forms', () => {
+			const markup = renderToStaticMarkup(<OauthAuthorizePage {...formInput} />);
+			const transactionIdCount = markup.split('value="transaction-id-abc"').length - 1;
+			const csrfTokenCount = markup.split('value="csrf-token-xyz"').length - 1;
+			expect(transactionIdCount).toBe(2);
+			expect(csrfTokenCount).toBe(2);
+		});
+
+		it('displays every requested scope description exactly once', () => {
+			const markup = renderToStaticMarkup(
+				<OauthAuthorizePage
+					{...formInput}
+					scopes={[
+						{ scope: 'profile:read', description: 'Read your profile information.' },
+						{ scope: 'prompts:read', description: 'Use this server’s prompt templates.' },
+					]}
+				/>,
+			);
+			expect(markup).toContain('Read your profile information.');
+			expect(markup).toContain('Use this server’s prompt templates.');
+		});
+
+		it('never displays a scope that was not passed in', () => {
+			const markup = renderToStaticMarkup(
+				<OauthAuthorizePage
+					{...formInput}
+					scopes={[{ scope: 'profile:read', description: 'Read your profile information.' }]}
+				/>,
+			);
+			expect(markup).not.toContain('audit:read');
+			expect(markup).not.toContain('prompts:read');
 		});
 	});
 });

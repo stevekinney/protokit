@@ -64,6 +64,25 @@ describe('renderStreamingDocument', () => {
 		expect(result).toContain('<\\/script>');
 	});
 
+	// A review finding (P2) claimed `escapeHtmlInJson` only matches lowercase
+	// `</script` and is therefore bypassable with a mixed-case terminator
+	// such as `</ScRiPt>` (HTML raw-text end-tag matching is
+	// case-insensitive). That is not what the implementation does: it
+	// escapes every literal `</` sequence regardless of what characters
+	// follow, so it never looks at "script" -- lowercase, mixed-case, or
+	// otherwise -- at all. Proven directly against the exact mixed-case
+	// payload the finding described, including a DCR/CIMD-style malicious
+	// client name.
+	it('escapes mixed-case </ terminators, not just lowercase </script>', () => {
+		const result = escapeHtmlInJson(
+			'{"name":"</ScRiPt><script>alert(1)</SCRIPT><ScRiPt>alert(2)</script>"}',
+		);
+		expect(result).not.toMatch(/<\/[a-zA-Z]/);
+		expect(result).toContain('<\\/ScRiPt>');
+		expect(result).toContain('<\\/SCRIPT>');
+		expect(result).toContain('<\\/script>');
+	});
+
 	it('omits server data script when no serverData provided', async () => {
 		const stream = await renderStreamingDocument({
 			metadata: { title: 'Test Page' },

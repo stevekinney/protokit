@@ -1,0 +1,153 @@
+# Credential rotation and revocation
+
+SECRETS-001 (S-12). One procedure per credential class this template issues or depends on.
+"Rotate" means issue a new credential and stop accepting the old one; "revoke" means stop
+accepting a credential with no replacement. Every value here still follows the standing rule:
+never print, log, or commit a secret. Tooling that writes a fresh secret always writes it
+straight to a `0600` file or a secret store, never to stdout.
+
+## Session-signing secret (`SESSION_SIGNING_SECRET`)
+
+Derives CSRF tokens and signs the Google sign-in state cookie
+(`applications/web/src/lib/session-signing-secret.ts`, `csrf-protection.ts`,
+`google-authentication.ts`) — **not** the session cookie itself. A session cookie is an opaque,
+random bearer token (`session-authentication.ts`'s `createSession`/`hydrateSession`) whose
+validity is looked up in `user_sessions` by its own SHA-256 hash; it is never signed with this
+secret and is therefore unaffected by rotating or revoking it. Ending a compromised session
+means revoking that `user_sessions` row directly (see "Ending a session outright" below), not
+rotating this secret. `DATA-001` added a
+deliberate, time-bounded overlap window — rotation is a two-step, two-command process, not a single
+instantaneous cutover:
+
+1. `bun scripts/rotate-secret.ts session` generates a new 32-byte hex secret, writes it to
+   `.env.local` as `SESSION_SIGNING_SECRET`, and moves the outgoing value to
+   `SESSION_SIGNING_SECRET_PREVIOUS` (mode `0600`, neither value ever printed) — if `gh` is
+   installed and `SESSION_SIGNING_SECRET` is one of the GitHub-managed secrets, it also pushes the
+   new value to the GitHub secret store. `resolveSessionSigningSecrets()` signs new CSRF
+   tokens/Google state cookies with the current secret but still verifies anything signed under
+   `SESSION_SIGNING_SECRET_PREVIOUS`, so restarting every instance during this window does not
+   force already-signed-in users to re-authenticate.
+2. `bun scripts/rotate-secret.ts session-cutover` clears `SESSION_SIGNING_SECRET_PREVIOUS` once
+   every client has had time to pick up the new value (a new sign-in, or the cookie's natural
+   refresh). After this, a CSRF token or Google sign-in state cookie signed only under the retired
+   secret is rejected outright — this is the step that actually ends the overlap, not step 1. It
+   does **not** reject or expire any `user_sessions` row: session cookies are never signed with
+   this secret, so they keep authenticating (until they hit `SESSION_TIME_TO_LIVE_SECONDS`, are
+   explicitly signed out, or are revoked directly) regardless of this rotation.
+
+Restart every running instance after step 1 for the new secret to take effect for newly issued
+CSRF tokens/state cookies, and again after step 2 so no instance is still willing to verify the
+retired secret. Treat step 2 as the planned-maintenance action if you need a hard cutoff for CSRF
+tokens; skipping it indefinitely just means that overlap window never closes.
+
+### Ending a session outright
+
+Rotating `SESSION_SIGNING_SECRET` is routine credential hygiene and, by design, does not sign
+anyone out — see above. If the actual goal is incident response (a suspected session hijack,
+compromised cookie, or "log this user out everywhere"), revoke the affected `user_sessions` rows
+directly instead: a signed-in user can always self-service this via `POST /auth/sign-out`
+(`lib/session-authentication.ts` `revokeSession()`); an operator with direct database access
+can run a targeted `UPDATE user_sessions SET revoked_at = now() WHERE revoked_at IS NULL AND
+user_id = '<user-id>'` (or drop the `user_id` filter to end every active session server-wide).
+`hydrateSession()` rejects any row with a non-null `revoked_at` on its very next request. This is
+deliberately a manual, targeted operator action rather than something wired into signing-key
+rotation: an unconditional bulk revoke on every routine key rotation would turn ordinary secret
+hygiene into a mass logout, which is a worse outcome than the gap it would close.
+
+`scripts/rotate-secret.test.ts` proves the file-writing mechanics of both commands (the outgoing
+value moves to `SESSION_SIGNING_SECRET_PREVIOUS` on rotation and is removed on cutover); the actual
+verification behavior — a value signed under the previous secret still verifies during the overlap
+window, then stops verifying once the cutover removes it — is proven in
+`applications/web/src/lib/session-signing-secret.test.ts`'s `resolveSessionSigningSecrets` suite.
+
+## OAuth client credentials (`oauth_clients` table)
+
+A client secret is stored only as a SHA-256 hash (`scripts/seed.ts`'s `hashCredential`); the
+plaintext exists nowhere in the database. Rotate with `rotateOauthClientSecret` from
+`scripts/rotate-secret.ts` (a library function, not yet wired to a CLI subcommand — call it from
+a one-off `bun -e` invocation or extend the CLI before using it against a real client): it
+generates a new secret, stores its hash, and returns the plaintext once for out-of-band delivery
+to the client owner. As with the session secret, there is no dual-secret window — the moment the
+row updates, `/oauth/token`'s `client_secret_post` comparison stops accepting the old value.
+Coordinate the handoff with the client owner before rotating, not after.
+
+`scripts/rotate-secret.integration.test.ts` proves this against the real test database: the
+pre-rotation secret's hash no longer matches the stored row after rotation, and the new secret's
+hash does.
+
+Revoke without replacement by deleting the client row (or setting a `revoked_at`-style flag if
+one is added later — none exists today) — every outstanding access and refresh token issued to
+that client stops being reissuable once the row is gone, though already-issued unexpired access
+tokens remain valid until `OAUTH-003` lands atomic, client-bound revocation.
+
+## Metrics credential (`METRICS_API_KEY`)
+
+Gates `/metrics` (`applications/web/src/routes/metrics-routes.ts`). Rotate by generating a new
+random value (`openssl rand -hex 32` or `bun scripts/rotate-secret.ts session`'s generator
+pattern), setting it in the scraper/monitoring system's configuration, updating
+`METRICS_API_KEY` in the server's environment, and redeploying. There is a brief window where the
+scraper's old credential is rejected until its own configuration is updated — acceptable because
+metrics scraping tolerates a short gap, unlike session invalidation. Compared in constant time
+(`applications/web/src/lib/bearer-credential-authentication.ts`); requires HTTPS in production.
+
+## Readiness credential (`HEALTH_READINESS_API_KEY`)
+
+Gates the dependency-detail readiness probe, `GET /health/ready`
+(`applications/web/src/routes/health-routes.ts`) — `OPS-002`'s split from the public,
+dependency-free `GET /health` liveness endpoint. Rotate the same way as `METRICS_API_KEY`:
+generate a new random value, update whichever orchestrator or operator tooling calls the
+endpoint, set `HEALTH_READINESS_API_KEY` in the server's environment, and redeploy. Same brief,
+acceptable gap as the metrics credential; compared in constant time; requires HTTPS in
+production.
+
+## Database credentials (`DATABASE_URL`, `DATABASE_URL_UNPOOLED`)
+
+Neon supports creating a second role/password without deleting the first, so this is the one
+credential class in this list that _can_ roll out without an outage. Create a new Neon role via
+`neonctl roles create --project-id <id> --branch <branch> <name>` (or the Neon console), update
+`DATABASE_URL`/`DATABASE_URL_UNPOOLED` in `.env.local` and every deployment target (GitHub
+Actions secrets via `bun scripts/setup.ts github`, Railway via `bun scripts/setup.ts railway`,
+or `bun scripts/rotate-secret.ts revoke-github DATABASE_URL` followed by re-running the GitHub
+phase), redeploy, confirm the new role is in use (`doctor` or the authenticated
+`GET /health/ready` — `OPS-002` moved dependency status off the public `/health` liveness
+endpoint), then revoke the old
+role with `neonctl roles delete`. Never delete the old role before every consumer has picked up
+the new connection string — deleting it first is an outage, not a rotation.
+
+## Redis credentials (`REDIS_URL`)
+
+Follow the hosting provider's credential-rotation flow (most managed Redis providers, including
+Railway's, support issuing a new password without deleting the old one for a transition window).
+Update `REDIS_URL` in `.env.local` and every deployment target the same way as the database
+credential above, redeploy, confirm connectivity (`doctor`), then revoke the old credential at
+the provider. Rotating Redis credentials does not invalidate rate-limit state or sessions —
+those are keyed by application-level values, not by the connection credential itself.
+
+## Provider secrets (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`)
+
+Rotate in the Google Cloud Console (APIs & Services → Credentials → the OAuth 2.0 Client): create
+a new client secret for the existing client ID (Google supports multiple active secrets per
+client during a transition window — this is the standard supported rotation path, not a
+workaround), update `GOOGLE_CLIENT_SECRET` in `.env.local` and every deployment target, redeploy,
+confirm sign-in works, then delete the old secret from the console. Rotating the client ID itself
+requires a new OAuth client and a redirect-URI update in Google Cloud Console before cutover, so
+treat that as a migration, not a routine rotation.
+
+## CI credentials (GitHub Actions secrets: `NEON_API_KEY`, `NEON_PROJECT_ID`, and the
+
+`DATABASE_URL`/`DATABASE_URL_UNPOOLED`/`SESSION_SIGNING_SECRET` mirrors of the values above)
+
+`scripts/utilities.ts`'s `MANAGED_GITHUB_SECRETS` is the authoritative list. Set or rotate any of
+them with `bun scripts/setup.ts github` (re-run; it overwrites existing secrets) or a targeted
+`setGithubSecret` call; the value is always delivered over stdin to `gh secret set`, never as an
+argv element. Revoke with `bun scripts/teardown.ts github`, which lists every managed secret
+present in the repository and deletes it only after explicit confirmation. Because these secrets
+back CI workflows rather than a running server, there is no session-invalidation concern —
+rotating them takes effect on the next workflow run.
+
+## What this procedure does not cover
+
+Client-bound, atomic revocation of individual outstanding access/refresh tokens without deleting
+the whole client is `OAUTH-003`'s scope, not this item's. A scheduled/automatic rotation cadence
+(as opposed to an on-demand, manually triggered one) is not implemented for any credential class
+above; every rotation here is operator-initiated.

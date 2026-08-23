@@ -6,7 +6,6 @@ import { parseCookies, serializeCookie } from '@web/lib/cookies';
 import { hashCredential } from '@web/lib/hash-credential';
 import type { ApplicationUser } from '@web/types/user';
 
-const SESSION_COOKIE_NAME = environment.SESSION_COOKIE_NAME;
 const SESSION_TIME_TO_LIVE_SECONDS = environment.SESSION_TIME_TO_LIVE_SECONDS;
 
 export type { ApplicationUser };
@@ -15,6 +14,27 @@ export type SessionHydrationResult = {
 	user: ApplicationUser | null;
 	sessionToken: string | null;
 };
+
+/**
+ * SEC-005 / S-17: in production the session cookie carries the `__Host-`
+ * prefix. A browser will only accept a `__Host-`-prefixed `Set-Cookie` when
+ * it also sets `Secure`, `Path=/`, and omits `Domain` — which
+ * `getSecureCookieFlag`/`serializeCookie` below already guarantee in
+ * production — so this name change turns those three attributes from a
+ * convention this code happens to follow into one the browser itself
+ * enforces; a future edit that accidentally adds `Domain=` or drops
+ * `Secure` in production would make the cookie silently rejected rather
+ * than silently weakened. Development/test keep the unprefixed name so a
+ * plain-HTTP `localhost` origin (`Secure` cookies are dropped there) still
+ * works.
+ */
+function getSessionCookieName(): string {
+	if (environment.NODE_ENV === 'production') {
+		return `__Host-${environment.SESSION_COOKIE_NAME}`;
+	}
+
+	return environment.SESSION_COOKIE_NAME;
+}
 
 function getSecureCookieFlag(url: URL): boolean {
 	if (environment.NODE_ENV === 'production') {
@@ -41,7 +61,7 @@ export async function createSession(input: {
 	});
 
 	const cookieHeaderValue = serializeCookie({
-		name: SESSION_COOKIE_NAME,
+		name: getSessionCookieName(),
 		value: sessionToken,
 		maxAgeSeconds: SESSION_TIME_TO_LIVE_SECONDS,
 		httpOnly: true,
@@ -72,7 +92,7 @@ export async function revokeSession(sessionToken: string | null): Promise<void> 
 
 export async function hydrateSession(request: Request): Promise<SessionHydrationResult> {
 	const cookies = parseCookies(request.headers.get('cookie'));
-	const sessionToken = cookies.get(SESSION_COOKIE_NAME) ?? null;
+	const sessionToken = cookies.get(getSessionCookieName()) ?? null;
 	if (!sessionToken) {
 		return { user: null, sessionToken: null };
 	}
@@ -115,7 +135,7 @@ export async function hydrateSession(request: Request): Promise<SessionHydration
 
 export function createExpiredSessionCookie(request: Request): string {
 	return serializeCookie({
-		name: SESSION_COOKIE_NAME,
+		name: getSessionCookieName(),
 		value: '',
 		maxAgeSeconds: 0,
 		httpOnly: true,

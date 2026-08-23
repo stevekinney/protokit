@@ -8,15 +8,73 @@ on:
   issues:
     types: [opened, assigned]
 
+permissions: {}
+
+concurrency:
+  group: claude-code-${{ github.event.issue.number || github.event.pull_request.number || github.event.comment.id }}
+  cancel-in-progress: false
+
 jobs:
+  # Read-only authorization gate. Never grant this job secrets or write
+  # permissions: it evaluates untrusted comment/issue content (the `if:`
+  # condition below only reads `contains(...)`, it never executes text as
+  # code) and asks GitHub for the *current* permission level of the actor
+  # who triggered the event, rather than trusting anything in the event
+  # payload itself. Bots (including recursive Claude-authored comments) and
+  # template-repository instances are excluded before any API call.
+  authorize:
+    name: Authorize
+    if: >-
+      ${{
+        !github.event.repository.is_template &&
+        github.event.sender.type != 'Bot' &&
+        !endsWith(github.actor, '[bot]') &&
+        (
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+          (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+          (github.event_name == 'issues' && contains(github.event.issue.body, '@claude'))
+        )
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Check actor permission
+        id: check
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const actor = context.actor;
+            let permission = 'none';
+
+            try {
+              const response = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: actor,
+              });
+              permission = response.data.permission;
+            } catch (error) {
+              // A 404 (or any other failure) means GitHub could not confirm
+              // collaborator status. Fail closed: treat the actor as
+              // unauthorized rather than assuming access.
+              core.warning(`Could not resolve permission for ${actor}: ${error.message}`);
+            }
+
+            const authorized = permission === 'admin' || permission === 'write';
+            core.setOutput('authorized', authorized ? 'true' : 'false');
+            core.notice(`Actor ${actor} resolved to permission "${permission}" (authorized=${authorized}).`);
+
+  # Only this job ever sees repository write access or the Anthropic API
+  # credential, and only after `authorize` has independently confirmed the
+  # actor's live permission level through the GitHub API.
   claude:
-    if: |
-      !github.event.repository.is_template &&
-      (
-        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-        (github.event_name == 'issues' && contains(github.event.issue.body, '@claude'))
-      )
+    name: Run Claude
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -24,9 +82,9 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

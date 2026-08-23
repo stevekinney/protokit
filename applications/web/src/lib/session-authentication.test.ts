@@ -4,12 +4,14 @@ let insertCalled = false;
 let updateCalled = false;
 const mockSelectResult: unknown[] = [];
 
+const mockEnvironment = {
+	SESSION_COOKIE_NAME: 'test_session',
+	SESSION_TIME_TO_LIVE_SECONDS: 3600,
+	NODE_ENV: 'test' as 'test' | 'production',
+};
+
 mock.module('@web/env', () => ({
-	environment: {
-		SESSION_COOKIE_NAME: 'test_session',
-		SESSION_TIME_TO_LIVE_SECONDS: 3600,
-		NODE_ENV: 'test',
-	},
+	environment: mockEnvironment,
 }));
 
 mock.module('@template/database', () => ({
@@ -173,5 +175,45 @@ describe('createExpiredSessionCookie', () => {
 		const cookie = createExpiredSessionCookie(new Request('http://localhost:3000/'));
 		expect(cookie).toContain('Max-Age=0');
 		expect(cookie).toContain('Path=/');
+	});
+});
+
+describe('session cookie name in production', () => {
+	it('uses the __Host- prefix, Secure, and Path=/ with no Domain', async () => {
+		mockEnvironment.NODE_ENV = 'production';
+		try {
+			const cookie = createExpiredSessionCookie(new Request('https://app.example.com/'));
+			expect(cookie.startsWith('__Host-test_session=')).toBe(true);
+			expect(cookie).toContain('Secure');
+			expect(cookie).toContain('Path=/');
+			expect(cookie).not.toContain('Domain=');
+		} finally {
+			mockEnvironment.NODE_ENV = 'test';
+		}
+	});
+
+	it('does not use the __Host- prefix outside production', () => {
+		const cookie = createExpiredSessionCookie(new Request('http://localhost:3000/'));
+		expect(cookie.startsWith('test_session=')).toBe(true);
+	});
+});
+
+/**
+ * Regression test for the review-thread claim on `scripts/rotate-secret.ts:91`
+ * (PRRT_kwDORZ0PbM6baF4x): SECRETS-ROTATION.md and a `credentialLifecyclePolicy` row used to
+ * claim that `session-cutover` rejects a "session cookie ... signed only under the retired
+ * secret" outright. That was never true -- `createSession`/`hydrateSession` never import or
+ * reference `SESSION_SIGNING_SECRET` (or `@web/lib/session-signing-secret`) at all: a session
+ * cookie is an opaque, random bearer token whose validity is looked up in `user_sessions` by
+ * its own hash, independent of any signing secret. Pinned here as a source-level assertion
+ * (rather than a full rotation simulation) so a future edit that starts coupling session
+ * validity to the signing secret -- silently changing what `session-cutover` actually does --
+ * fails this test instead of only being caught by re-reading the docs.
+ */
+describe('session validity is independent of SESSION_SIGNING_SECRET', () => {
+	it('session-authentication.ts never imports the session-signing-secret module', async () => {
+		const source = await Bun.file(new URL('./session-authentication.ts', import.meta.url)).text();
+		expect(source).not.toMatch(/session-signing-secret/);
+		expect(source).not.toMatch(/SESSION_SIGNING_SECRET/);
 	});
 });
