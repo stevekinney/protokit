@@ -985,6 +985,7 @@ describe('authorization GET', () => {
 		clientName: 'Test App',
 		redirectUris: ['https://example.com/cb'],
 		responseTypes: ['code'],
+		grantTypes: ['authorization_code', 'refresh_token'],
 	};
 	const authorizeUrlBase =
 		'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp';
@@ -1156,6 +1157,28 @@ describe('authorization GET', () => {
 		expect(createAuthorizationTransactionCalls).toHaveLength(0);
 	});
 
+	it('round-7 review: rejects a client (e.g. an inconsistent CIMD document) registered with response_types=[code] but grant_types that omit authorization_code', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				clientName: 'Test App',
+				redirectUris: ['https://example.com/cb'],
+				responseTypes: ['code'],
+				grantTypes: ['refresh_token'],
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toContain('not registered for the authorization_code grant type');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
 	it('renders consent page with an opaque transaction id and csrf token, never the raw client/redirect/PKCE values', async () => {
 		mockOauthClients = [
 			{
@@ -1163,6 +1186,7 @@ describe('authorization GET', () => {
 				clientName: 'Test App',
 				redirectUris: ['https://example.com/cb'],
 				responseTypes: ['code'],
+				grantTypes: ['authorization_code', 'refresh_token'],
 			},
 		];
 		mockAuthorizationTransactionState.created = {
@@ -1218,6 +1242,7 @@ describe('authorization GET', () => {
 				clientName: 'Test App',
 				redirectUris: ['http://localhost:1234/callback'],
 				responseTypes: ['code'],
+				grantTypes: ['authorization_code', 'refresh_token'],
 			},
 		];
 		const context = createContext({
@@ -1270,6 +1295,7 @@ describe('authorization GET', () => {
 				clientName: 'Claude',
 				redirectUris: ['https://claude.ai/api/mcp/auth_callback'],
 				responseTypes: ['code'],
+				grantTypes: ['authorization_code', 'refresh_token'],
 			},
 		];
 		const context = createContext({

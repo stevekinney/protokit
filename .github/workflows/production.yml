@@ -36,6 +36,8 @@ jobs:
         with:
           bun-version: '1.3.14'
 
+      - run: bun install --frozen-lockfile
+
       - name: Record revision and migration plan
         run: |
           set -euo pipefail

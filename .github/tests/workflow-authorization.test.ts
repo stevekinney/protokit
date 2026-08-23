@@ -146,3 +146,31 @@ describe('pull-request.yml: root security gates are wired into CI', () => {
 		}
 	});
 });
+
+/**
+ * Regression test for the review-thread claim on `.github/scripts/workflow-policy.ts:134`
+ * (PRRT_kwDORZ0PbM6bclis): `jobUsesSecrets()` only scanned `job.secrets` and each step's
+ * `with`/`env`/`run` fields, so a secret exposed only through the job-level `env:` block went
+ * undetected. Such a job would be misclassified as unprivileged, letting it pass
+ * `isAuthorizationGated()` checks without ever needing an authorization gate while still
+ * receiving repository secrets.
+ */
+describe('jobUsesSecrets: job-level env detection', () => {
+	test('detects a secret referenced only in the job-level `env:` block', () => {
+		expect(
+			jobUsesSecrets({
+				env: { DATABASE_URL: '${{ secrets.DATABASE_URL }}' },
+				steps: [{ run: 'echo hello' }],
+			}),
+		).toBe(true);
+	});
+
+	test('does not flag a job with no secrets anywhere', () => {
+		expect(
+			jobUsesSecrets({
+				env: { NODE_ENV: 'production' },
+				steps: [{ run: 'echo hello' }],
+			}),
+		).toBe(false);
+	});
+});

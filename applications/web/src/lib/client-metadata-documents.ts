@@ -80,6 +80,27 @@ function isBlockedIpAddress(address: string): boolean {
 	return blockedIpCidrs.some((cidr) => isAddressInCidr(address, cidr));
 }
 
+/**
+ * `URL.hostname` keeps the bracket delimiters for an IPv6 literal
+ * (`https://[::1]/x` -> hostname `"[::1]"`), because brackets are what
+ * distinguish an IPv6 literal's colons from a URL's own `host:port`
+ * delimiter. `node:net`'s `isIPv6` and `isAddressInCidr`'s parser both
+ * expect the bare address, so a bracketed literal matches neither the
+ * IP-family check nor the blocklist -- it falls through to `dns.lookup`,
+ * which fails with `ENOTFOUND` on a literal address, rejecting every
+ * IPv6-literal Client ID Metadata Document regardless of whether it is
+ * public or blocked. Stripping the brackets here (and only here, for the
+ * routability check) fixes that without touching the URL used for the
+ * actual HTTPS request, which must keep its bracket syntax to remain a
+ * valid URL.
+ */
+function stripIpv6Brackets(hostname: string): string {
+	if (hostname.startsWith('[') && hostname.endsWith(']')) {
+		return hostname.slice(1, -1);
+	}
+	return hostname;
+}
+
 export class ClientMetadataDocumentFetchError extends Error {
 	constructor(public readonly reason: string) {
 		super(reason);
@@ -331,7 +352,7 @@ export async function fetchClientIdMetadataDocument(
 
 	try {
 		await assertHostnameIsPubliclyRoutable(
-			url.hostname,
+			stripIpv6Brackets(url.hostname),
 			lookupImpl,
 			dependencies.dnsTimeoutMs ?? cimdFetchTimeoutMs,
 		);

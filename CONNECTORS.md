@@ -138,7 +138,7 @@ exactly what the registry exposes, no more.
 
 An under-scoped call is rejected at the point of invocation, not silently degraded: a tool call
 returns `isError: true` with `_meta['mcp/www_authenticate']` naming the missing scope; a resource
-read or prompt get throws a JSON-RPC `-32001` error carrying the same information. `tools/list`
+read or prompt get throws a JSON-RPC `-32003` error carrying the same information. `tools/list`
 itself is never filtered by scope, so discovery always shows the full registry.
 
 ### Rate limits

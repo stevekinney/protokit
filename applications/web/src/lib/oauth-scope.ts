@@ -75,8 +75,18 @@ export type ParsedRefreshScopeRequest =
 	| { ok: false; error: 'invalid_scope'; unknownScopes: string[] };
 
 export function parseRefreshScopeRequest(rawScope: string | undefined): ParsedRefreshScopeRequest {
-	if (rawScope === undefined || rawScope.length === 0) {
+	if (rawScope === undefined) {
 		return { ok: true, scope: undefined };
+	}
+
+	// An explicitly present but empty (or whitespace-only) `scope=` is not
+	// the same as an omitted one -- mirrors `parseRequestedScope`'s
+	// authorize-time handling. RFC 6749's ABNF for `scope` requires at
+	// least one scope-token, so treating it as "keep the stored grant"
+	// would let a client that appears to ask for nothing silently retain
+	// full existing privileges.
+	if (rawScope.trim().length === 0) {
+		return { ok: false, error: 'invalid_scope', unknownScopes: [] };
 	}
 
 	const supportedScopes = getSupportedScopes();

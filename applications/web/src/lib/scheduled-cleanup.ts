@@ -305,6 +305,19 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 }
 
 let scheduledCleanupIntervalHandle: ReturnType<typeof setInterval> | null = null;
+/**
+ * A review finding (P2): the distributed lease's TTL is exactly
+ * `intervalMilliseconds` and is never renewed while a sweep runs, so a
+ * sweep slower than the configured interval (a deliberately short interval,
+ * or a degraded database) lets the lease lapse mid-sweep. The NEXT tick,
+ * even on the SAME process, can then win a fresh lease and start a second,
+ * overlapping sweep — with no Redis configured at all, the lease always
+ * returns `true` unconditionally, so there is zero protection against this
+ * within one process either way. Track whether THIS process's own sweep is
+ * still in flight and skip starting another one locally, independent of
+ * (and in addition to) the cross-replica lease.
+ */
+let sweepInProgress = false;
 
 // Namespaced the same way `request-rate-limiter.ts` namespaces its own
 // Redis keys: empty (unchanged key shape) in every real deployment, and set
@@ -382,24 +395,46 @@ export async function acquireScheduledCleanupLease(
  * running -- calling this twice does not double the schedule.
  * `stopScheduledCleanup` is the counterpart, used by tests and by a
  * graceful shutdown path.
+ *
+ * `runSweep` and `acquireLease` default to `runScheduledCleanup` and
+ * `acquireScheduledCleanupLease` and exist purely so a test can inject
+ * controllable stand-ins -- proving the local overlap guard
+ * (`sweepInProgress`) deterministically, with real timers but without a
+ * real database sweep or contending with this process's own real, globally
+ * shared Redis lease key.
  */
-export function startScheduledCleanup(intervalMilliseconds: number): void {
+export function startScheduledCleanup(
+	intervalMilliseconds: number,
+	runSweep: () => Promise<unknown> = runScheduledCleanup,
+	acquireLease: (
+		leaseDurationMilliseconds: number,
+	) => Promise<boolean> = acquireScheduledCleanupLease,
+): void {
 	if (scheduledCleanupIntervalHandle) {
 		return;
 	}
 	scheduledCleanupIntervalHandle = setInterval(() => {
 		void (async () => {
+			if (sweepInProgress) {
+				cleanupLogger.info(
+					'This process is still running the previous scheduled cleanup sweep; skipping this tick',
+				);
+				return;
+			}
+			sweepInProgress = true;
 			try {
-				const acquiredLease = await acquireScheduledCleanupLease(intervalMilliseconds);
+				const acquiredLease = await acquireLease(intervalMilliseconds);
 				if (!acquiredLease) {
 					cleanupLogger.info(
 						'Another replica holds the scheduled cleanup lease this cycle; skipping',
 					);
 					return;
 				}
-				await runScheduledCleanup();
+				await runSweep();
 			} catch (error) {
 				cleanupLogger.error({ err: error }, 'Scheduled cleanup sweep failed');
+			} finally {
+				sweepInProgress = false;
 			}
 		})();
 	}, intervalMilliseconds);

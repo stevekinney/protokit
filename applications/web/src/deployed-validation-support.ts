@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { isAddressInCidr } from '@web/lib/trusted-proxy';
 
 /**
  * `OPS-001`: pure, host-agnostic checks shared by the deployed-envelope
@@ -46,14 +47,29 @@ export function isPubliclyRoutableIpv4(address: string): boolean {
 	return !PRIVATE_IPV4_RANGES.some((range) => value >= range.start && value <= range.end);
 }
 
+// A textual-prefix check on link-local addresses (`startsWith('fe80:')`)
+// only matches the single hextet `fe80`, but `fe80::/10` covers every
+// address whose first hextet is `fe80`-`febf` (`fe90::1`, `fea0::1`,
+// `febf::1`, ...) -- a real link-local address outside that one literal
+// prefix would slip past a textual check and be reported as publicly
+// routable. `isAddressInCidr` (shared with the SSRF blocklist in
+// `client-metadata-documents.ts` and the trusted-proxy check) parses the
+// address and masks it against the actual prefix length instead.
+const NON_PUBLIC_IPV6_CIDRS = [
+	'::1/128', // loopback
+	'::/128', // unspecified
+	'::ffff:0:0/96', // IPv4-mapped IPv6
+	'64:ff9b::/96', // NAT64 well-known prefix
+	'100::/64', // discard-only
+	'2001:db8::/32', // documentation
+	'fc00::/7', // unique local
+	'fe80::/10', // link-local (fe80:: through febf:ffff:...)
+	'ff00::/8', // multicast
+] as const;
+
 export function isPubliclyRoutableIpv6(address: string): boolean {
 	if (isIP(address) !== 6) return false;
-	const normalized = address.toLowerCase();
-	if (normalized === '::1') return false; // loopback
-	if (normalized.startsWith('fe80:') || normalized.startsWith('fe80::')) return false; // link-local
-	if (normalized.startsWith('fc') || normalized.startsWith('fd')) return false; // unique local (fc00::/7)
-	if (normalized === '::') return false; // unspecified
-	return true;
+	return !NON_PUBLIC_IPV6_CIDRS.some((cidr) => isAddressInCidr(address, cidr));
 }
 
 export interface DnsResolutionResult {

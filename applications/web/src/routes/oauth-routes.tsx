@@ -546,6 +546,29 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
+	// Round-7 review follow-up: a client can be internally inconsistent —
+	// `response_types: ['code']` (checked above) alongside `grant_types`
+	// that omit `authorization_code` (CIMD's own default includes it, but
+	// a document can explicitly declare `grant_types: []` or
+	// `['refresh_token']` only). The check above would still let this
+	// request create a consent transaction and issue a code that the token
+	// endpoint's own `client.grantTypes.includes('authorization_code')`
+	// check (below, in the token handler) is guaranteed to then reject —
+	// the user completes consent for a code the client can never redeem.
+	// Reject before creating the transaction instead.
+	if (!client.grantTypes.includes('authorization_code')) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: (
+				<OauthAuthorizePage
+					mode="error"
+					error="This client is not registered for the authorization_code grant type."
+				/>
+			),
+		});
+	}
+
 	// S-09: consumed once, atomically, by approve/deny — every authoritative
 	// value below is reloaded from this row, never trusted from the form.
 	const transaction = await createAuthorizationTransaction({

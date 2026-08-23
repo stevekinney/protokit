@@ -36,6 +36,27 @@ describe('isPubliclyRoutableIpv6', () => {
 		expect(isPubliclyRoutableIpv6('fd00::1')).toBe(false);
 		expect(isPubliclyRoutableIpv6('fe80::1')).toBe(false);
 	});
+
+	it('rejects link-local addresses outside the literal "fe80" hextet but inside fe80::/10', () => {
+		// Regression test: a textual `startsWith('fe80:')` check matches only
+		// the single hextet `fe80`, but the real link-local range is
+		// `fe80::/10`, which covers every first hextet from `fe80` through
+		// `febf` (10 fixed bits leave 6 free bits in that hextet, i.e.
+		// 0xfe80-0xfebf). `fe90::1` and `febf::1` are both inside the real
+		// range while outside the old literal-prefix check.
+		expect(isPubliclyRoutableIpv6('fe90::1')).toBe(false);
+		expect(isPubliclyRoutableIpv6('febf::1')).toBe(false);
+		expect(isPubliclyRoutableIpv6('fe80::1')).toBe(false);
+		expect(isPubliclyRoutableIpv6('fe8f:ffff::1')).toBe(false);
+	});
+
+	it('accepts addresses just outside the link-local range', () => {
+		// The mask must be exact, not merely "starts with fe": `fe70::1` sits
+		// below the fe80::/10 range and `fec0::1` sits above it (both outside
+		// the fixed 10 bits), so neither is link-local.
+		expect(isPubliclyRoutableIpv6('fe70::1')).toBe(true);
+		expect(isPubliclyRoutableIpv6('fec0::1')).toBe(true);
+	});
 });
 
 describe('checkPublicDnsResolution', () => {

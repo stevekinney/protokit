@@ -145,7 +145,11 @@ async function main(): Promise<void> {
 		authorizeUrl.searchParams.set('code_challenge', codeChallenge);
 		authorizeUrl.searchParams.set('code_challenge_method', 'S256');
 		authorizeUrl.searchParams.set('resource', `${baseUrl}/mcp`);
-		authorizeUrl.searchParams.set('scope', 'profile');
+		// AUTHZ-001: the server's scope vocabulary is `profile:read` and
+		// `prompts:read` (see `packages/mcp/src/scopes.ts`), never a bare
+		// `profile`. `test:deployed-streaming` subscribes to `user://profile`,
+		// which requires `profile:read`.
+		authorizeUrl.searchParams.set('scope', 'profile:read');
 
 		const authorizeResponse = await fetch(authorizeUrl.toString(), {
 			redirect: 'manual',
@@ -185,7 +189,7 @@ async function main(): Promise<void> {
 	console.log('consent page) -- that cannot be scripted. To finish by hand:');
 	console.log('');
 	console.log(
-		`  1. Open in a browser: ${authorizationEndpoint}?response_type=code&client_id=${clientId ?? '<client_id above>'}&redirect_uri=https://example.com/callback&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&resource=${encodeURIComponent(`${baseUrl}/mcp`)}&scope=profile`,
+		`  1. Open in a browser: ${authorizationEndpoint}?response_type=code&client_id=${clientId ?? '<client_id above>'}&redirect_uri=https://example.com/callback&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&resource=${encodeURIComponent(`${baseUrl}/mcp`)}&scope=profile:read`,
 	);
 	console.log('  2. Sign in and approve consent; capture the redirected `code` query parameter.');
 	console.log(

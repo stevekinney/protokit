@@ -169,7 +169,7 @@ so a caller cannot use the revoke endpoint's response to probe for valid tokens.
 production, `prompts:read`) is enforced per tool/resource/prompt invocation, not only at authorize
 time. Every registered primitive declares a `requiredScope`; an under-scoped call returns
 `isError: true` with `_meta['mcp/www_authenticate']` naming the missing scope (tools) or throws a
-JSON-RPC `-32001` error carrying the same challenge (resources/prompts) before the handler ever
+JSON-RPC `-32003` error carrying the same challenge (resources/prompts) before the handler ever
 runs. `tools/list` itself is unaffected by scope -- an under-scoped tool still appears in the
 listing, the same way host applications expect discovery to work.
 

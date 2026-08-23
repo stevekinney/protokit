@@ -76,17 +76,34 @@ function buildServerCapabilities(input: {
 }
 
 /**
- * AUTHZ-001: the JSON-RPC error code this server uses for an authenticated
- * but under-scoped `tools/call` / `resources/read` / `prompts/get` request.
- * JSON-RPC reserves `-32000` through `-32099` for implementation-defined
- * server errors; the SDK's own `ProtocolErrorCode` enum (`server.ts`'s
- * `@modelcontextprotocol/server` dependency) does not assign anything in
- * that range to an authorization failure, and no spec-defined MCP error
- * code exists for "the token was valid but lacked the scope this operation
- * needs" — confirmed by reading the installed SDK's error-code enum
- * directly, not assumed. `-32001` is unused by that enum.
+ * AUTHZ-001 / round-7 review follow-up: the JSON-RPC error code this server
+ * uses for an authenticated but under-scoped `tools/call` / `resources/read`
+ * / `prompts/get` request. JSON-RPC reserves `-32000` through `-32099` for
+ * implementation-defined server errors; no MCP-spec-assigned code exists
+ * for "the token was valid but lacked the scope this operation needs" —
+ * confirmed against the installed SDK's `ProtocolErrorCode` enum, which the
+ * `2026-07-28` revision uses for `ResourceNotFound` (`-32002`),
+ * `MissingRequiredClientCapability` (`-32021`),
+ * `UnsupportedProtocolVersion` (`-32022`), and `UrlElicitationRequired`
+ * (`-32042`).
+ *
+ * This previously used `-32001`, which a round-7 review flagged as
+ * timeout-flavored and collision-prone. That reads on two separate,
+ * independently confirmed pinned packages: `@modelcontextprotocol/sdk`
+ * (`1.30.0`, the official client SDK real connectors such as Claude embed)
+ * hard-codes `ErrorCode.RequestTimeout = -32001` in its wire-facing
+ * `ErrorCode` enum (`dist/esm/types.d.ts`, `dist/cjs/types.d.ts`) — a client
+ * using that SDK to talk
+ * to this server would classify our insufficient-scope error as its own
+ * request having timed out and could retry instead of surfacing the
+ * attached `insufficient_scope` challenge. This server's own
+ * `@modelcontextprotocol/server` dependency separately hard-codes `-32001`
+ * for "Session not found" at several Streamable HTTP transport call sites
+ * (`dist/index.mjs`/`dist/index.cjs`) — a second, independent collision.
+ * `-32003` is confirmed absent from every `.d.ts`/`.mjs`/`.cjs` file in
+ * both installed packages.
  */
-const mcpInsufficientScopeErrorCode = -32001;
+const mcpInsufficientScopeErrorCode = -32003;
 
 /**
  * AUTHZ-001: the RFC 6750-shaped challenge this server attaches wherever a

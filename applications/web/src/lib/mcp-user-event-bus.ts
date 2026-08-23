@@ -45,7 +45,25 @@ export class RedisUserServerEventBus implements ServerEventBus {
 	private readonly channel: string;
 	private readonly listeners = new Set<(event: ServerEvent) => void>();
 	private redisSubscribed = false;
-	private subscribing: Promise<void> | undefined;
+	/**
+	 * A review finding (P2): the last listener's teardown (unsubscribe) and
+	 * a replacement listener's setup (subscribe) each used to kick off their
+	 * own independent async Redis call, gated only by a boolean flag with no
+	 * mutual exclusion. If a replacement subscribed while the old teardown's
+	 * `UNSUBSCRIBE` was still in flight, the replacement's `SUBSCRIBE` could
+	 * set `redisSubscribed = true`, and then the older teardown's own
+	 * `UNSUBSCRIBE` could land afterward and actually remove the Redis
+	 * subscription — leaving the bus's internal flag claiming "subscribed"
+	 * while Redis itself had nothing registered, silently dropping all
+	 * future events for that user until the handler was recreated.
+	 *
+	 * Every subscribe/unsubscribe transition is now appended to this single
+	 * chain and runs strictly one after another, in request order — a
+	 * teardown and a replacement subscribe can never race each other's
+	 * Redis command, regardless of how the underlying client happens to
+	 * schedule its own response microtasks.
+	 */
+	private transitionQueue: Promise<void> = Promise.resolve();
 
 	constructor(private readonly userId: string) {
 		this.channel = channelForUser(userId);
@@ -71,41 +89,52 @@ export class RedisUserServerEventBus implements ServerEventBus {
 
 	subscribe(listener: (event: ServerEvent) => void): () => void {
 		this.listeners.add(listener);
-		void this.ensureRedisSubscribed();
+		void this.enqueueTransition();
 
 		let live = true;
 		return () => {
 			if (!live) return;
 			live = false;
 			this.listeners.delete(listener);
-			if (this.listeners.size === 0) {
-				void this.teardownRedisSubscription();
-			}
+			void this.enqueueTransition();
 		};
 	}
 
 	/**
-	 * Resolves once this bus's Redis `SUBSCRIBE` has genuinely completed (or
-	 * immediately, if it already had). `subscribe()` itself must stay
-	 * synchronous to satisfy the `ServerEventBus` interface, so a `publish()`
-	 * issued immediately after `subscribe()` can otherwise race ahead of the
-	 * actual Redis command — in real usage the listen router's own
-	 * ack round trip over the network all but rules this out, but tests (and
-	 * any other caller that wants a hard guarantee) can await this instead
-	 * of a fixed delay.
+	 * Resolves once every subscribe/unsubscribe transition requested up to
+	 * this call has genuinely settled against Redis. `subscribe()` itself
+	 * must stay synchronous to satisfy the `ServerEventBus` interface, so a
+	 * `publish()` issued immediately after `subscribe()` can otherwise race
+	 * ahead of the actual Redis command — in real usage the listen router's
+	 * own ack round trip over the network all but rules this out, but tests
+	 * (and any other caller that wants a hard guarantee) can await this
+	 * instead of a fixed delay.
 	 */
 	async whenSubscribed(): Promise<void> {
-		if (this.redisSubscribed) return;
-		await (this.subscribing ?? this.ensureRedisSubscribed());
+		await this.transitionQueue;
 	}
 
-	private async ensureRedisSubscribed(): Promise<void> {
-		if (this.redisSubscribed) return;
-		if (this.subscribing) {
-			await this.subscribing;
-			return;
-		}
-		this.subscribing = (async () => {
+	private enqueueTransition(): Promise<void> {
+		const next = this.transitionQueue.then(
+			() => this.reconcileSubscription(),
+			() => this.reconcileSubscription(),
+		);
+		this.transitionQueue = next;
+		return next;
+	}
+
+	/**
+	 * Brings the real Redis subscription in line with the CURRENT listener
+	 * set, read fresh at the moment this runs (never a snapshot captured
+	 * when it was enqueued). Because every call is serialized through
+	 * `transitionQueue`, this always observes the true state left behind by
+	 * whichever transition ran immediately before it.
+	 */
+	private async reconcileSubscription(): Promise<void> {
+		const shouldBeSubscribed = this.listeners.size > 0;
+		if (shouldBeSubscribed === this.redisSubscribed) return;
+
+		if (shouldBeSubscribed) {
 			try {
 				const subscriber = await getRedisSubscriberClient();
 				await subscriber.subscribe(this.channel, (message) => {
@@ -114,42 +143,23 @@ export class RedisUserServerEventBus implements ServerEventBus {
 					for (const listener of this.listeners) listener(event);
 				});
 				this.redisSubscribed = true;
-				// A review finding (P2): if the last listener unsubscribed
-				// while the `SUBSCRIBE` above was still in flight,
-				// `subscribe()`'s returned teardown function already ran and
-				// found `redisSubscribed` still `false`, so it was a no-op —
-				// this subscription would otherwise be retained in Redis
-				// forever with nothing left to deliver to. Re-check now that
-				// the subscription is genuinely live, and tear it down
-				// immediately if every listener is already gone.
-				if (this.listeners.size === 0) {
-					void this.teardownRedisSubscription();
-				}
 			} catch (error) {
 				logger.error(
 					{ err: error, userId: this.userId },
 					'Failed to subscribe to MCP resource event channel',
 				);
 			}
-		})();
-		try {
-			await this.subscribing;
-		} finally {
-			this.subscribing = undefined;
-		}
-	}
-
-	private async teardownRedisSubscription(): Promise<void> {
-		if (!this.redisSubscribed) return;
-		this.redisSubscribed = false;
-		try {
-			const subscriber = await getRedisSubscriberClient();
-			await subscriber.unsubscribe(this.channel);
-		} catch (error) {
-			logger.error(
-				{ err: error, userId: this.userId },
-				'Failed to unsubscribe from MCP resource event channel',
-			);
+		} else {
+			try {
+				const subscriber = await getRedisSubscriberClient();
+				await subscriber.unsubscribe(this.channel);
+				this.redisSubscribed = false;
+			} catch (error) {
+				logger.error(
+					{ err: error, userId: this.userId },
+					'Failed to unsubscribe from MCP resource event channel',
+				);
+			}
 		}
 	}
 }

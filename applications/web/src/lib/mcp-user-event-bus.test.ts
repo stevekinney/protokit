@@ -146,6 +146,40 @@ describeWithRedis('RedisUserServerEventBus subscribe/unsubscribe race (requires 
 			await inspector.disconnect().catch(() => {});
 		}
 	});
+
+	// A review finding (P2): the reverse race. The LAST listener
+	// unsubscribes (kicking off a teardown `UNSUBSCRIBE` in the
+	// background) and a REPLACEMENT listener subscribes before that
+	// teardown settles. The old implementation let the replacement's
+	// `SUBSCRIBE` and the old listener's `UNSUBSCRIBE` race independently;
+	// if the `UNSUBSCRIBE` landed after the `SUBSCRIBE`, the bus's own
+	// `redisSubscribed` flag stayed `true` while Redis itself had no
+	// subscription at all, so the replacement listener silently stopped
+	// receiving events. Proven functionally (an actual published event
+	// must reach the replacement listener), not just via the bus's own
+	// internal flags, so a fix that merely reorders internal state without
+	// fixing real delivery would not pass this test.
+	it('keeps delivering to a replacement listener that subscribes before the previous teardown settles', async () => {
+		const bus = new RedisUserServerEventBus(`user-bus-replace-${busRunId}`);
+
+		const firstUnsubscribe = bus.subscribe(() => {});
+		// Tear the first (and only) listener down, then immediately attach
+		// a replacement -- both synchronously, in the same tick, before
+		// either transition has any chance to touch Redis.
+		firstUnsubscribe();
+		const received: ServerEvent[] = [];
+		bus.subscribe((event) => received.push(event));
+		expect(bus.listenerCount).toBe(1);
+
+		// Wait for every queued transition (unsubscribe, then resubscribe)
+		// to genuinely settle against Redis.
+		await bus.whenSubscribed();
+
+		bus.publish({ kind: 'resources_list_changed' });
+		await waitForEvent(received, 1);
+
+		expect(received).toEqual([{ kind: 'resources_list_changed' }]);
+	});
 });
 
 describe('createUserServerEventBus', () => {

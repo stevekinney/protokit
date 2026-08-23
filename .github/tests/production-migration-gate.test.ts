@@ -42,6 +42,24 @@ describe('production.yml: migration gate', () => {
 		expect(migrateIndex).toBeGreaterThan(snapshotIndex);
 	});
 
+	/**
+	 * Regression test for the review-thread claim on
+	 * `.github/workflows/production.yml:39` (PRRT_kwDORZ0PbM6bcSOC): the
+	 * `migrate` job ran `bun scripts/migrate.ts` (which imports
+	 * `@template/database`) without ever running `bun install` first, so a
+	 * fresh runner had no workspace links or installed dependencies and
+	 * every main-branch release stopped before migration or deployment.
+	 */
+	test('the migrate job installs dependencies with a frozen lockfile before running migrations', () => {
+		const migrate = workflow.jobs.migrate;
+		const steps = migrate.steps ?? [];
+		const installIndex = steps.findIndex((step) => step.run === 'bun install --frozen-lockfile');
+		const migrateIndex = steps.findIndex((step) => step.run === 'bun scripts/migrate.ts');
+
+		expect(installIndex).toBeGreaterThanOrEqual(0);
+		expect(migrateIndex).toBeGreaterThan(installIndex);
+	});
+
 	test('a `deploy` job exists, depends on `migrate`, and shares the protected environment', () => {
 		const deploy = workflow.jobs.deploy;
 		expect(deploy).toBeDefined();

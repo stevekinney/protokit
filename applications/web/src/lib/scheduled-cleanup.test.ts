@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'bun:test';
-import { deleteAsPrimaryKeyBatches } from '@web/lib/scheduled-cleanup';
+import { afterEach, describe, expect, it } from 'bun:test';
+import {
+	deleteAsPrimaryKeyBatches,
+	isScheduledCleanupRunning,
+	startScheduledCleanup,
+	stopScheduledCleanup,
+} from '@web/lib/scheduled-cleanup';
 
 /**
  * DATA-001 / S-18 acceptance criterion 3: "Scheduled cleanup is idempotent,
@@ -91,5 +96,74 @@ describe('deleteAsPrimaryKeyBatches', () => {
 		});
 		expect(first.deleted).toBe(0);
 		expect(first.iterations).toBe(0);
+	});
+});
+
+/**
+ * A review finding (P2): the distributed lease's TTL equals the configured
+ * interval and is never renewed, so a sweep slower than the interval lets
+ * the lease lapse mid-sweep -- and with no Redis configured at all the
+ * lease is a permanent unconditional no-op. Either way, nothing previously
+ * stopped the SAME process's next `setInterval` tick from starting a
+ * second, overlapping sweep while the first was still running. These tests
+ * inject a controllable sweep and a stubbed lease (always granted, so
+ * Redis/the real globally shared lease key is never touched) to prove the
+ * new local `sweepInProgress` guard deterministically, with real timers.
+ */
+describe('startScheduledCleanup overlap guard', () => {
+	// Drain every sweep this test left in flight before stopping the
+	// interval. Without this, a sweep started after the test's own
+	// assertions (the second sweep the guard clearing correctly lets
+	// through) would be left permanently unresolved -- leaking the
+	// module-level `sweepInProgress = true` flag into whatever test runs
+	// next in this file/process, exactly the "global state plus arbitrary
+	// file ordering" hazard this branch's cautions warn about.
+	let releaseSignals: Array<() => void> = [];
+
+	afterEach(() => {
+		for (const release of releaseSignals.splice(0)) release();
+		stopScheduledCleanup();
+	});
+
+	it('does not start a second sweep while the previous one, on the same process, is still running', async () => {
+		let inFlight = 0;
+		let maxConcurrentInFlight = 0;
+		let completedCount = 0;
+		releaseSignals = [];
+
+		const slowSweep = () =>
+			new Promise<void>((resolve) => {
+				inFlight += 1;
+				maxConcurrentInFlight = Math.max(maxConcurrentInFlight, inFlight);
+				releaseSignals.push(() => {
+					inFlight -= 1;
+					completedCount += 1;
+					resolve();
+				});
+			});
+
+		// A short interval so several ticks fire while the first sweep is
+		// deliberately held open below.
+		startScheduledCleanup(20, slowSweep, async () => true);
+		expect(isScheduledCleanupRunning()).toBe(true);
+
+		// Let several interval ticks fire while the first sweep is still
+		// unresolved.
+		await new Promise((resolve) => setTimeout(resolve, 120));
+
+		// Exactly one sweep should have actually started, no matter how many
+		// ticks fired in the meantime.
+		expect(releaseSignals.length).toBe(1);
+		expect(maxConcurrentInFlight).toBe(1);
+
+		// Release the one in-flight sweep and let the next tick start a
+		// second one -- proving the guard clears correctly rather than
+		// wedging cleanup forever.
+		releaseSignals[0]?.();
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		expect(completedCount).toBe(1);
+		expect(releaseSignals.length).toBeGreaterThan(1);
+		expect(maxConcurrentInFlight).toBe(1);
 	});
 });

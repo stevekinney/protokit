@@ -132,6 +132,7 @@ export function jobGrantsWrite(job: WorkflowJob): boolean {
 export function jobUsesSecrets(job: WorkflowJob): boolean {
 	if (job.secrets) return true;
 	const haystacks: string[] = [];
+	if (job.env) haystacks.push(JSON.stringify(job.env));
 	for (const step of job.steps ?? []) {
 		if (step.with) haystacks.push(JSON.stringify(step.with));
 		if (step.env) haystacks.push(JSON.stringify(step.env));

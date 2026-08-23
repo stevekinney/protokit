@@ -317,6 +317,55 @@ describe('fetchClientIdMetadataDocument', () => {
 			expect(linkLocal).toBeNull();
 		});
 
+		it('rejects a bracketed IPv6 loopback literal without ever consulting DNS', async () => {
+			// Regression test for the bracket-stripping bug: `URL.hostname` for
+			// `https://[::1]/x` is the literal string `"[::1]"`, not `"::1"`.
+			// Before the fix, `isIPv6("[::1]")` returned false, so the check fell
+			// through to `dns.lookup`, and this specific test's `lookupImpl`
+			// (which ignores its hostname argument entirely, like production
+			// `dns.lookup` cannot) would happily return a public address and let
+			// the loopback literal through. Asserting `lookupImpl` is never
+			// called is what distinguishes "correctly recognized as a literal
+			// IPv6 address and blocked directly" from "coincidentally rejected
+			// for an unrelated reason."
+			let lookupCalled = false;
+			const result = await fetchClientIdMetadataDocument('https://[::1]/client.json', {
+				fetchImpl: async () => jsonResponse(validDocumentBody),
+				lookupImpl: async () => {
+					lookupCalled = true;
+					return [publicAddress];
+				},
+			});
+			expect(result).toBeNull();
+			expect(lookupCalled).toBe(false);
+		});
+
+		it('accepts a bracketed public IPv6 literal client_id, fetching the document', async () => {
+			// The inverse of the case above and the exact scenario the review
+			// comment described: a valid public IPv6-literal Client ID Metadata
+			// Document URL must not be rejected. Before the fix this returned
+			// null unconditionally, because the bracketed hostname was neither
+			// recognized as a literal IP (so never allow-listed) nor resolvable
+			// by `dns.lookup` (so it always failed with `dns_resolution_failed`).
+			const publicIpv6ClientId = 'https://[2606:4700:4700::1111]/client.json';
+			let lookupCalled = false;
+			const result = await fetchClientIdMetadataDocument(publicIpv6ClientId, {
+				fetchImpl: async (input) => {
+					expect(String(input)).toBe(publicIpv6ClientId);
+					return jsonResponse({ ...validDocumentBody, client_id: publicIpv6ClientId });
+				},
+				lookupImpl: async () => {
+					lookupCalled = true;
+					return [publicAddress];
+				},
+			});
+			expect(result).not.toBeNull();
+			expect(result?.clientId).toBe(publicIpv6ClientId);
+			// A literal IP address is never resolved via DNS; the IP-family
+			// check on the (bracket-stripped) hostname must short-circuit it.
+			expect(lookupCalled).toBe(false);
+		});
+
 		it('rejects when DNS resolution fails outright', async () => {
 			const result = await fetchClientIdMetadataDocument(validDocumentUrl, {
 				fetchImpl: async () => jsonResponse(validDocumentBody),

@@ -96,7 +96,7 @@ describe('resource scope enforcement', () => {
 	it('rejects reading user://profile without profile:read, carrying the challenge in the error data', async () => {
 		const client = await connectedClientWithScopes([]);
 		await expect(client.readResource({ uri: 'user://profile' })).rejects.toMatchObject({
-			code: -32001,
+			code: -32003,
 			data: expect.objectContaining({
 				requiredScope: 'profile:read',
 				_meta: {
@@ -121,7 +121,7 @@ describe('prompt scope enforcement', () => {
 		await expect(
 			client.getPrompt({ name: 'summarize', arguments: { topic: 'oauth' } }),
 		).rejects.toMatchObject({
-			code: -32001,
+			code: -32003,
 			data: expect.objectContaining({
 				requiredScope: 'prompts:read',
 				_meta: {
