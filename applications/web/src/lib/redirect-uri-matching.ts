@@ -34,22 +34,33 @@ function isLoopbackRedirectUri(parsed: URL): boolean {
  * actual `/oauth/authorize` request — is one the client registered.
  *
  * `requestedUri` is checked with the same `isValidRedirectUri` rules
- * (`fragmentValidator`) applied to registration: a loopback URI carrying a
- * fragment or embedded userinfo is rejected before it is ever compared
- * against a registered entry, port-flexible or not. Without this, a
- * request like `http://127.0.0.1:9999/cb#frag` would satisfy a
- * scheme/host/path/query comparison against a fragment-free registered
- * entry and let a fragment ride along into the eventual redirect —
- * exactly the class of value registration already refuses to store.
+ * (`fragmentAndUserinfoFree`) applied to registration: a URI carrying a
+ * fragment, embedded userinfo, or a wildcard host is rejected before it is
+ * ever compared against a registered entry, exact or port-flexible.
+ *
+ * Review finding (P2): every candidate `registeredUris` entry is validated
+ * the same way, not just `requestedUri`. A row written before this
+ * validator existed (or written directly, bypassing `oauthRegistrationSchema`
+ * /`client-metadata-documents.ts`'s own `isValidRedirectUri` refinement) can
+ * still contain a fragment, embedded userinfo, or wildcard host. The
+ * pre-existing `registeredUris.includes(requestedUri)` exact-match fast
+ * path accepted such a value outright whenever the request repeated it
+ * verbatim, and the port-flexible loopback loop parsed a stored candidate
+ * with `new URL()` without ever running it through the validator either —
+ * both let a legacy, never-validated registered value bypass this
+ * hardening entirely. Filtering `registeredUris` through the same
+ * validator before either comparison closes both paths at once.
  */
 export function redirectUriMatchesRegistered(
 	requestedUri: string,
 	registeredUris: readonly string[],
 	fragmentAndUserinfoFree: (uri: string) => boolean,
 ): boolean {
-	if (registeredUris.includes(requestedUri)) return true;
-
 	if (!fragmentAndUserinfoFree(requestedUri)) return false;
+
+	const validRegisteredUris = registeredUris.filter(fragmentAndUserinfoFree);
+
+	if (validRegisteredUris.includes(requestedUri)) return true;
 
 	let requested: URL;
 	try {
@@ -60,7 +71,7 @@ export function redirectUriMatchesRegistered(
 
 	if (!isLoopbackRedirectUri(requested)) return false;
 
-	return registeredUris.some((registeredUri) => {
+	return validRegisteredUris.some((registeredUri) => {
 		let registered: URL;
 		try {
 			registered = new URL(registeredUri);

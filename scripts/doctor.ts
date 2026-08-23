@@ -159,6 +159,7 @@ export function evaluateProductionReadiness(
 		nodeTlsRejectUnauthorized: variables.NODE_TLS_REJECT_UNAUTHORIZED,
 		sessionSigningSecret: variables.SESSION_SIGNING_SECRET,
 		mcpConformanceModeConfigured: variables.MCP_CONFORMANCE_MODE === 'true',
+		mcpAllowedOrigins: variables.MCP_ALLOWED_ORIGINS,
 	});
 
 	if (failureMessages.length === 0) {

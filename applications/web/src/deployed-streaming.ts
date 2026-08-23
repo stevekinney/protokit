@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * `OPS-001`: `bun run test:deployed-streaming -- https://HOST/mcp --token BEARER_TOKEN`
+ * `OPS-001`: `bun run test:deployed-streaming -- https://HOST/mcp --token-file PATH`
  *
  * Proves the acceptance criterion "a request-scoped SSE response is not
  * buffered by the production proxy" against a real, deployed host --
@@ -36,17 +36,40 @@
  * verdict.
  */
 
+import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { detectStreamBuffering } from '@web/deployed-validation-support';
 
-function parseArguments(argv: readonly string[]): { mcpUrl: string; token: string } {
+/**
+ * Review finding (P2, `deployed-oauth.ts:387`): a bearer token handed to
+ * this script as a bare `--token BEARER_TOKEN` argument lands in this
+ * process's own argv (visible to any other process on the host via `ps`,
+ * and in this run's shell history) for the token's entire lifetime.
+ * `deployed-oauth.ts` now delivers a freshly obtained token through a
+ * mode-0600 file rather than printing it inline, so `--token-file PATH` is
+ * the primary, recommended form; `--token BEARER_TOKEN` remains supported
+ * for a human pasting a token they already have some other way, which
+ * carries the same argv exposure regardless of how this script reads it.
+ */
+export function parseArguments(argv: readonly string[]): { mcpUrl: string; token: string } {
 	const mcpUrl = argv[0];
 	const tokenFlagIndex = argv.indexOf('--token');
-	const token = tokenFlagIndex === -1 ? undefined : argv[tokenFlagIndex + 1];
+	const tokenFileFlagIndex = argv.indexOf('--token-file');
+
+	let token: string | undefined;
+	if (tokenFileFlagIndex !== -1) {
+		const tokenFilePath = argv[tokenFileFlagIndex + 1];
+		token = tokenFilePath ? readFileSync(tokenFilePath, 'utf-8').trim() : undefined;
+	} else if (tokenFlagIndex !== -1) {
+		token = argv[tokenFlagIndex + 1];
+	}
 
 	if (!mcpUrl || !token) {
 		console.error(
-			'[deployed-streaming] usage: bun run test:deployed-streaming -- https://HOST/mcp --token BEARER_TOKEN',
+			'[deployed-streaming] usage: bun run test:deployed-streaming -- https://HOST/mcp --token-file PATH',
+		);
+		console.error(
+			'[deployed-streaming]    or: bun run test:deployed-streaming -- https://HOST/mcp --token BEARER_TOKEN',
 		);
 		console.error(
 			'[deployed-streaming] obtain a token by running: bun run test:deployed-oauth -- https://HOST',
@@ -161,4 +184,12 @@ async function main(): Promise<void> {
 	process.exit(0);
 }
 
-await main();
+// Sibling defect found while adding this file's own unit test (round-16
+// review, thread 7): this file was missing the `import.meta.main` guard
+// its siblings (`deployed-oauth.ts`, `deployed-smoke.ts`) both have.
+// Without it, merely `import`-ing this module (e.g. from a test file, to
+// unit test the pure `parseArguments` above) ran the real `main()` against
+// `process.argv`, which `process.exit(1)`s the whole test process.
+if (import.meta.main) {
+	await main();
+}

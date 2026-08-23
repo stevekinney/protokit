@@ -73,7 +73,7 @@ function extractHiddenInputValue(html: string, fieldName: string): string {
 	return match[1]!;
 }
 
-async function selfHostLocally(): Promise<{ baseUrl: string; stop: () => void }> {
+export async function selfHostLocally(): Promise<{ baseUrl: string; stop: () => void }> {
 	process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 	process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
 	process.env.SESSION_SIGNING_SECRET =
@@ -105,7 +105,7 @@ async function selfHostLocally(): Promise<{ baseUrl: string; stop: () => void }>
  * (it needs direct database access to seed a user and OAuth client, which
  * a real deployment's operator would never grant this script).
  */
-async function obtainRealAccessToken(
+export async function obtainRealAccessToken(
 	baseUrl: string,
 ): Promise<{ token: string; email: string; cleanup: () => Promise<void> }> {
 	const { database, schema } = await import('@template/database');
@@ -216,6 +216,87 @@ async function obtainRealAccessToken(
 	}
 }
 
+/**
+ * Runs the authenticated Inspector-protocol check against `baseUrl` with a
+ * real access token, appending any assertion failure to `problems`.
+ *
+ * Review finding (P2): once `obtainRealAccessToken` has succeeded (a real
+ * seeded user, confidential client, session, access token, and refresh
+ * token now exist), everything here used to run outside any try/finally of
+ * its own -- if `client.connect`, `listTools`, `callTool`, or `client.close`
+ * threw, control jumped straight to `main`'s own outer `finally`, which
+ * only stops the local server. `cleanup()` was never reached, leaving
+ * every one of those rows behind, and a repeated failing run accumulates
+ * more live test credentials each time. Wrapping the client work in its
+ * own try/finally, and `client.close()` in a `finally` of its own so a
+ * `close()` failure can't itself skip `cleanup()`, guarantees `cleanup()`
+ * runs on every exit path -- success, assertion failure, or thrown error
+ * alike. Exported so this guarantee is directly testable against the real
+ * database without driving the whole CLI (`connector-smoke-inspector.test.ts`).
+ */
+export async function runAuthenticatedInspectorCheck(
+	baseUrl: string,
+	problems: string[],
+): Promise<void> {
+	const { token, email, cleanup } = await obtainRealAccessToken(baseUrl);
+
+	try {
+		const client = new Client({ name: 'connector-smoke-inspector', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+			// `requestInit.headers` alone is not reliably applied to every
+			// request the transport makes -- `oauth-mcp-resource-binding
+			// .integration.test.ts` documents the same finding for
+			// `Content-Type` and settled on overriding `fetch` directly,
+			// building the header set from a real `Headers(...)` instance
+			// (never an object spread of one, which silently drops entries).
+			fetch: (input, init) => {
+				const headers = new Headers(init?.headers);
+				headers.set('authorization', `Bearer ${token}`);
+				return fetch(input, { ...init, headers });
+			},
+		});
+		try {
+			await client.connect(transport);
+
+			const tools = await client.listTools();
+			const profileTool = tools.tools.find((tool) => tool.name === 'get_user_profile');
+			if (!profileTool) {
+				problems.push(
+					`tools/list did not include get_user_profile: ${JSON.stringify(tools.tools)}`,
+				);
+			} else if (profileTool.annotations?.readOnlyHint !== true) {
+				problems.push(
+					`get_user_profile is missing readOnlyHint: true in its own tools/list annotations: ${JSON.stringify(profileTool.annotations)}`,
+				);
+			} else if (!profileTool.title) {
+				problems.push('get_user_profile has no title in its own tools/list output');
+			} else {
+				console.log(
+					'[connector-smoke-inspector] tools/list lists get_user_profile with title and readOnlyHint intact',
+				);
+			}
+
+			const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
+			const resultText = JSON.stringify(result);
+			if (result.isError) {
+				problems.push(`tools/call get_user_profile returned isError: true: ${resultText}`);
+			} else if (!resultText.includes(email)) {
+				problems.push(
+					`tools/call get_user_profile did not return the test user's own email: ${resultText}`,
+				);
+			} else {
+				console.log(
+					'[connector-smoke-inspector] tools/call get_user_profile returned the real, authenticated profile',
+				);
+			}
+		} finally {
+			await client.close();
+		}
+	} finally {
+		await cleanup();
+	}
+}
+
 async function main(): Promise<void> {
 	const host = parseHostArgument(process.argv.slice(2));
 	let stopLocalServer: (() => void) | undefined;
@@ -294,58 +375,7 @@ async function main(): Promise<void> {
 			console.log(
 				"[connector-smoke-inspector] proving the same wire protocol the Inspector CLI speaks works end to end, authenticated, via the official SDK client (see this file's header comment for why the Inspector CLI itself is not driven through the authenticated half automatically)...",
 			);
-			const { token, email, cleanup } = await obtainRealAccessToken(baseUrl);
-
-			const client = new Client({ name: 'connector-smoke-inspector', version: '1.0.0' });
-			const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
-				// `requestInit.headers` alone is not reliably applied to every
-				// request the transport makes -- `oauth-mcp-resource-binding
-				// .integration.test.ts` documents the same finding for
-				// `Content-Type` and settled on overriding `fetch` directly,
-				// building the header set from a real `Headers(...)` instance
-				// (never an object spread of one, which silently drops entries).
-				fetch: (input, init) => {
-					const headers = new Headers(init?.headers);
-					headers.set('authorization', `Bearer ${token}`);
-					return fetch(input, { ...init, headers });
-				},
-			});
-			await client.connect(transport);
-
-			const tools = await client.listTools();
-			const profileTool = tools.tools.find((tool) => tool.name === 'get_user_profile');
-			if (!profileTool) {
-				problems.push(
-					`tools/list did not include get_user_profile: ${JSON.stringify(tools.tools)}`,
-				);
-			} else if (profileTool.annotations?.readOnlyHint !== true) {
-				problems.push(
-					`get_user_profile is missing readOnlyHint: true in its own tools/list annotations: ${JSON.stringify(profileTool.annotations)}`,
-				);
-			} else if (!profileTool.title) {
-				problems.push('get_user_profile has no title in its own tools/list output');
-			} else {
-				console.log(
-					'[connector-smoke-inspector] tools/list lists get_user_profile with title and readOnlyHint intact',
-				);
-			}
-
-			const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
-			const resultText = JSON.stringify(result);
-			if (result.isError) {
-				problems.push(`tools/call get_user_profile returned isError: true: ${resultText}`);
-			} else if (!resultText.includes(email)) {
-				problems.push(
-					`tools/call get_user_profile did not return the test user's own email: ${resultText}`,
-				);
-			} else {
-				console.log(
-					'[connector-smoke-inspector] tools/call get_user_profile returned the real, authenticated profile',
-				);
-			}
-
-			await client.close();
-			await cleanup();
+			await runAuthenticatedInspectorCheck(baseUrl, problems);
 		}
 	} finally {
 		stopLocalServer?.();
@@ -370,4 +400,13 @@ async function main(): Promise<void> {
 	process.exit(0);
 }
 
-await main();
+// Sibling defect found and fixed alongside the same gap in
+// `deployed-streaming.ts`/`deployed-smoke.ts` (round-16 review, thread 7 and
+// thread 8): without this guard, merely `import`-ing this module -- exactly
+// what `connector-smoke-inspector.test.ts` does to unit test
+// `runAuthenticatedInspectorCheck`/`obtainRealAccessToken` -- ran the real
+// `main()` against `process.argv`, including a real network `bunx` install
+// and a real `process.exit()` that tears down the importing process.
+if (import.meta.main) {
+	await main();
+}

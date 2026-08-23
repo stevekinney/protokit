@@ -24,6 +24,7 @@ type StartupWebEnvironment = Writable<
 		| 'NODE_TLS_REJECT_UNAUTHORIZED'
 		| 'SESSION_SIGNING_SECRET'
 		| 'MCP_CONFORMANCE_MODE'
+		| 'MCP_ALLOWED_ORIGINS'
 	>
 >;
 
@@ -94,6 +95,7 @@ export function assertProductionStartupInvariants(
 		nodeTlsRejectUnauthorized: source.environment.NODE_TLS_REJECT_UNAUTHORIZED,
 		sessionSigningSecret: source.environment.SESSION_SIGNING_SECRET,
 		mcpConformanceModeConfigured: source.environment.MCP_CONFORMANCE_MODE,
+		mcpAllowedOrigins: source.environment.MCP_ALLOWED_ORIGINS,
 	});
 
 	if (failures.length > 0) {

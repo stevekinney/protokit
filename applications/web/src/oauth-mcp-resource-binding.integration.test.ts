@@ -209,26 +209,43 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		return tokenBody.access_token;
 	}
 
-	it('rejects an authorization request with no resource parameter', async () => {
+	// Review finding (P2, round 16): `client_id` and `redirect_uri` are
+	// already verified by the time the resource check runs, so per RFC
+	// 6749 §4.1.2.1 a missing/mismatched `resource` is now delivered back
+	// to the client through the verified redirect (`invalid_target`)
+	// rather than a local 400 -- the client would otherwise receive no
+	// authorization callback at all. `redirect: 'manual'` is required here
+	// (matching every other redirect-asserting test in this file): without
+	// it, `fetch`'s default `redirect: 'follow'` would actually follow the
+	// 302 to the real external `https://example.com/callback`, and
+	// `fetchFromTestServer`'s cross-server-instance check would then
+	// (correctly) throw on that unrelated response.
+	it('redirects an authorization request with no resource parameter to the verified client', async () => {
 		const handle = startServer();
 		const cookie = await signIn(handle);
 		const response = await fetchFromTestServer(
 			handle,
 			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}`,
-			{ headers: { cookie } },
+			{ headers: { cookie }, redirect: 'manual' },
 		);
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/callback');
+		expect(location.searchParams.get('error')).toBe('invalid_target');
 	});
 
-	it('rejects an authorization request whose resource does not name this server', async () => {
+	it('redirects an authorization request whose resource does not name this server to the verified client', async () => {
 		const handle = startServer();
 		const cookie = await signIn(handle);
 		const response = await fetchFromTestServer(
 			handle,
 			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent('https://not-this-server.example.com/mcp')}`,
-			{ headers: { cookie } },
+			{ headers: { cookie }, redirect: 'manual' },
 		);
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/callback');
+		expect(location.searchParams.get('error')).toBe('invalid_target');
 	});
 
 	it('rejects a token request whose resource does not match the authorization code', async () => {

@@ -1,6 +1,7 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
+import { isValidClientName } from '@web/lib/client-name-validation';
 
 const consentLogger = logger.child({ module: 'consent-inventory' });
 
@@ -56,13 +57,25 @@ export async function listUserConnections(userId: string): Promise<ConnectionSum
 			),
 		);
 
+	// Review finding (P2): a client registered before `isValidClientName`
+	// existed (the previous registration schema accepted any nonempty
+	// string) can still hold a stored name containing bidirectional-override,
+	// control, or zero-width characters. `oauth-routes.tsx`'s consent page
+	// already substitutes a safe fallback for exactly this case; this is the
+	// same defense-in-depth applied to the connected-applications inventory,
+	// which otherwise copied the raw name next to that row's revoke button —
+	// letting a legacy malicious client visually impersonate or conceal
+	// another entry in a UI whose entire purpose is letting a user tell
+	// their connections apart.
 	const byClientId = new Map<string, ConnectionSummary>();
 	for (const row of [...liveAccessTokens, ...liveRefreshTokens]) {
 		const existing = byClientId.get(row.clientId);
 		if (!existing || row.expiresAt < existing.earliestExpiresAt) {
 			byClientId.set(row.clientId, {
 				clientId: row.clientId,
-				clientName: row.clientName,
+				clientName: isValidClientName(row.clientName)
+					? row.clientName
+					: 'the requesting application',
 				earliestExpiresAt: row.expiresAt,
 			});
 		}

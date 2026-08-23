@@ -28,6 +28,7 @@ const mockEnvironment: ProductionStartupInvariantSource['environment'] = {
 	NODE_TLS_REJECT_UNAUTHORIZED: undefined,
 	SESSION_SIGNING_SECRET: undefined,
 	MCP_CONFORMANCE_MODE: false,
+	MCP_ALLOWED_ORIGINS: 'http://localhost:3000',
 };
 const mockDatabaseEnvironment: ProductionStartupInvariantSource['databaseEnvironment'] = {
 	DATABASE_URL:

@@ -259,6 +259,32 @@ describe('evaluateProductionReadiness', () => {
 		const results = evaluateProductionReadiness('production', variables);
 		expect(results.some((entry) => entry.status === 'fail')).toBe(false);
 	});
+
+	// Round-16 review-thread claim on `applications/web/src/lib/mcp-origin-validation.ts:57`:
+	// a malformed `MCP_ALLOWED_ORIGINS` entry used to be silently dropped
+	// rather than rejected or reported, so `doctor` never caught it and
+	// production could start successfully with an allow-list matching
+	// nothing. `evaluateProductionReadiness` is what `doctor` actually runs
+	// for `--production`, so this is the real regression test for the
+	// operator-visible half of that finding.
+	it('fails when MCP_ALLOWED_ORIGINS is entirely made of entries that cannot be canonicalized to a browser Origin', () => {
+		const variables = { ...validVariables(), MCP_ALLOWED_ORIGINS: 'https://claude.ai/callback' };
+		const results = evaluateProductionReadiness('production', variables);
+		expect(
+			results.some(
+				(entry) => entry.status === 'fail' && entry.detail.includes('MCP_ALLOWED_ORIGINS'),
+			),
+		).toBe(true);
+	});
+
+	it('passes when every MCP_ALLOWED_ORIGINS entry canonicalizes cleanly', () => {
+		const variables = {
+			...validVariables(),
+			MCP_ALLOWED_ORIGINS: 'https://claude.ai,http://localhost:3000',
+		};
+		const results = evaluateProductionReadiness('production', variables);
+		expect(results.some((entry) => entry.status === 'fail')).toBe(false);
+	});
 });
 
 describe('evaluateMcpProductionProhibitions', () => {

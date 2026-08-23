@@ -148,9 +148,33 @@ export function jobNeeds(job: WorkflowJob): string[] {
 }
 
 /**
- * A job is authorization-gated when its `if:` (or an upstream job it
- * `needs:`) references an `authorize`/`authorized`-style output, so it
- * cannot run for an actor the authorization job rejected.
+ * `job.if` must equal (never merely reference) a positive authorization
+ * output — `needs.<upstreamJobName>.outputs.<outputName> == '<approvedValue>'`
+ * — where `<upstreamJobName>` is one of the job's own `needs:` entries.
+ *
+ * Review finding (P2): the previous check, `/needs\.\w*(authoriz)/i`, was a
+ * bare substring match against the whole `if:` string. Two ways that let an
+ * unauthorized job through the audit as "gated":
+ *
+ * - It never anchored the matched name to `needs:` — `needs.not_authorized`
+ *   (an unrelated job name that merely contains "authoriz" as a substring)
+ *   satisfied it, even if `not_authorized` is not one of this job's `needs:`
+ *   entries at all.
+ * - It never inspected the comparison operator or the compared value — a
+ *   condition like `needs.authorize.outputs.authorized != 'true'` (the
+ *   negation: this job runs precisely when authorization was REJECTED)
+ *   matched identically to the correct `== 'true'` form, because the regex
+ *   only checked that the output name appeared somewhere in the string.
+ */
+const POSITIVE_AUTHORIZATION_CONDITION =
+	/needs\.([A-Za-z0-9_-]+)\.outputs\.[A-Za-z0-9_-]+\s*==\s*['"]true['"]/;
+
+/**
+ * A job is authorization-gated when its `if:` requires equality against a
+ * positive (`'true'`) authorization output from a job actually named in its
+ * own `needs:`, so it cannot run for an actor the authorization job
+ * rejected — and cannot be satisfied by a same-named-but-unrelated output,
+ * a negated condition, or a job outside its own `needs:` chain.
  */
 export function isAuthorizationGated(workflow: Workflow, jobName: string): boolean {
 	const job = workflow.jobs[jobName];
@@ -159,8 +183,15 @@ export function isAuthorizationGated(workflow: Workflow, jobName: string): boole
 	const needs = jobNeeds(job);
 	if (needs.length === 0) return false;
 
-	const referencesAuthorization = /needs\.\w*(authoriz)/i.test(job.if ?? '');
-	if (!referencesAuthorization) return false;
+	const match = POSITIVE_AUTHORIZATION_CONDITION.exec(job.if ?? '');
+	if (!match) return false;
+
+	// The job the condition actually reads from must be one this job
+	// genuinely `needs:` — a positive condition referencing some other,
+	// unrelated job's output would not actually gate this job's execution
+	// on anything this job depends on.
+	const referencedJobName = match[1];
+	if (!needs.includes(referencedJobName)) return false;
 
 	// The upstream job it depends on must itself hold no write permissions
 	// and no secrets, or the "gate" grants nothing.

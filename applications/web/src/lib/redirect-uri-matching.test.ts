@@ -154,4 +154,52 @@ describe('redirectUriMatchesRegistered', () => {
 			redirectUriMatchesRegistered('not-a-url', ['http://localhost/callback'], isValidRedirectUri),
 		).toBe(false);
 	});
+
+	it('rejects an exact match against a legacy registered URI carrying embedded userinfo', () => {
+		// A row written before `isValidRedirectUri` existed (or written
+		// directly, bypassing registration) could store an authority-confusion
+		// value like this. The exact-match fast path must not accept it just
+		// because the request repeats it verbatim.
+		expect(
+			redirectUriMatchesRegistered(
+				'https://trusted.example.com@evil.com/cb',
+				['https://trusted.example.com@evil.com/cb'],
+				isValidRedirectUri,
+			),
+		).toBe(false);
+	});
+
+	it('rejects an exact match against a legacy registered URI carrying a fragment', () => {
+		expect(
+			redirectUriMatchesRegistered(
+				'https://example.com/cb#frag',
+				['https://example.com/cb#frag'],
+				isValidRedirectUri,
+			),
+		).toBe(false);
+	});
+
+	it('rejects an exact match against a legacy registered wildcard-host URI', () => {
+		expect(
+			redirectUriMatchesRegistered(
+				'https://*.example.com/cb',
+				['https://*.example.com/cb'],
+				isValidRedirectUri,
+			),
+		).toBe(false);
+	});
+
+	it('rejects a port-flexible loopback match against a legacy registered URI carrying a fragment', () => {
+		// Without validating each registered candidate, a fragment-bearing
+		// legacy loopback entry would still satisfy the port-flexible
+		// hostname/pathname/search comparison (which never inspects the
+		// fragment) and let the request's own fragment ride along.
+		expect(
+			redirectUriMatchesRegistered(
+				'http://127.0.0.1:54321/callback',
+				['http://127.0.0.1:1234/callback#frag'],
+				isValidRedirectUri,
+			),
+		).toBe(false);
+	});
 });

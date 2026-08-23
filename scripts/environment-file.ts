@@ -13,15 +13,53 @@ import { join, dirname, basename } from 'node:path';
 
 export const SECRET_FILE_MODE = 0o600;
 
+/**
+ * Round 16 review finding (P2): a value containing a literal `"` or `\` used
+ * to always be double-quoted, escaping `"` as `\"` and `\` as `\\`. Bun's
+ * real loader does not unescape either sequence (see `decodeQuotedInner`'s
+ * doc comment for the direct subprocess evidence) -- it keeps the
+ * protecting backslash in the decoded value, so writing `\"` for an
+ * original single `"` character came back as the two characters `\"` the
+ * moment `setup.ts`/`rotate-secret.ts` next wrote a value read through
+ * Bun's own loader (or, after this file's matching decoder fix, through
+ * this file's own reader too) -- corrupting exactly the credential this
+ * escaping exists to protect.
+ *
+ * Single-quoted and backtick-quoted values are entirely literal in Bun (no
+ * escape processing at all, confirmed empirically) and can therefore carry
+ * a `"` or `\` byte-for-byte, so one of those two styles is used whenever
+ * the value doesn't itself contain that quote character. No script in this
+ * repository prompts for or generates a credential containing both a
+ * literal `'` and a literal `` ` `` (hex secrets, connection strings,
+ * region ids, Google OAuth credentials), so the double-quote fallback below
+ * is reached only for a `\n`/`\r`/`#`/whitespace-only reason, never for one
+ * that needs a `"`/`\` in that same fallback -- flagged rather than
+ * silently assumed impossible: if a future value ever needs literal `"`
+ * AND both quote characters at once, double-quote escaping cannot
+ * represent it perfectly through Bun's own grammar, full stop -- that is a
+ * limitation of Bun's parser, not something a smarter escaper here could
+ * fix.
+ */
 export function encodeEnvironmentValue(value: string): string {
 	const needsQuoting = /["\\\n\r#]/.test(value) || value !== value.trim() || value === '';
 	if (!needsQuoting) return value;
 
-	const escaped = value
-		.replace(/\\/g, '\\\\')
-		.replace(/"/g, '\\"')
-		.replace(/\r/g, '\\r')
-		.replace(/\n/g, '\\n');
+	// Only a literal `"` or `\` forces a different quote style than the
+	// double-quote default below -- every other reason to quote (`#`,
+	// leading/trailing whitespace, a real newline/CR, or the empty string)
+	// round-trips correctly through double quotes with only `\n`/`\r`
+	// escaped, unchanged from before this finding.
+	if (value.includes('"') || value.includes('\\')) {
+		if (!value.includes("'")) {
+			return `'${value}'`;
+		}
+		if (!value.includes('`')) {
+			return `\`${value}\``;
+		}
+		// Pathological fallback: see this function's own doc comment.
+	}
+
+	const escaped = value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
 	return `"${escaped}"`;
 }
 
@@ -50,15 +88,51 @@ export function encodeEnvironmentValue(value: string): string {
  * inside a backtick-quoted value does not end the value, confirmed empirically (`` `x\`y` ``
  * decodes to the four literal characters `x`, `\`, `` ` ``, `y` -- the backslash is kept, not
  * stripped, and the quote it precedes is not treated as the close).
+ *
+ * Round 16 review finding (P2): for a double-quoted value, only `\n` and `\r` are real escape
+ * sequences Bun's own loader interprets -- `\"` and `\\` are NOT unescaped. Confirmed directly
+ * against a real `bun -e` subprocess (not assumed): `FOO="a\"b"` reads back as the four literal
+ * characters `a`, `\`, `"`, `b` (the backslash stays, matching what `findClosingQuoteIndex`
+ * below already knows -- `\"` doesn't END the quoted value, but that's a boundary-finding rule,
+ * not a content-decoding one), and `FOO="a\\b"` reads back as `a`, `\`, `\`, `b` (two literal
+ * backslashes, not collapsed to one). This function previously unescaped both to their single-
+ * character form, matching what `encodeEnvironmentValue`'s own escaping produced but NOT what
+ * Bun's real loader does -- so a value containing a literal `"` or `\`, round-tripped through
+ * this file's own read/write, ended up correct against ITSELF but silently wrong against the
+ * actual runtime that reads the same file (`bun --env-file` / Bun's automatic `.env.local`
+ * loading). `encodeEnvironmentValue` no longer produces `\"`/`\\` at all (see its own doc
+ * comment) specifically because a double-quoted value cannot represent a literal `"` without
+ * Bun keeping the protecting backslash -- so this function no longer needs to undo an escape
+ * that emitting code no longer writes, for the two encodable-again characters, only for the
+ * one Bun itself cannot cleanly round-trip through double quotes.
  */
 function decodeQuotedInner(inner: string, quoteChar: '"' | "'" | '`'): string {
 	if (quoteChar === "'" || quoteChar === '`') return inner;
 
+	// A `\\` (adjacent backslash pair) is consumed as its own atomic,
+	// entirely literal 2-character unit BEFORE checking for `\n`/`\r` --
+	// confirmed directly against a real `bun -e` subprocess: `a\\nb` (a
+	// backslash pair immediately followed by a literal `n`) decodes to the
+	// unconverted 4 characters `a`, `\`, `\`, `n`, `b` -- wait, 5 characters
+	// including `b` -- NOT `a`, `\`, then a real newline, `b`. If backslash
+	// pairing were checked one character at a time left-to-right without
+	// this priority (i.e. only ever looking one character ahead), the
+	// second backslash of the pair would incorrectly pair with the `n`
+	// that follows it and convert it to a newline. A three-backslash run
+	// followed by `n` (confirmed the same way) resolves as ONE literal
+	// pair, then the leftover single backslash pairs normally with `n` --
+	// i.e. backslashes are consumed two at a time from the left, and only
+	// an odd one left over ever pairs with `n`/`r`.
 	let result = '';
 	for (let index = 0; index < inner.length; index++) {
 		const char = inner[index];
 		if (char === '\\' && index + 1 < inner.length) {
 			const next = inner[index + 1];
+			if (next === '\\') {
+				result += '\\\\';
+				index++;
+				continue;
+			}
 			if (next === 'n') {
 				result += '\n';
 				index++;
@@ -66,11 +140,6 @@ function decodeQuotedInner(inner: string, quoteChar: '"' | "'" | '`'): string {
 			}
 			if (next === 'r') {
 				result += '\r';
-				index++;
-				continue;
-			}
-			if (next === '"' || next === '\\') {
-				result += next;
 				index++;
 				continue;
 			}

@@ -359,3 +359,45 @@ describe('collectProductionStartupFailures — SESSION_SIGNING_SECRET', () => {
 		expect(failures.some((failure) => failure.includes('SESSION_SIGNING_SECRET'))).toBe(false);
 	});
 });
+
+/**
+ * Regression test for the round-16 review-thread claim on
+ * `applications/web/src/lib/mcp-origin-validation.ts:57`: a malformed
+ * `MCP_ALLOWED_ORIGINS` entry used to be silently dropped by
+ * `parseAllowedOrigins`, so production could start successfully with a
+ * configured allow-list that matches nothing. This is the fail-closed
+ * startup-time enforcement `doctor.test.ts` also exercises through
+ * `evaluateProductionReadiness`.
+ */
+describe('collectProductionStartupFailures — MCP_ALLOWED_ORIGINS', () => {
+	it('accepts every entry canonicalizing cleanly', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			mcpAllowedOrigins: 'https://claude.ai,http://localhost:3000',
+		});
+		expect(failures.some((failure) => failure.includes('MCP_ALLOWED_ORIGINS'))).toBe(false);
+	});
+
+	it('rejects a nonempty value made entirely of malformed entries', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			mcpAllowedOrigins: 'https://claude.ai/callback',
+		});
+		const failure = failures.find((entry) => entry.includes('MCP_ALLOWED_ORIGINS'));
+		expect(failure).toBeDefined();
+		expect(failure).toContain('https://claude.ai/callback');
+	});
+
+	it('rejects a value that mixes a valid entry with a malformed one', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			mcpAllowedOrigins: 'https://claude.ai,https://claude.ai/callback',
+		});
+		expect(failures.some((failure) => failure.includes('MCP_ALLOWED_ORIGINS'))).toBe(true);
+	});
+
+	it('is not checked when mcpAllowedOrigins is not supplied (existing call sites/fixtures need no update)', () => {
+		const failures = collectProductionStartupFailures(validConfiguration());
+		expect(failures.some((failure) => failure.includes('MCP_ALLOWED_ORIGINS'))).toBe(false);
+	});
+});

@@ -35,6 +35,9 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import { chmodSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
 	checkDiscoveryDocumentsForConnectorCompatibility,
 	fetchDiscoveryDocuments,
@@ -381,11 +384,28 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	console.log('================================================================');
-	console.log('[deployed-oauth] obtained a real access token. Use it with:');
-	console.log(
-		`  bun run test:deployed-streaming -- ${baseUrl}/mcp --token ${tokenBody.access_token}`,
+	// Review finding (P2): printing the raw bearer token as part of a shell
+	// command (the previous `--token ${tokenBody.access_token}` form) leaves
+	// it in terminal scrollback and shell history, and exposes it in this
+	// process's own argv for the token's full lifetime if the printed
+	// command is actually run -- unlike every other one-time secret this
+	// repository hands off (`scripts/seed.ts`'s `deliverSeedClientSecret`,
+	// `SECRETS-ROTATION.md`'s procedures), which deliver through a mode-0600
+	// file rather than a command-line argument. Delivered the same way here:
+	// written to a mode-0600 temp file, never logged, with only its path
+	// printed. `deployed-streaming.ts`'s `--token-file` reads and trims it.
+	const tokenFilePath = join(
+		tmpdir(),
+		`protokit-deployed-oauth-token-${process.pid}-${randomBytes(8).toString('hex')}`,
 	);
+	writeFileSync(tokenFilePath, tokenBody.access_token, { mode: 0o600 });
+	chmodSync(tokenFilePath, 0o600);
+
+	console.log('================================================================');
+	console.log(
+		'[deployed-oauth] obtained a real access token, written to a mode-0600 file. Use it with:',
+	);
+	console.log(`  bun run test:deployed-streaming -- ${baseUrl}/mcp --token-file ${tokenFilePath}`);
 	console.log('================================================================');
 	console.log('');
 	console.log('[deployed-oauth] every automatable check passed against a real, public deployment.');

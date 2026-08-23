@@ -19,6 +19,7 @@
  * parallel one.
  */
 
+import { findInvalidConfiguredOrigins } from '@web/lib/mcp-allowed-origins';
 import { isValidCidr } from '@web/lib/trusted-proxy';
 
 /**
@@ -206,6 +207,21 @@ export interface ProductionStartupConfiguration {
 	 * of trusting every deployment to remember to unset the flag.
 	 */
 	mcpConformanceModeConfigured: boolean;
+	/**
+	 * The raw `MCP_ALLOWED_ORIGINS` value, unmodified. Round-16 review
+	 * finding (P2): `mcp-origin-validation.ts`'s `parseAllowedOrigins`
+	 * silently drops any entry `canonicalizeConfiguredOrigin` cannot parse
+	 * into a real `Origin` -- so a nonempty value made entirely of
+	 * malformed entries (e.g. `https://claude.ai/callback`, a real path an
+	 * `Origin` header can never carry) becomes an empty allow-list at
+	 * runtime with no signal anywhere. Checked here so a malformed entry
+	 * fails production startup outright rather than starting successfully
+	 * and then rejecting every browser-origin MCP request. Optional so
+	 * existing call sites and fixtures need no update; treated as "nothing
+	 * configured" (falls back to `parseAllowedOrigins`'s own default) when
+	 * absent, matching every other optional field here.
+	 */
+	mcpAllowedOrigins?: string | undefined;
 }
 
 /**
@@ -366,6 +382,18 @@ export function collectProductionStartupFailures(
 				'registry (list_audit_events, test_* tools/resources/prompts) outside the ' +
 				"production registry's requiredScope checks -- never set it in production.",
 		);
+	}
+
+	if (configuration.mcpAllowedOrigins !== undefined) {
+		const invalidOrigins = findInvalidConfiguredOrigins(configuration.mcpAllowedOrigins);
+		if (invalidOrigins.length > 0) {
+			failures.push(
+				'MCP_ALLOWED_ORIGINS contains an entry that cannot be canonicalized to a browser ' +
+					`Origin (scheme://host[:port], no path/query/fragment/userinfo): ${invalidOrigins.join(', ')}. ` +
+					'Every entry must be exactly what a real browser Origin header would send, or it ' +
+					'silently matches nothing and every browser-origin MCP request is rejected.',
+			);
+		}
 	}
 
 	// There is no production authentication provider other than Google sign-in

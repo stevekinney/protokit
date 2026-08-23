@@ -6,6 +6,7 @@ import {
 	jobGrantsWrite,
 	jobUsesSecrets,
 	loadWorkflow,
+	type Workflow,
 } from '../scripts/workflow-policy';
 
 describe('claude.yml: comment-triggered automation authorization', () => {
@@ -172,5 +173,85 @@ describe('jobUsesSecrets: job-level env detection', () => {
 				steps: [{ run: 'echo hello' }],
 			}),
 		).toBe(false);
+	});
+});
+
+/**
+ * Regression test for the review-thread claim on
+ * `.github/scripts/workflow-policy.ts:163` (round 16): `isAuthorizationGated()`'s
+ * previous check, `/needs\.\w*(authoriz)/i`, was a bare substring match. It
+ * classified a job as gated (1) when its `if:` named an upstream job never
+ * listed in its own `needs:` (as long as that unrelated name merely
+ * contained "authoriz"), and (2) when the condition was a NEGATION of the
+ * approved value — `needs.authorize.outputs.authorized != 'true'`, i.e. the
+ * job runs precisely for a REJECTED actor — since the regex never inspected
+ * the comparison operator or the compared value at all.
+ */
+function privilegedJob(
+	overrides: Partial<Workflow['jobs'][string]> = {},
+): Workflow['jobs'][string] {
+	return {
+		permissions: { contents: 'write' },
+		'timeout-minutes': 5,
+		...overrides,
+	};
+}
+
+function readOnlyJob(): Workflow['jobs'][string] {
+	return { permissions: { contents: 'read' }, 'timeout-minutes': 5 };
+}
+
+describe('isAuthorizationGated: requires a positive condition naming an actual needs: dependency', () => {
+	test('accepts the real, correct form used in claude.yml/claude-code-review.yml', () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "needs.authorize.outputs.authorized == 'true'",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(true);
+	});
+
+	test('rejects a negated condition that runs precisely for a rejected actor', () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "needs.authorize.outputs.authorized != 'true'",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+	});
+
+	test('rejects a condition naming a job outside its own needs: chain, even if the name contains "authorized"', () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				not_authorized: privilegedJob(), // a same-repo unrelated job, not depended on
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: "needs.not_authorized.outputs.authorized == 'true'",
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
+	});
+
+	test('rejects a condition that merely references an authorization-shaped output with no equality check', () => {
+		const workflow: Workflow = {
+			jobs: {
+				authorize: readOnlyJob(),
+				privileged: privilegedJob({
+					needs: 'authorize',
+					if: 'needs.authorize.outputs.authorized',
+				}),
+			},
+		};
+		expect(isAuthorizationGated(workflow, 'privileged')).toBe(false);
 	});
 });

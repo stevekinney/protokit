@@ -132,7 +132,7 @@ What "a public remote connector deployment" actually requires of the runtime, ve
 ```sh
 bun run test:deployed-smoke -- https://HOST                          # DNS, TLS, discovery, no cross-host redirects, /mcp challenge
 bun run test:deployed-oauth -- https://HOST                          # DCR, authorize URL shape, token endpoint negative paths
-bun run test:deployed-streaming -- https://HOST/mcp --token TOKEN    # proves the deployed proxy does not buffer the SSE stream
+bun run test:deployed-streaming -- https://HOST/mcp --token-file PATH    # proves the deployed proxy does not buffer the SSE stream
 bun run test:graceful-shutdown                                       # local, real subprocess: no dropped or duplicated in-flight results
 ```
 

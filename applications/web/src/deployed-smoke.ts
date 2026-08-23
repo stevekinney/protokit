@@ -157,4 +157,11 @@ async function main(): Promise<void> {
 	process.exit(0);
 }
 
-await main();
+// Sibling defect found and fixed alongside the identical gap in
+// `deployed-streaming.ts` (round-16 review, thread 7): without this guard,
+// merely importing this module (e.g. from a future unit test of any pure
+// helper in this file) runs the real `main()` against `process.argv` and
+// `process.exit()`s the importing process.
+if (import.meta.main) {
+	await main();
+}

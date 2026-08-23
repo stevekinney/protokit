@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import {
 	decodeEnvironmentValue,
+	encodeEnvironmentValue,
 	parseEnvironmentEntries,
 	appendEnvironmentEntryToFile,
 	readEnvironmentEntriesFromFile,
@@ -363,19 +364,37 @@ describe("property-style parity against Bun's own .env loader", () => {
 			keys: ['SECRET'],
 		},
 		{
-			// Only `\n`/`\r` are exercised here, not `\"`/`\\`: this sweep found
-			// that Bun's own loader does NOT unescape `\"` or `\\` inside a
-			// double-quoted value (both stay literal backslash-plus-character at
-			// runtime), while this parser's `decodeQuotedInner` does unescape
-			// them, matching `encodeEnvironmentValue`'s own output on the write
-			// side. That divergence is a real, separate defect from the one this
-			// round fixes -- reported to the reviewer rather than silently
-			// patched here, since the correct fix changes this file's escaping
-			// contract for every value containing a literal quote or backslash,
-			// which is a bigger, more consequential decision than this item's
-			// scope covers.
 			name: 'double-quoted value with a newline escape',
 			content: 'SECRET="line1\\nline2"\n',
+			keys: ['SECRET'],
+		},
+		// Round 16 review finding (P2, `scripts/environment-file.ts:74`): the gap
+		// round 14 found and deliberately deferred (see the git history for this
+		// comment block) -- Bun's own loader does NOT unescape `\"` or `\\`
+		// inside a double-quoted value; both stay literal backslash-plus-
+		// character at runtime. `decodeQuotedInner` used to unescape them
+		// anyway, matching `encodeEnvironmentValue`'s own output but NOT Bun's
+		// real loader. Fixed on both sides: `decodeQuotedInner` no longer
+		// unescapes `\"`/`\\`, and `encodeEnvironmentValue` no longer produces
+		// them at all -- a value containing `"` or `\` is now single- or
+		// backtick-quoted instead (both fully literal in Bun), so these two
+		// shapes are exercised by hand-written double-quoted fixtures (proving
+		// this reader now agrees with Bun on a value nothing in this
+		// repository's own writer would ever again produce) while the encoder
+		// round-trip cases below prove the writer's own new output.
+		{
+			name: 'double-quoted value with an escaped double quote',
+			content: 'SECRET="a\\"b"\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'double-quoted value with an escaped backslash',
+			content: 'SECRET="a\\\\b"\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'double-quoted value with an escaped backslash immediately followed by a literal n',
+			content: 'SECRET="a\\\\nb"\n',
 			keys: ['SECRET'],
 		},
 		{
@@ -485,6 +504,43 @@ describe("property-style parity against Bun's own .env loader", () => {
 				for (const [index, key] of keys.entries()) {
 					expect(parsed[key]).toBe(bunValues[index]);
 				}
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
+});
+
+/**
+ * Round 16 review finding (P2, `scripts/environment-file.ts:74`): proves
+ * `encodeEnvironmentValue`'s OWN output (not a hand-written fixture) round-
+ * trips correctly through a real Bun subprocess for exactly the two values
+ * that could not be represented via double-quote escaping -- a literal `"`
+ * and a literal `\` -- since `encodeEnvironmentValue` and
+ * `decodeEnvironmentValue` must stay consistent with each other AND with
+ * Bun's real loader, not merely with each other.
+ */
+describe('encodeEnvironmentValue output round-trips through a real Bun subprocess', () => {
+	const values = ['a"b', 'a\\b', 'a\\"b', 'a\\\\b', `a"b'c`, 'plain-value-needing-no-quoting', ''];
+
+	for (const value of values) {
+		test(`round-trips: ${JSON.stringify(value)}`, async () => {
+			const directory = mkdtempSync(join(tmpdir(), 'protokit-env-encode-roundtrip-test-'));
+			try {
+				const dotEnvFile = join(directory, '.env');
+				const encoded = encodeEnvironmentValue(value);
+				writeSecretFileAtomic(dotEnvFile, `SECRET=${encoded}\n`);
+
+				const parsed = readEnvironmentEntriesFromFile(dotEnvFile);
+
+				const script = `console.log(JSON.stringify(process.env.SECRET ?? null))`;
+				const proc = Bun.spawn(['bun', '-e', script], { cwd: directory, stdout: 'pipe' });
+				const output = (await new Response(proc.stdout).text()).trim();
+				await proc.exited;
+				const bunValue: string | null = JSON.parse(output);
+
+				expect(parsed.SECRET).toBe(value);
+				expect(bunValue).toBe(value);
 			} finally {
 				rmSync(directory, { recursive: true, force: true });
 			}

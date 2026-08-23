@@ -56,6 +56,25 @@ describe('encodeEnvironmentValue', () => {
 	test('quotes an empty value', () => {
 		expect(encodeEnvironmentValue('')).toBe('""');
 	});
+
+	// Round 16 review finding (P2, `scripts/environment-file.ts:74`): double
+	// quotes previously escaped a literal `"`/`\` as `\"`/`\\`, but Bun's own
+	// loader does not unescape either sequence -- it keeps the protecting
+	// backslash, so the value came back corrupted (with an extra literal
+	// backslash) on the next read through Bun's real loader. Single/backtick
+	// quotes are fully literal in Bun, so a value containing `"` or `\` is
+	// now quoted with one of those instead.
+	test('single-quotes a value containing a literal double quote', () => {
+		expect(encodeEnvironmentValue('a"b')).toBe("'a\"b'");
+	});
+
+	test('single-quotes a value containing a literal backslash', () => {
+		expect(encodeEnvironmentValue('a\\b')).toBe("'a\\b'");
+	});
+
+	test('backtick-quotes a value containing both a double quote and a single quote', () => {
+		expect(encodeEnvironmentValue(`a"b'c`)).toBe('`a"b\'c`');
+	});
 });
 
 describe('environment file round trip', () => {

@@ -138,6 +138,23 @@ describe('listUserConnections', () => {
 		const connections = await listUserConnections(userId);
 		expect(connections.map((connection) => connection.clientId)).not.toContain(clientId);
 	});
+
+	// Review finding (P2): a client registered before `isValidClientName`
+	// existed could have a stored name carrying bidirectional-override,
+	// control, or zero-width characters. The connected-applications
+	// inventory must substitute the same safe fallback the consent page
+	// already uses, rather than copying the raw name next to that row's
+	// revoke button.
+	it('substitutes a safe fallback for a legacy client name containing a bidirectional-override character', async () => {
+		const maliciousName = 'Safe App‮gnicnalb ylthgils';
+		const { userId, clientId } = await seedUserWithConnection(maliciousName);
+
+		const connections = await listUserConnections(userId);
+		const connection = connections.find((entry) => entry.clientId === clientId);
+		expect(connection).toBeDefined();
+		expect(connection?.clientName).toBe('the requesting application');
+		expect(connection?.clientName).not.toContain('‮');
+	});
 });
 
 describe('revokeUserClientGrant', () => {

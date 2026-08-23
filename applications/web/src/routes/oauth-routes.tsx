@@ -515,20 +515,29 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	// OAUTH-001 / RFC 8707: this server has exactly one protected resource
 	// (the MCP endpoint), so `resource` must be present and must name it
 	// exactly — never inferred from what the client happened to ask for.
-	// Rejecting a missing or mismatched value here, before any client
-	// lookup or transaction is created, is what makes every authorization
-	// code (and everything minted from it) provably scoped to this
-	// resource rather than merely labeled with it after the fact.
+	// Rejecting a missing or mismatched value here, before any transaction
+	// is created, is what makes every authorization code (and everything
+	// minted from it) provably scoped to this resource rather than merely
+	// labeled with it after the fact.
+	//
+	// Review finding (P2): `client_id` and `redirect_uri` are already
+	// verified above (client lookup and registered-redirect-URI match) and
+	// `state` is already bounded (the length-cap check earlier in this
+	// handler, which this check must stay after — see that check's own
+	// comment), so — same RFC 6749 §4.1.2.1 rule the scope, PKCE,
+	// response_types, and grant_types checks below all follow —  a missing
+	// or mismatched `resource` is delivered back to the client through the
+	// verified redirect rather than a local error page. Rendering locally
+	// left the client waiting on a callback it would never receive.
+	// `invalid_target` is RFC 8707 §2's error code for exactly this case.
 	if (!resource || resource !== getMcpResourceUrl(context.request)) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: (
-				<OauthAuthorizePage
-					mode="error"
-					error="Missing or unsupported resource parameter. resource must exactly match this server's MCP resource URL."
-				/>
-			),
+		return authorizeProtocolErrorRedirect({
+			redirectUri,
+			error: 'invalid_target',
+			errorDescription:
+				"Missing or unsupported resource parameter. resource must exactly match this server's MCP resource URL.",
+			state,
+			issuer,
 		});
 	}
 

@@ -1279,6 +1279,37 @@ describe('authorization GET', () => {
 		expect(createAuthorizationTransactionCalls).toHaveLength(0);
 	});
 
+	it('redirects a missing resource parameter from a known client with a verified redirect URI per RFC 6749 §4.1.2.1', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&state=xyz',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_target');
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('redirects a resource parameter naming a different resource from a known client with a verified redirect URI', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=https://other.example.com/mcp&state=xyz',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('invalid_target');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
 	it('rejects an unsupported response_type with an oversized state locally, never echoing the oversized value into a redirect', async () => {
 		mockOauthClients = [authorizeClient];
 		const oversizedState = 'x'.repeat(600); // oauthMaxStateLength is 512
