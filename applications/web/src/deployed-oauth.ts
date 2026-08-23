@@ -40,6 +40,45 @@ import {
 	fetchDiscoveryDocuments,
 } from '@web/connector-smoke-support';
 
+/**
+ * Review finding (P2, round 12): checking only `status < 500` on the
+ * unauthenticated-authorize probe let a 404 (routing broken), a local 400
+ * (validation rejecting a well-formed request), or an unexpected 200
+ * (serving the page, or worse, minting a code, without requiring sign-in)
+ * all pass as "correct" -- the same class of gap the sibling invalid-grant
+ * check on the token endpoint already closed. The only response that
+ * actually proves an unauthenticated authorize request is handled
+ * correctly is a 3xx redirect whose `Location` resolves to this same
+ * deployment (never a third-party host, which would itself be a defect
+ * worth catching). Extracted as a pure function, independent of `fetch`
+ * and process exit codes, so the discrimination logic itself is directly
+ * testable rather than only reachable by driving the whole script against
+ * a live host.
+ */
+export function checkAuthorizeRedirectsToSignIn(
+	authorizeUrl: URL,
+	response: { status: number; headers: { get(name: string): string | null } },
+): string | null {
+	if (response.status >= 500) {
+		return `GET ${authorizeUrl.pathname} returned HTTP ${response.status} for an unauthenticated, otherwise well-formed authorization request`;
+	}
+	if (response.status < 300 || response.status >= 400) {
+		return `GET ${authorizeUrl.pathname} returned HTTP ${response.status} for an unauthenticated, otherwise well-formed authorization request, expected a 3xx redirect to sign-in`;
+	}
+
+	const location = response.headers.get('location');
+	if (!location) {
+		return `GET ${authorizeUrl.pathname} returned HTTP ${response.status} with no Location header, expected a redirect to this deployment's own sign-in route`;
+	}
+
+	const redirectOrigin = new URL(location, authorizeUrl).origin;
+	if (redirectOrigin !== authorizeUrl.origin) {
+		return `GET ${authorizeUrl.pathname} redirected to a different origin (${redirectOrigin}) than the deployment under test (${authorizeUrl.origin}), expected a same-origin sign-in redirect`;
+	}
+
+	return null;
+}
+
 /** RFC 7636 §4.1: 43-128 characters of unreserved base64url. 32 random bytes -> 43 characters, the shortest valid length, generated fresh per run rather than reused from any published example. */
 export function generatePkcePair(): { codeVerifier: string; codeChallenge: string } {
 	const codeVerifier = randomBytes(32).toString('base64url');
@@ -253,14 +292,15 @@ async function main(): Promise<void> {
 		// Not signed in: this server redirects to its own sign-in page rather
 		// than 500ing or silently accepting an unauthenticated authorize
 		// request -- that redirect target, not a 200, is the correct
-		// unauthenticated response shape.
-		if (authorizeResponse.status >= 500) {
-			problems.push(
-				`GET ${authorizationEndpoint} returned HTTP ${authorizeResponse.status} for an unauthenticated, otherwise well-formed authorization request`,
-			);
+		// unauthenticated response shape. See `checkAuthorizeRedirectsToSignIn`
+		// for what's required and why a non-5xx alone used to be treated as a
+		// pass.
+		const redirectProblem = checkAuthorizeRedirectsToSignIn(authorizeUrl, authorizeResponse);
+		if (redirectProblem) {
+			problems.push(redirectProblem);
 		} else {
 			console.log(
-				`[deployed-oauth] authorization endpoint responded HTTP ${authorizeResponse.status} to a well-formed, unauthenticated request (expected: a sign-in redirect, not a 5xx)`,
+				`[deployed-oauth] authorization endpoint correctly redirected an unauthenticated request to its own sign-in route (HTTP ${authorizeResponse.status}, Location="${authorizeResponse.headers.get('location')}")`,
 			);
 		}
 	}

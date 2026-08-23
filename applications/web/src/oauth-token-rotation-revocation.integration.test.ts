@@ -412,6 +412,101 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		expect(mcpResponse.status).toBe(401);
 	}, 30_000);
 
+	// Round 12 review (P2): `handleOauthTokenRefreshGrant`'s old-access-token
+	// revoke after a successful rotation is best-effort (logged and
+	// swallowed, not thrown -- see the comment above that `try`/`catch` in
+	// `oauth-routes.tsx`). If that update fails, an ancestor refresh-token
+	// row ends up revoked while its paired access token stays live. This
+	// seeds exactly that end state directly (rather than trying to force the
+	// best-effort update to fail over HTTP) and proves a later replay's
+	// family revocation still kills the orphaned ancestor's access token, not
+	// only the currently-live descendant's.
+	it("replaying an ancestor whose old access-token revoke previously failed still kills that ancestor's orphaned access token", async () => {
+		const handle = startServer();
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
+		const familyId = randomUUID();
+		const oneHourFromNow = new Date(Date.now() + 60 * 60 * 1000);
+		const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+		// The ancestor: its refresh token is already revoked (as a real
+		// rotation would leave it), but its access token was never revoked --
+		// simulating the best-effort revoke having failed and been swallowed.
+		const ancestorAccessToken = randomBytes(48).toString('hex');
+		const ancestorRefreshToken = randomBytes(48).toString('hex');
+
+		// The live descendant: what the ancestor rotated into. A real replay
+		// of the ancestor must kill this too (already covered by the sibling
+		// "reuse... revokes its whole token family" test above), so seeding it
+		// here proves this test is exercising family revocation generally, not
+		// merely a single-member family.
+		const descendantAccessToken = randomBytes(48).toString('hex');
+		const descendantRefreshToken = randomBytes(48).toString('hex');
+
+		await Promise.all([
+			database.insert(schema.oauthTokens).values({
+				accessToken: hashCredential(ancestorAccessToken),
+				clientId: clientAId,
+				userId,
+				scope: '',
+				resource,
+				expiresAt: oneHourFromNow,
+				// Deliberately NOT revoked -- the orphan this test targets.
+			}),
+			database.insert(schema.oauthRefreshTokens).values({
+				refreshToken: hashCredential(ancestorRefreshToken),
+				clientId: clientAId,
+				userId,
+				scope: '',
+				resource,
+				accessTokenHash: hashCredential(ancestorAccessToken),
+				familyId,
+				expiresAt: thirtyDaysFromNow,
+				revokedAt: new Date(),
+			}),
+			database.insert(schema.oauthTokens).values({
+				accessToken: hashCredential(descendantAccessToken),
+				clientId: clientAId,
+				userId,
+				scope: '',
+				resource,
+				expiresAt: oneHourFromNow,
+			}),
+			database.insert(schema.oauthRefreshTokens).values({
+				refreshToken: hashCredential(descendantRefreshToken),
+				clientId: clientAId,
+				userId,
+				scope: '',
+				resource,
+				accessTokenHash: hashCredential(descendantAccessToken),
+				familyId,
+				expiresAt: thirtyDaysFromNow,
+			}),
+		]);
+
+		// Confirm the orphan really is live before the replay, so a false
+		// pass can't be blamed on the seed itself.
+		const preReplayMcpResponse = await callMcpToolsList(handle, ancestorAccessToken);
+		expect(preReplayMcpResponse.status).toBe(200);
+
+		// Replay the already-revoked ancestor's refresh token -- the reuse
+		// signal that triggers family revocation.
+		const replayResponse = await refreshRequest(
+			handle,
+			ancestorRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(replayResponse.status).toBe(400);
+
+		// The orphaned ancestor's access token must now be dead too, not only
+		// the live descendant's.
+		const ancestorMcpResponse = await callMcpToolsList(handle, ancestorAccessToken);
+		expect(ancestorMcpResponse.status).toBe(401);
+		const descendantMcpResponse = await callMcpToolsList(handle, descendantAccessToken);
+		expect(descendantMcpResponse.status).toBe(401);
+	}, 30_000);
+
 	it('rejecting a refresh-time scope escalation does not consume the refresh token, and a corrected retry still succeeds', async () => {
 		const handle = startServer();
 		const { refreshToken, resource } = await seedTokenPair(handle, clientAId, 'profile:read');

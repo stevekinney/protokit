@@ -101,6 +101,56 @@ describe('runWithStandardizedTimeout', () => {
 		expect(capturedSignal?.aborted).toBe(true);
 	});
 
+	it('rejects immediately and cancels a cooperative operation when the caller-provided abortSignal is already aborted before the call starts', async () => {
+		// Round 12 review (P2): `addEventListener('abort', ...)` never fires
+		// for a signal that was aborted BEFORE the listener was attached --
+		// a real scenario for an operation queued behind another and handed
+		// a signal that disconnected while it waited. Proves this resolves
+		// promptly (well under the operation's own long timeout) rather than
+		// running to completion or waiting out the timeout.
+		const preAbortedController = new AbortController();
+		preAbortedController.abort(new Error('client disconnected before this operation started'));
+
+		let observedAbort = false;
+		let signalAtStart: AbortSignal | undefined;
+
+		const start = performance.now();
+		let thrown: unknown;
+		try {
+			await runWithStandardizedTimeout({
+				operation: (signal) =>
+					new Promise<never>((_, reject) => {
+						signalAtStart = signal;
+						if (signal.aborted) {
+							observedAbort = true;
+							reject(signal.reason);
+							return;
+						}
+						signal.addEventListener(
+							'abort',
+							() => {
+								observedAbort = true;
+								reject(signal.reason);
+							},
+							{ once: true },
+						);
+					}),
+				timeoutMilliseconds: 5000,
+				abortSignal: preAbortedController.signal,
+			});
+		} catch (error) {
+			thrown = error;
+		}
+		const elapsedMilliseconds = performance.now() - start;
+
+		expect(thrown instanceof Error).toBe(true);
+		expect((thrown as Error).message).toContain('cancelled');
+		expect(observedAbort).toBe(true);
+		expect(signalAtStart?.aborted).toBe(true);
+		// Well under the 5000ms timeout -- proves this didn't wait it out.
+		expect(elapsedMilliseconds).toBeLessThan(1000);
+	});
+
 	it('does not leak abort listeners on a long-lived, reused external abortSignal whose signal never fires', async () => {
 		// Regression test for a leaked anonymous `{ once: true }` listener:
 		// it only self-removes when the signal actually fires, so a signal

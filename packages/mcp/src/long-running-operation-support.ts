@@ -52,7 +52,23 @@ export async function runWithStandardizedTimeout<T>(input: {
 					reject(timeoutError);
 				}, timeoutMilliseconds);
 
-				input.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
+				// Round 12 review (P2): an `addEventListener('abort', ...)` call
+				// does not replay an abort that already happened before this
+				// function ran -- a real path for an operation queued behind
+				// another (e.g. a concurrency limiter) and handed a caller
+				// signal that disconnected while it waited. Without this check,
+				// such an operation ran to completion or all the way to the
+				// timeout instead of cancelling promptly, exactly like the
+				// pre-existing `operation` never received a live signal at all
+				// (this same file's own opening comment). Checking `.aborted`
+				// up front and reacting immediately closes that window; the
+				// listener below still handles the ordinary case where the
+				// abort happens after this function has already started.
+				if (input.abortSignal?.aborted) {
+					onExternalAbort();
+				} else {
+					input.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
+				}
 			}),
 		]);
 	} finally {

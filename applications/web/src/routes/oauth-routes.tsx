@@ -1121,12 +1121,31 @@ async function authenticateOauthClient(
  * combining both mutations with a `WITH` CTE. A single Postgres statement
  * is atomic by construction -- it either fully commits or fully rolls back
  * -- so the partial-failure state this finding describes is no longer
- * reachable at all, not merely less likely. The second CTE's `WHERE`
- * clause selects directly from the first CTE's own `RETURNING` output
- * (`revoked_family`), the same dependency-forced-ordering technique
- * `account-deletion.ts`'s doc comment explains in full: Postgres must
- * fully evaluate a data-modifying CTE before a later part of the same
- * statement can read its `RETURNING` output.
+ * reachable at all, not merely less likely.
+ *
+ * Round 12 review (P2): the access-token `UPDATE`'s `WHERE` used to select
+ * only from `revoked_family`'s own `RETURNING` output -- i.e. only the
+ * refresh-token rows *this call itself* just revoked. That misses a
+ * separate, earlier failure mode: `handleOauthTokenRefreshGrant`'s
+ * best-effort old-access-token revoke (a few hundred lines below, after a
+ * successful rotation) can itself fail and be swallowed, leaving an
+ * ancestor refresh-token row already revoked while its paired access token
+ * stays live. A later replay reaches this function with that ancestor's
+ * `revoked_at` already non-null, so it is excluded by `revoked_family`'s
+ * own `WHERE revoked_at IS NULL` and its access-token hash was never
+ * collected -- the compromised credential survived a revocation meant to
+ * kill the whole family. Confirmed this is independent of the atomicity
+ * fix above, not caused by it: the orphaning happens the moment the
+ * best-effort revoke fails, regardless of how this function later tries to
+ * clean up, and the same DB end state was already reachable before this
+ * function existed in its single-statement form.
+ *
+ * Fixed by selecting the access-token hashes to revoke straight from every
+ * row carrying this `family_id`, not merely the ones this call just
+ * flipped: `family_id` never changes once assigned, so a plain read of the
+ * base table (evaluated against this statement's own snapshot, same as
+ * any other read in it) finds every member -- already-revoked ancestors
+ * included -- not only the ones this invocation's own `UPDATE` matched.
  */
 async function revokeOauthRefreshTokenFamily(familyId: string): Promise<void> {
 	await database.execute(sql`
@@ -1139,7 +1158,11 @@ async function revokeOauthRefreshTokenFamily(familyId: string): Promise<void> {
 			)
 		UPDATE oauth_tokens
 		SET revoked_at = now()
-		WHERE access_token IN (SELECT access_token_hash FROM revoked_family) AND revoked_at IS NULL
+		WHERE
+			access_token IN (
+				SELECT access_token_hash FROM oauth_refresh_tokens WHERE family_id = ${familyId}
+			)
+			AND revoked_at IS NULL
 	`);
 }
 
