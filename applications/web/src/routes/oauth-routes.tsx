@@ -1469,30 +1469,36 @@ async function handleOauthTokenRefreshGrant(
 		);
 	}
 
+	// Read-only, so it cannot itself let a race succeed twice: whether or
+	// not this read observes the token as still live, the actual
+	// consumption below is still governed exclusively by the atomic
+	// `UPDATE ... WHERE ... RETURNING` statement's own predicate, which is
+	// what OAUTH-003/S-02 requires for correctness under concurrency -- this
+	// read only decides whether, and with what values, to attempt that
+	// statement at all, never whether it succeeds.
+	const [currentRefreshToken] = await database
+		.select({
+			userId: schema.oauthRefreshTokens.userId,
+			familyId: schema.oauthRefreshTokens.familyId,
+			scope: schema.oauthRefreshTokens.scope,
+			accessTokenHash: schema.oauthRefreshTokens.accessTokenHash,
+		})
+		.from(schema.oauthRefreshTokens)
+		.where(activeRefreshTokenPredicate)
+		.limit(1);
+
+	if (!currentRefreshToken) {
+		return respondToRefreshTokenNotFound();
+	}
+
 	// AUTHZ-001 / RFC 6749 §6: "the requested scope MUST NOT include any
 	// scope not originally granted." An explicit refresh-time `scope`
 	// request that is not a subset of what this refresh token actually
 	// carries must be rejected *before* the token is consumed -- a refresh
-	// token is single-use, and this codebase's atomic revoke-then-check
-	// rotation pattern (see below) does not itself un-revoke a token once
-	// the mutating UPDATE has run. Read-only, so it cannot itself let a
-	// race succeed twice: whether or not this read observes the token as
-	// still live, the actual consumption below is still governed
-	// exclusively by the atomic `UPDATE ... WHERE ... RETURNING`
-	// statement's own predicate, which is what OAUTH-003/S-02 requires for
-	// correctness under concurrency -- this read only decides whether to
-	// attempt that statement at all, never whether it succeeds.
+	// token is single-use, and the atomic revoke-then-check rotation
+	// pattern below does not un-revoke a token once the mutating UPDATE has
+	// run.
 	if (refreshScopeRequest.scope !== undefined) {
-		const [currentRefreshToken] = await database
-			.select({ scope: schema.oauthRefreshTokens.scope })
-			.from(schema.oauthRefreshTokens)
-			.where(activeRefreshTokenPredicate)
-			.limit(1);
-
-		if (!currentRefreshToken) {
-			return respondToRefreshTokenNotFound();
-		}
-
 		const grantedRefreshScopes = splitScopeString(currentRefreshToken.scope || '');
 		if (!isScopeSubsetOf(refreshScopeRequest.scope, grantedRefreshScopes)) {
 			return jsonResponse(
@@ -1506,100 +1512,81 @@ async function handleOauthTokenRefreshGrant(
 		}
 	}
 
-	// OAUTH-003 / S-02: bind the single-use rotation predicate to the
-	// authenticated client and the already-validated resource, atomically,
-	// in the same UPDATE ... WHERE ... RETURNING statement that performs the
-	// mutation. neon-http's driver has no multi-statement transaction
-	// support (`db.transaction()` throws "No transactions support in
-	// neon-http driver" -- confirmed directly against the installed driver),
-	// so this single statement *is* the unit of atomicity here, the same
-	// pattern SEC-003's rate-limiting Lua script and
-	// authorization-transaction.ts's consume step already establish for
-	// this codebase. Previously the client-id and resource checks ran
-	// *after* this statement had already revoked the token, so a party
-	// presenting another client's live refresh token under its own
-	// client_id burned that token even though its own request was then
-	// rejected -- a denial-of-service on a client it does not own, with no
-	// benefit to the attacker. Folding both into the predicate means a
-	// mismatched client or resource simply matches no row -- nothing is
-	// mutated -- rather than mutating first and rejecting after.
-	const [revokedRefreshToken] = await database
-		.update(schema.oauthRefreshTokens)
-		.set({ revokedAt: new Date() })
-		.where(activeRefreshTokenPredicate)
-		.returning();
-
-	if (!revokedRefreshToken) {
-		// Nothing matched the predicate above, so nothing was mutated by this
-		// request. This can still happen even after the scope pre-check above
-		// passed -- e.g. a concurrent request rotated or revoked the token in
-		// between -- so the same not-found/reuse-detection handling applies.
-		return respondToRefreshTokenNotFound();
-	}
-
 	// Omitted `scope` carries the stored grant forward unchanged; an
 	// explicit (already-validated-as-a-subset, by the pre-check above)
 	// request narrows it.
 	const effectiveRefreshScope =
 		refreshScopeRequest.scope !== undefined
 			? canonicalizeScopes(refreshScopeRequest.scope)
-			: revokedRefreshToken.scope || '';
+			: currentRefreshToken.scope || '';
 
-	const [revokedAccessToken] = await database
-		.update(schema.oauthTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthTokens.accessToken, revokedRefreshToken.accessTokenHash),
-				isNull(schema.oauthTokens.revokedAt),
-			),
-		)
-		.returning();
-
+	// P1 (review round 6): the replacement pair is inserted *before* the
+	// old token is revoked -- the reverse of this function's previous
+	// order. A stolen refresh token submitted concurrently with its
+	// legitimate rotation is a genuine race neon-http's lack of
+	// multi-statement transactions cannot serialize with a lock: the
+	// rotation mutex below (the single atomic `UPDATE ... WHERE
+	// revokedAt IS NULL ... RETURNING`) still guarantees only one of the
+	// two concurrent requests can ever revoke the old token, but the
+	// *loser* reaches `revokeOauthRefreshTokenFamily` via
+	// `respondToRefreshTokenNotFound`, whose predicate only revokes
+	// currently-live family members. With the old (revoke-then-insert)
+	// ordering, the loser could run that revoke before the winner's
+	// insert had committed, so the winner's brand-new replacement token
+	// -- not existing yet -- survived a revocation meant to kill the
+	// whole family.
+	//
+	// Inserting first closes this without any new durable state, because
+	// within one request every `await` completes before the next
+	// statement runs: this request's insert is guaranteed to commit
+	// strictly before its own revoke-mutex UPDATE below can commit, and
+	// the loser can only reach `revokeOauthRefreshTokenFamily` *after*
+	// observing (via its own blocked mutex UPDATE failing to match, or a
+	// subsequent read) that this request's revoke has already committed --
+	// which is necessarily after this insert. So the loser's family
+	// revocation now always finds the winner's freshly inserted row and
+	// kills it too, regardless of which request's non-mutex statements
+	// happen to finish first. See
+	// `oauth-token-rotation-revocation.integration.test.ts`'s "a
+	// concurrent replay..." test, which races two real requests against
+	// the real database and fails without this ordering.
+	//
+	// If the mutex below then fails to match (this request lost the race,
+	// or the token changed state between the read above and now), the
+	// speculative insert performed here is deleted -- see the `if
+	// (!revokedRefreshToken)` branch below.
 	const tokens = issueTokens();
 	try {
 		await database.insert(schema.oauthTokens).values({
 			accessToken: tokens.accessTokenHash,
-			clientId: revokedRefreshToken.clientId,
-			userId: revokedRefreshToken.userId,
+			clientId: client.clientId,
+			userId: currentRefreshToken.userId,
 			scope: effectiveRefreshScope,
-			resource: revokedRefreshToken.resource,
+			resource,
 			expiresAt: tokens.accessTokenExpiresAt,
 		});
 		await database.insert(schema.oauthRefreshTokens).values({
 			refreshToken: tokens.refreshTokenHash,
-			clientId: revokedRefreshToken.clientId,
-			userId: revokedRefreshToken.userId,
+			clientId: client.clientId,
+			userId: currentRefreshToken.userId,
 			scope: effectiveRefreshScope,
-			resource: revokedRefreshToken.resource,
+			resource,
 			accessTokenHash: tokens.accessTokenHash,
 			// OAUTH-003: rotation carries the family forward unchanged, so every
 			// token descended from one authorization-code exchange stays
 			// revocable as one lineage.
-			familyId: revokedRefreshToken.familyId,
+			familyId: currentRefreshToken.familyId,
 			expiresAt: tokens.refreshTokenExpiresAt,
 		});
 	} catch (error) {
-		// Review finding: neon-http has no multi-statement transaction support
-		// (the same limitation documented above the rotation predicate, and at
-		// `handleOauthAuthorizeApprove`'s code-insert catch), so these two
-		// inserts cannot be folded into the same atomic statement as the
-		// revoke-and-check above. Without this, a transient failure here would
-		// permanently burn the client's only refresh token (and its access
-		// token) with no replacement ever issued, forcing a full
-		// re-authorization -- and if only the second insert failed, an
-		// inaccessible live access-token row would also remain. Best-effort
-		// compensation: delete the new access-token row if it was written (a
-		// no-op DELETE if the first insert itself is what threw), then reopen
-		// exactly the rows this request itself revoked a moment ago -- the
-		// refresh token unconditionally (the atomic predicate above already
-		// proved this request, and only this request, revoked it), and the old
-		// access token only if `revokedAccessToken` is non-null (i.e. this
-		// request's own UPDATE actually matched and revoked it -- reopening it
-		// unconditionally could resurrect a token an unrelated, legitimate
-		// `/oauth/revoke` call had already killed moments earlier). No token
-		// was ever generated into a response (the insert itself threw), so
-		// reopening either row cannot cause a token to be issued twice.
+		// neon-http has no multi-statement transaction support (confirmed
+		// directly against the installed driver), so these two inserts
+		// cannot be folded into one atomic statement. Nothing has been
+		// revoked yet at this point -- the mutex UPDATE below hasn't run --
+		// so a failure here needs no compensating un-revoke, only a
+		// best-effort cleanup of whichever of the two rows did get written
+		// (a no-op DELETE if the first insert itself is what threw). The
+		// caller's original refresh token remains untouched and can retry.
 		try {
 			await database
 				.delete(schema.oauthTokens)
@@ -1612,30 +1599,71 @@ async function handleOauthTokenRefreshGrant(
 		}
 		try {
 			await database
-				.update(schema.oauthRefreshTokens)
-				.set({ revokedAt: null })
-				.where(eq(schema.oauthRefreshTokens.refreshToken, revokedRefreshToken.refreshToken));
-		} catch (unrevokeError) {
+				.delete(schema.oauthRefreshTokens)
+				.where(eq(schema.oauthRefreshTokens.refreshToken, tokens.refreshTokenHash));
+		} catch (cleanupError) {
 			logger.error(
-				{ err: unrevokeError },
-				'Failed to reopen refresh token after failed refresh rotation',
+				{ err: cleanupError },
+				'Failed to remove orphaned refresh token after failed refresh rotation',
 			);
-		}
-		if (revokedAccessToken) {
-			try {
-				await database
-					.update(schema.oauthTokens)
-					.set({ revokedAt: null })
-					.where(eq(schema.oauthTokens.accessToken, revokedAccessToken.accessToken));
-			} catch (unrevokeError) {
-				logger.error(
-					{ err: unrevokeError },
-					'Failed to reopen access token after failed refresh rotation',
-				);
-			}
 		}
 		throw error;
 	}
+
+	// OAUTH-003 / S-02: bind the single-use rotation predicate to the
+	// authenticated client and the already-validated resource, atomically,
+	// in the same UPDATE ... WHERE ... RETURNING statement that performs the
+	// mutation -- the sole concurrency mutex for this whole function. Only
+	// one of any number of concurrent requests presenting this exact token
+	// can ever match it, and a mismatched client or resource simply matches
+	// no row -- nothing is mutated -- rather than mutating first and
+	// rejecting after (OAUTH-003/S-02's original fix).
+	const [revokedRefreshToken] = await database
+		.update(schema.oauthRefreshTokens)
+		.set({ revokedAt: new Date() })
+		.where(activeRefreshTokenPredicate)
+		.returning();
+
+	if (!revokedRefreshToken) {
+		// Lost the mutex race (or the token changed state between the read
+		// above and now) -- delete the speculative replacement pair inserted
+		// above so it is never usable, then fall through to the same
+		// not-found/reuse-detection handling every other rejection reason
+		// uses. This is what lets `respondToRefreshTokenNotFound`'s family
+		// revocation, called below, observe the *other* request's own
+		// replacement as already live (see the comment above the insert).
+		try {
+			await database
+				.delete(schema.oauthTokens)
+				.where(eq(schema.oauthTokens.accessToken, tokens.accessTokenHash));
+		} catch (cleanupError) {
+			logger.error(
+				{ err: cleanupError },
+				'Failed to remove speculative access token after losing the refresh rotation race',
+			);
+		}
+		try {
+			await database
+				.delete(schema.oauthRefreshTokens)
+				.where(eq(schema.oauthRefreshTokens.refreshToken, tokens.refreshTokenHash));
+		} catch (cleanupError) {
+			logger.error(
+				{ err: cleanupError },
+				'Failed to remove speculative refresh token after losing the refresh rotation race',
+			);
+		}
+		return respondToRefreshTokenNotFound();
+	}
+
+	await database
+		.update(schema.oauthTokens)
+		.set({ revokedAt: new Date() })
+		.where(
+			and(
+				eq(schema.oauthTokens.accessToken, currentRefreshToken.accessTokenHash),
+				isNull(schema.oauthTokens.revokedAt),
+			),
+		);
 
 	metricsCollector.recordEvent('refresh', 'success');
 

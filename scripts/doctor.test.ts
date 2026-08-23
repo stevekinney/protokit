@@ -8,8 +8,10 @@ import {
 	evaluateEnvironmentSchemas,
 	evaluateMcpProductionProhibitions,
 	evaluateProductionReadiness,
+	evaluateRedisConnection,
 	loadCandidateVariables,
 	parseArguments,
+	parseGithubSecretNames,
 	resolveTarget,
 	summarize,
 	type CandidateVariables,
@@ -453,5 +455,96 @@ describe('evaluateDatabaseConnection', () => {
 			DATABASE_LOCAL_PROXY_URL: 'http://db.localtest.me:4444/sql',
 		});
 		expect(neonConfig.fetchEndpoint).toBe('http://db.localtest.me:4444/sql');
+	});
+
+	// Regression for a bot-reported P2: this await previously had no deadline, so an endpoint
+	// that accepts the connection but never answers `SELECT 1` (a wedged proxy, a stalled
+	// connection pool) left doctor hanging forever instead of reporting a failed diagnostic.
+	// A real local server that accepts every request and never responds reproduces exactly that
+	// endpoint shape; without the `withDeadline` wrap this test times out instead of observing a
+	// bounded `fail` result.
+	it('bounds the database probe with a deadline instead of hanging on a connection that never answers', async () => {
+		const server = Bun.serve({
+			port: 0,
+			fetch: () => new Promise<Response>(() => {}),
+		});
+
+		try {
+			const startedAt = Date.now();
+			const results = await evaluateDatabaseConnection({
+				DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+				DATABASE_LOCAL_PROXY_URL: `http://localhost:${server.port}/sql`,
+			});
+			const elapsedMs = Date.now() - startedAt;
+
+			expect(results).toHaveLength(1);
+			expect(results[0]?.status).toBe('fail');
+			expect(results[0]?.detail).toContain('Timed out');
+			// The probe's own deadline is 5s -- assert it resolves well short of the 10s test
+			// timeout below, proving the await was actually bounded rather than coincidentally
+			// finishing before Bun's own default test timeout.
+			expect(elapsedMs).toBeLessThan(8000);
+		} finally {
+			server.stop(true);
+		}
+	}, 10_000);
+});
+
+describe('evaluateRedisConnection', () => {
+	it('skips the connection attempt entirely when REDIS_URL is unset', async () => {
+		const results = await evaluateRedisConnection({});
+		expect(results).toHaveLength(1);
+		expect(results[0]?.status).toBe('skip');
+	});
+
+	// Regression for a bot-reported P2: doctor previously only validated the *shape* of
+	// REDIS_URL (via collectProductionStartupFailures) and never actually connected, so a
+	// well-formed but unreachable/stale Redis endpoint reported no failure even though
+	// production rate limiting and the authenticated readiness route both depend on a live
+	// connection. Pointing at a port nothing is listening on proves doctor now performs a real
+	// connect+ping attempt and reports it as a failure, not a pass.
+	it('fails when REDIS_URL points at an endpoint nothing is listening on', async () => {
+		const results = await evaluateRedisConnection({
+			REDIS_URL: 'redis://127.0.0.1:1',
+		});
+		expect(results).toHaveLength(1);
+		expect(results[0]?.status).toBe('fail');
+	}, 10_000);
+
+	it('passes against a real, reachable Redis endpoint', async () => {
+		const results = await evaluateRedisConnection({
+			REDIS_URL: process.env.REDIS_URL ?? 'redis://localhost:6379',
+		});
+		expect(results).toHaveLength(1);
+		expect(results[0]?.status).toBe('pass');
+	});
+});
+
+describe('parseGithubSecretNames', () => {
+	// Regression for a bot-reported P2: matching with `String.includes` against the raw `gh
+	// secret list` output reported `DATABASE_URL` as configured whenever only the separate
+	// `DATABASE_URL_UNPOOLED` secret existed, because `DATABASE_URL_UNPOOLED` necessarily
+	// contains `DATABASE_URL` as a substring -- a false pass for a secret the deployment
+	// workflows do not actually have.
+	it('does not treat a longer secret name as satisfying a shorter name it merely contains', () => {
+		const names = parseGithubSecretNames('DATABASE_URL_UNPOOLED\t2024-01-01T00:00:00Z\n');
+		expect(names.has('DATABASE_URL_UNPOOLED')).toBe(true);
+		expect(names.has('DATABASE_URL')).toBe(false);
+	});
+
+	it('parses the exact name from each tab-separated line, ignoring the update-date column', () => {
+		const names = parseGithubSecretNames(
+			'DATABASE_URL\t2024-01-01T00:00:00Z\nSESSION_SIGNING_SECRET\t2024-02-02T00:00:00Z\n',
+		);
+		expect(names).toEqual(new Set(['DATABASE_URL', 'SESSION_SIGNING_SECRET']));
+	});
+
+	it('ignores blank lines and trims trailing whitespace/newlines', () => {
+		const names = parseGithubSecretNames('\nDATABASE_URL\t2024-01-01T00:00:00Z\n\n');
+		expect(names).toEqual(new Set(['DATABASE_URL']));
+	});
+
+	it('returns an empty set for empty output', () => {
+		expect(parseGithubSecretNames('')).toEqual(new Set());
 	});
 });

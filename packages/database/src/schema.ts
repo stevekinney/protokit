@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { isNotNull, sql } from 'drizzle-orm';
 import {
 	boolean,
 	index,
@@ -163,6 +163,13 @@ export const oauthCodes = pgTable(
 	},
 	(table) => ({
 		expiresAtIndex: index('oauth_codes_expires_at_idx').on(table.expiresAt),
+		// DATA-001 review (R6): cleanup's predicate is `expires_at < now OR used_at IS NOT
+		// NULL` (scheduled-cleanup.ts). A plain index on `used_at` would index every row,
+		// including the vast majority that are still `NULL` and never match this branch. A
+		// partial index over only the non-null rows is exactly what the `IS NOT NULL` branch
+		// needs, stays small as the table grows, and lets Postgres satisfy the whole `OR` with
+		// a BitmapOr across both indexes instead of a sequential scan.
+		usedAtIndex: index('oauth_codes_used_at_idx').on(table.usedAt).where(isNotNull(table.usedAt)),
 	}),
 );
 
@@ -246,6 +253,12 @@ export const oauthAuthorizationTransactions = pgTable(
 	},
 	(table) => ({
 		expiresAtIndex: index('oauth_authorization_transactions_expires_at_idx').on(table.expiresAt),
+		// DATA-001 review (R6): same reasoning as `oauth_codes_used_at_idx` above -- cleanup's
+		// predicate is `expires_at < now OR consumed_at IS NOT NULL`; a partial index over only
+		// the consumed rows satisfies that branch without indexing every still-pending row.
+		consumedAtIndex: index('oauth_authorization_transactions_consumed_at_idx')
+			.on(table.consumedAt)
+			.where(isNotNull(table.consumedAt)),
 	}),
 );
 

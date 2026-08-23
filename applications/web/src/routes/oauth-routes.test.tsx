@@ -11,6 +11,12 @@ let recordFailedAuthenticationCalls: unknown[] = [];
 let mockInsertShouldThrow = false;
 let mockUpdateCalls: Array<{ table: unknown; set: Record<string, unknown> }> = [];
 let mockDeleteCalls: Array<{ table: unknown; where: unknown }> = [];
+// Lets a test simulate losing the refresh-rotation mutex (a concurrent
+// request revoked the row first) without also making the earlier read-only
+// lookup that gathers insert values come back empty -- the real mutex
+// UPDATE's `WHERE ... RETURNING` can match nothing even when a moment-old
+// read saw the row as live.
+let mockRefreshRotationMutexShouldMiss = false;
 
 const oauthClientsTable = Symbol('oauthClients');
 const oauthCodesTable = Symbol('oauthCodes');
@@ -73,7 +79,11 @@ mock.module('@template/database', () => ({
 						returning: () => {
 							if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
 							if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
-							if (table === oauthRefreshTokensTable) return Promise.resolve(mockOauthRefreshTokens);
+							if (table === oauthRefreshTokensTable) {
+								return Promise.resolve(
+									mockRefreshRotationMutexShouldMiss ? [] : mockOauthRefreshTokens,
+								);
+							}
 							return Promise.resolve([]);
 						},
 					}),
@@ -1808,6 +1818,7 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		mockInsertShouldThrow = false;
 		mockUpdateCalls = [];
 		mockDeleteCalls = [];
+		mockRefreshRotationMutexShouldMiss = false;
 	});
 
 	it('carries the stored scope forward when the refresh request omits scope entirely', async () => {
@@ -1889,7 +1900,7 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		expect(mockInsertedValues).toEqual([]);
 	});
 
-	it('reopens the refresh token and its old access token, and removes the orphaned new access-token row, when rotation fails after revocation', async () => {
+	it('does not revoke the old refresh token when minting its replacement fails, so the original stays usable', async () => {
 		mockInsertShouldThrow = true;
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/token',
@@ -1902,22 +1913,49 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		});
 
-		// Without the fix, the revoke-then-check UPDATE above (which already
-		// ran before the insert failed) permanently burns the client's only
-		// refresh token -- and its access token -- with no replacement ever
-		// issued.
+		// P1 (review round 6): the replacement pair is now inserted *before*
+		// the mutex revoke, precisely so a failed insert never needs to
+		// un-revoke anything -- nothing was revoked yet. Without that
+		// ordering, the old revoke-then-insert code would have already
+		// burned the client's only refresh token by the time this insert
+		// failure surfaced.
 		await expect(handleOauthTokenPost(context)).rejects.toThrow('simulated insert failure');
 
+		// Best-effort cleanup of whatever was written before the throw.
 		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
-		expect(
-			mockUpdateCalls.some(
-				(call) => call.table === oauthRefreshTokensTable && call.set.revokedAt === null,
-			),
-		).toBe(true);
-		expect(
-			mockUpdateCalls.some(
-				(call) => call.table === oauthTokensTable && call.set.revokedAt === null,
-			),
-		).toBe(true);
+		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(true);
+		// Nothing was ever revoked -- the mutex UPDATE against
+		// `oauthRefreshTokensTable` never ran, so there is no `revokedAt`
+		// write to compensate for.
+		expect(mockUpdateCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(false);
+	});
+
+	it('deletes the speculative replacement pair, without touching the old token, when it loses the rotation race', async () => {
+		// Simulate losing the mutex: the read-only lookup that gathers insert
+		// values still sees the token as live, but the mutex UPDATE's own
+		// `WHERE ... RETURNING` matches nothing -- exactly like a concurrent
+		// winner having already revoked the row a moment after this request's
+		// own read.
+		mockRefreshRotationMutexShouldMiss = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_grant');
+
+		// The speculative replacement pair this request inserted before
+		// attempting the mutex must be deleted once the mutex loses.
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(true);
 	});
 });

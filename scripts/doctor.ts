@@ -6,6 +6,8 @@ import { applyLocalProxyFetchEndpoint } from '@template/database/local-proxy';
 import { mcpServerEnvironmentSchema } from '@template/mcp/environment-schema';
 import { webServerEnvironmentSchema } from '@template/web/environment-schema';
 import { collectProductionStartupFailures } from '@template/web/lib/production-startup-requirements';
+import { probeRedisUrl } from '@template/web/lib/redis-probe';
+import { withDeadline } from '@template/web/lib/with-deadline';
 
 import {
 	commandExists,
@@ -236,6 +238,14 @@ export function evaluateEnvironmentFile(): CheckResult[] {
 	];
 }
 
+// The Neon HTTP driver's `execute`/tagged-template call has no per-call timeout option, so an
+// endpoint that accepts the request but never answers (a wedged proxy, a hung connection pool)
+// left this await open indefinitely -- the same class of gap `applications/web/src/routes/
+// health-routes.ts`'s `isDatabaseHealthy` guards against for the identical driver operation.
+// Round-6 review: doctor exists specifically to turn a stalled dependency into a reported
+// failure instead of a hang, so an unbounded probe here defeated its own purpose.
+const DATABASE_PROBE_TIMEOUT_MS = 5000;
+
 /**
  * Probes a single connection-string endpoint and reports pass/fail. Shared by both the pooled
  * (`DATABASE_URL`) and unpooled (`DATABASE_URL_UNPOOLED`) probes in `evaluateDatabaseConnection`
@@ -256,7 +266,7 @@ async function probeDatabaseUrl(
 		applyLocalProxyFetchEndpoint(localProxyUrl);
 		const { neon } = await import('@neondatabase/serverless');
 		const sql = neon(databaseUrl);
-		await sql`SELECT 1`;
+		await withDeadline(sql`SELECT 1`, DATABASE_PROBE_TIMEOUT_MS);
 		return makeResult('Database connection', 'pass', label, 'Connected successfully');
 	} catch (error) {
 		const message = error instanceof Error ? error.message : 'Unknown error';
@@ -313,6 +323,38 @@ export async function evaluateDatabaseConnection(
 	return results;
 }
 
+/**
+ * Actually connects to and pings `REDIS_URL`, rather than only validating its shape (as
+ * `evaluateProductionReadiness`'s `collectProductionStartupFailures` call does). Round-6 review:
+ * production request rate limiting and the authenticated `/health/ready` route both call
+ * `getRedisClient()`/`isRedisHealthy()` and can fail against a Redis endpoint with stale
+ * credentials or that is simply unreachable even though the URL itself is well-formed — a
+ * configuration doctor previously reported as fully passing. Shares the identical bounded
+ * connect+ping probe (`probeRedisUrl`, 2s deadline) that `isRedisHealthy()` uses, so this can
+ * never drift from what the real server considers healthy.
+ */
+export async function evaluateRedisConnection(
+	variables: CandidateVariables,
+): Promise<CheckResult[]> {
+	const redisUrl = variables.REDIS_URL;
+
+	if (!redisUrl) {
+		return [makeResult('Redis connection', 'skip', 'Redis connection', 'No REDIS_URL configured')];
+	}
+
+	const healthy = await probeRedisUrl(redisUrl);
+	return [
+		healthy
+			? makeResult('Redis connection', 'pass', 'Redis connection', 'Connected successfully')
+			: makeResult(
+					'Redis connection',
+					'fail',
+					'Redis connection',
+					'Failed to connect or respond to PING within 2s',
+				),
+	];
+}
+
 export function evaluateGithubAuthentication(): CheckResult[] {
 	if (!commandExists('gh')) {
 		return [makeResult('GitHub', 'skip', 'GitHub authentication', 'gh not installed')];
@@ -324,6 +366,24 @@ export function evaluateGithubAuthentication(): CheckResult[] {
 	} catch {
 		return [makeResult('GitHub', 'warn', 'GitHub authentication', 'Not authenticated')];
 	}
+}
+
+/**
+ * Parses `gh secret list`'s tab-separated `NAME\tUPDATED` output into the exact set of configured
+ * secret names. Round-6 review: matching with `String.includes` against the raw output previously
+ * reported `DATABASE_URL` as "Set" whenever only the separate `DATABASE_URL_UNPOOLED` secret was
+ * configured, because `DATABASE_URL_UNPOOLED` necessarily contains `DATABASE_URL` as a substring
+ * — a false pass for a secret the deployment workflows do not actually have. Splitting each line
+ * on the first tab and matching the name column exactly closes that off for any managed name that
+ * happens to be a prefix of another configured secret's name.
+ */
+export function parseGithubSecretNames(secretListOutput: string): Set<string> {
+	const names = new Set<string>();
+	for (const line of secretListOutput.split('\n')) {
+		const name = line.split('\t')[0]?.trim();
+		if (name) names.add(name);
+	}
+	return names;
 }
 
 export function evaluateGithubSecrets(): CheckResult[] {
@@ -345,8 +405,10 @@ export function evaluateGithubSecrets(): CheckResult[] {
 		];
 	}
 
+	const configuredSecretNames = parseGithubSecretNames(secretList);
+
 	return MANAGED_GITHUB_SECRETS.map((secret) =>
-		secretList.includes(secret)
+		configuredSecretNames.has(secret)
 			? makeResult('GitHub', 'pass', `GitHub secret: ${secret}`, 'Set')
 			: makeResult('GitHub', 'warn', `GitHub secret: ${secret}`, 'Not set'),
 	);
@@ -393,6 +455,7 @@ async function runAllChecks(target: Target, variables: CandidateVariables): Prom
 		...evaluateProductionReadiness(target, variables),
 		...evaluateMcpProductionProhibitions(target, variables),
 		...(await evaluateDatabaseConnection(variables)),
+		...(await evaluateRedisConnection(variables)),
 		...evaluateGithubAuthentication(),
 		...evaluateGithubSecrets(),
 		...evaluateRailwayLinked(),

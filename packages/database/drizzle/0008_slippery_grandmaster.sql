@@ -1,0 +1,2 @@
+CREATE INDEX "oauth_authorization_transactions_consumed_at_idx" ON "oauth_authorization_transactions" USING btree ("consumed_at") WHERE "oauth_authorization_transactions"."consumed_at" is not null;--> statement-breakpoint
+CREATE INDEX "oauth_codes_used_at_idx" ON "oauth_codes" USING btree ("used_at") WHERE "oauth_codes"."used_at" is not null;

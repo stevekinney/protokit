@@ -281,6 +281,64 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		expect(statuses).toEqual([200, 400]);
 	});
 
+	// P1 (review round 6): a stolen refresh token submitted concurrently with
+	// its legitimate rotation used to be able to leave the winner's brand-new
+	// replacement token alive. The mutex UPDATE that revokes the old token
+	// always correctly picks exactly one winner (proved by the test above),
+	// but the *loser* -- on discovering the token it presented is already
+	// revoked -- calls `revokeOauthRefreshTokenFamily`, whose predicate only
+	// revokes family members that are *currently* live. With the old
+	// (revoke-then-insert) code, the loser could reach that call before the
+	// winner had inserted its replacement, so the replacement -- not
+	// existing yet -- survived a revocation meant to kill the whole family.
+	// The fix inserts the replacement *before* attempting the mutex, which
+	// makes the loser's family revocation always observe the winner's
+	// replacement as already live, regardless of interleaving. This test
+	// races two real, concurrent HTTP requests presenting the identical
+	// refresh token against the real dispatcher and real database -- not a
+	// sequential replay, which would never exercise this window.
+	it("a concurrent replay of a token mid-rotation does not leave the winner's replacement token alive", async () => {
+		const port = startServer();
+		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+
+		// Both requests present the *identical* refresh token value
+		// concurrently -- the P1 scenario: a stolen refresh token submitted
+		// at the same moment as its legitimate rotation. The loser is
+		// guaranteed to observe the winner's revoke as already committed by
+		// the time its own mutex UPDATE fails to match (that failure is
+		// exactly what "already committed" means here), so it is guaranteed
+		// to reach `revokeOauthRefreshTokenFamily` -- this part is
+		// deterministic, not a matter of luck. What was previously a race
+		// is only whether that family revocation also caught the winner's
+		// brand-new replacement.
+		const [first, second] = await Promise.all([
+			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
+			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
+		]);
+		const statuses = [first.status, second.status].sort();
+		expect(statuses).toEqual([200, 400]);
+		const winner = first.status === 200 ? first : second;
+		const winnerBody = (await winner.json()) as { access_token: string; refresh_token: string };
+
+		// The whole family -- including the replacement this exact race
+		// produced -- must be dead: the replacement refresh token can no
+		// longer rotate...
+		const replacementRotateResponse = await refreshRequest(
+			port,
+			winnerBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(replacementRotateResponse.status).toBe(400);
+
+		// ...and its access token can no longer authenticate at /mcp. Without
+		// the insert-before-revoke ordering fix, this token could still be
+		// live here even though reuse of the family was detected.
+		const mcpResponse = await callMcpToolsList(port, winnerBody.access_token);
+		expect(mcpResponse.status).toBe(401);
+	});
+
 	it('reuse of a rotated refresh token revokes its whole token family', async () => {
 		const port = startServer();
 		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);

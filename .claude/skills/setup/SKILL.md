@@ -94,17 +94,32 @@ Write defaults to `.env.local` if not already set:
 
 ### With railway CLI
 
-1. Ask user if they want to configure Railway deployment
-2. Run `railway init -y`
-3. Read `.env.local`, and for each `KEY=VALUE` pair: run `railway variable set KEY="VALUE"`
-4. Report success
+Do NOT hand-copy `.env.local` into Railway. `.env.local` carries local-machine-only values —
+most importantly `NODE_ENV=development` — that must never reach a production deployment target:
+copying `NODE_ENV=development` verbatim overrides the Docker image's baked-in
+`NODE_ENV=production`, which makes `assertProductionStartupInvariants()` a no-op and leaves
+`/auth/dev/login` reachable in production. `scripts/setup.ts`'s `setupRailway`/
+`planRailwayVariables` already excludes every local-only key (`NODE_ENV`,
+`DATABASE_LOCAL_PROXY_URL`, `PROTOKIT_TUNNEL_ACTIVE`, `REDIS_URL`) and always forces
+`NODE_ENV=production`, plus collects a separately validated production `REDIS_URL`. Reuse it
+instead of reimplementing that logic here:
+
+1. Run `bun scripts/setup.ts railway` directly (interactive — it asks whether to configure
+   Railway, runs `railway init -y`, prompts for a production `REDIS_URL` if `.env.local`'s is the
+   local default, and pushes the filtered variable set). It refuses to proceed and names which
+   phase to run first if `BASE_URL` or `TRUSTED_PROXY_CIDRS`/`TRUSTED_PROXY_HEADER` are not
+   already in `.env.local` — if so, run `bun scripts/setup.ts base-url` and
+   `bun scripts/setup.ts trusted-proxy` first, then re-run this phase.
+2. Report success.
 
 ### Without railway CLI (manual guidance)
 
 1. Tell the user to:
    - Install railway CLI: `npm install -g @railway/cli`
    - Or configure manually at https://railway.com/dashboard
-   - Create a new project and set environment variables from `.env.local`
+   - Create a new project and set environment variables **derived from** `.env.local` — not
+     copied verbatim. In particular, set `NODE_ENV=production` (never `development`) and supply a
+     production-grade `rediss://` `REDIS_URL`, never the local `redis://localhost:6379` default.
 
 ## Phase 7: GitHub Secrets
 
@@ -151,5 +166,8 @@ Report a summary of what was configured:
 Suggest next steps:
 
 1. `bun turbo dev` — start the development server
-2. `bunx cloudflared tunnel --url http://localhost:3000/mcp` — expose MCP endpoint
+2. `bun scripts/develop.ts --tunnel` — expose the MCP endpoint. Do NOT suggest a bare
+   `bunx cloudflared tunnel ...` invocation: it opens the tunnel without setting
+   `PROTOKIT_TUNNEL_ACTIVE`, which is what disables `/auth/dev/login` while a tunnel is active
+   (`CONFIG-001`; the same fix already applied to `.claude/commands/tunnel.md`).
 3. `bunx @modelcontextprotocol/inspector` — debug MCP locally

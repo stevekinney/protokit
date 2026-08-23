@@ -1,7 +1,7 @@
 import { createClient, type RedisClientType } from 'redis';
 import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
-import { withDeadline } from '@web/lib/with-deadline';
+import { probeRedisUrl } from '@web/lib/redis-probe';
 
 type RedisClient = RedisClientType;
 
@@ -91,32 +91,14 @@ export async function disconnectRedisSubscriberClient(): Promise<void> {
 	}
 }
 
-// `socket.connectTimeout` below only bounds establishing the TCP/TLS connection. Once Redis has
-// accepted that connection, `ping()` has no deadline of its own -- a server that accepts and then
-// stalls (mid-failover, wedged, network partition after the handshake) leaves this await open
-// indefinitely. Round-3 review (OPS-002): this is exactly what let a stuck probe stay in
-// `createCoalescedProbe`'s `inFlight` slot forever, since the coalescer only clears that slot when
-// the probe promise settles.
-const redisHealthProbeTimeoutMs = 2000;
-
+// The bounded connect+ping probe itself lives in `redis-probe.ts` (round-6 review) so
+// `scripts/doctor.ts` can share it against a candidate `REDIS_URL` without importing this
+// module's top-level `@web/env` read, which throws on an incomplete environment. Round-3 review
+// (OPS-002): an unbounded `ping()` after `connect()` succeeds is exactly what let a stuck probe
+// stay in `createCoalescedProbe`'s `inFlight` slot forever, since the coalescer only clears that
+// slot when the probe promise settles — see `redis-probe.ts` for the deadline itself.
 export async function isRedisHealthy(): Promise<boolean> {
-	if (!isRedisConfigured()) return false;
-
-	const probe = createClient({
-		url: environment.REDIS_URL,
-		socket: {
-			reconnectStrategy: false,
-			connectTimeout: 2000,
-		},
-	});
-
-	try {
-		await probe.connect();
-		await withDeadline(probe.ping(), redisHealthProbeTimeoutMs);
-		return true;
-	} catch {
-		return false;
-	} finally {
-		await probe.disconnect().catch(() => {});
-	}
+	const redisUrl = environment.REDIS_URL;
+	if (redisUrl === undefined) return false;
+	return probeRedisUrl(redisUrl);
 }
