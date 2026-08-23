@@ -115,3 +115,34 @@ describe('every workflow: least-privilege scaffolding', () => {
 		}
 	});
 });
+
+/**
+ * Regression test for the review-thread claim on `.github/workflows/pull-request.yml:53`
+ * (PRRT_kwDORZ0PbM6baF4t): `audit:workflows`, `test:workflow-authorization`,
+ * `test:workflow-prompt-injection`, `test:production-migration-gate`, and `test:scripts-security`
+ * are root-level `bun run` commands (root `scripts/` and `.github/tests` are not a turbo
+ * workspace, so `bun turbo test` never reaches them) that CI-SEC-001/CI-SEC-002 built but never
+ * wired into any workflow. Asserted here, rather than only in the workflow YAML, so removing
+ * a step from `pull-request.yml` fails a test instead of silently un-wiring the gate again.
+ */
+describe('pull-request.yml: root security gates are wired into CI', () => {
+	const { workflow } = loadWorkflow('pull-request.yml');
+
+	test('the check job runs every root workflow/script security gate', () => {
+		const check = workflow.jobs.check;
+		expect(check).toBeDefined();
+		const runCommands = (check.steps ?? []).map((step) => step.run ?? '').join('\n');
+
+		for (const command of [
+			'bun run audit:workflows',
+			'bun run test:workflow-authorization',
+			'bun run test:workflow-prompt-injection',
+			'bun run test:production-migration-gate',
+			'bun run test:scripts-security',
+		]) {
+			expect(runCommands, `expected "${command}" to run in pull-request.yml's check job`).toContain(
+				command,
+			);
+		}
+	});
+});

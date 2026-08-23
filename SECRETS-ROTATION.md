@@ -8,8 +8,14 @@ straight to a `0600` file or a secret store, never to stdout.
 
 ## Session-signing secret (`SESSION_SIGNING_SECRET`)
 
-Signs session cookies and derives CSRF tokens
-(`applications/web/src/lib/session-signing-secret.ts`, `csrf-protection.ts`). `DATA-001` added a
+Derives CSRF tokens and signs the Google sign-in state cookie
+(`applications/web/src/lib/session-signing-secret.ts`, `csrf-protection.ts`,
+`google-authentication.ts`) — **not** the session cookie itself. A session cookie is an opaque,
+random bearer token (`session-authentication.ts`'s `createSession`/`hydrateSession`) whose
+validity is looked up in `user_sessions` by its own SHA-256 hash; it is never signed with this
+secret and is therefore unaffected by rotating or revoking it. Ending a compromised session
+means revoking that `user_sessions` row directly (see "Ending a session outright" below), not
+rotating this secret. `DATA-001` added a
 deliberate, time-bounded overlap window — rotation is a two-step, two-command process, not a single
 instantaneous cutover:
 
@@ -17,20 +23,36 @@ instantaneous cutover:
    `.env.local` as `SESSION_SIGNING_SECRET`, and moves the outgoing value to
    `SESSION_SIGNING_SECRET_PREVIOUS` (mode `0600`, neither value ever printed) — if `gh` is
    installed and `SESSION_SIGNING_SECRET` is one of the GitHub-managed secrets, it also pushes the
-   new value to the GitHub secret store. `resolveSessionSigningSecrets()` signs new
-   cookies/CSRF tokens with the current secret but still verifies anything signed under
-   `SESSION_SIGNING_SECRET_PREVIOUS`, so restarting every instance during this window does not sign
-   out already-signed-in users.
+   new value to the GitHub secret store. `resolveSessionSigningSecrets()` signs new CSRF
+   tokens/Google state cookies with the current secret but still verifies anything signed under
+   `SESSION_SIGNING_SECRET_PREVIOUS`, so restarting every instance during this window does not
+   force already-signed-in users to re-authenticate.
 2. `bun scripts/rotate-secret.ts session-cutover` clears `SESSION_SIGNING_SECRET_PREVIOUS` once
    every client has had time to pick up the new value (a new sign-in, or the cookie's natural
-   refresh). After this, a session cookie, CSRF token, or Google sign-in state cookie signed only
-   under the retired secret is rejected outright — this is the step that actually ends the overlap,
-   not step 1.
+   refresh). After this, a CSRF token or Google sign-in state cookie signed only under the retired
+   secret is rejected outright — this is the step that actually ends the overlap, not step 1. It
+   does **not** reject or expire any `user_sessions` row: session cookies are never signed with
+   this secret, so they keep authenticating (until they hit `SESSION_TIME_TO_LIVE_SECONDS`, are
+   explicitly signed out, or are revoked directly) regardless of this rotation.
 
 Restart every running instance after step 1 for the new secret to take effect for newly issued
-cookies, and again after step 2 so no instance is still willing to verify the retired secret. Treat
-step 2 as the planned-maintenance action if you need a hard cutoff; skipping it indefinitely just
-means the overlap window never closes.
+CSRF tokens/state cookies, and again after step 2 so no instance is still willing to verify the
+retired secret. Treat step 2 as the planned-maintenance action if you need a hard cutoff for CSRF
+tokens; skipping it indefinitely just means that overlap window never closes.
+
+### Ending a session outright
+
+Rotating `SESSION_SIGNING_SECRET` is routine credential hygiene and, by design, does not sign
+anyone out — see above. If the actual goal is incident response (a suspected session hijack,
+compromised cookie, or "log this user out everywhere"), revoke the affected `user_sessions` rows
+directly instead: a signed-in user can always self-service this via `POST /auth/sign-out`
+(`lib/session-authentication.ts` `revokeSession()`); an operator with direct database access
+can run a targeted `UPDATE user_sessions SET revoked_at = now() WHERE revoked_at IS NULL AND
+user_id = '<user-id>'` (or drop the `user_id` filter to end every active session server-wide).
+`hydrateSession()` rejects any row with a non-null `revoked_at` on its very next request. This is
+deliberately a manual, targeted operator action rather than something wired into signing-key
+rotation: an unconditional bulk revoke on every routine key rotation would turn ordinary secret
+hygiene into a mass logout, which is a worse outcome than the gap it would close.
 
 `scripts/rotate-secret.test.ts` proves the file-writing mechanics of both commands (the outgoing
 value moves to `SESSION_SIGNING_SECRET_PREVIOUS` on rotation and is removed on cutover); the actual

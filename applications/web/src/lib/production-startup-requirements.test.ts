@@ -261,6 +261,38 @@ describe('collectProductionStartupFailures — malformed TRUSTED_PROXY_CIDRS', (
 		expect(failure).toContain('not-a-cidr');
 		expect(failure).toContain('also-bad');
 	});
+
+	it('rejects a TRUSTED_PROXY_CIDRS value that normalizes to zero entries', () => {
+		// A bare separator (or whitespace-only entries) is a nonempty raw string, so it
+		// passes the both-set check above, but `.split(',').filter(Boolean)` normalizes it
+		// to an empty array. Without an explicit empty-list check, `malformedCidrs` stays
+		// empty too (there is nothing left to call malformed) and production would start
+		// trusting no proxy at all -- identifying every request by the proxy's own socket
+		// address, collapsing rate limiting and failed-auth lockouts onto one shared bucket.
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			trustedProxyCidrs: ',',
+		});
+		expect(
+			failures.some(
+				(failure) =>
+					failure.includes('TRUSTED_PROXY_CIDRS') && failure.includes('no usable entries'),
+			),
+		).toBe(true);
+	});
+
+	it('rejects a whitespace-only TRUSTED_PROXY_CIDRS value', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			trustedProxyCidrs: '   ,   ',
+		});
+		expect(
+			failures.some(
+				(failure) =>
+					failure.includes('TRUSTED_PROXY_CIDRS') && failure.includes('no usable entries'),
+			),
+		).toBe(true);
+	});
 });
 
 describe('collectProductionStartupFailures — non-origin BASE_URL', () => {

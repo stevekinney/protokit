@@ -19,21 +19,27 @@ describe('applyLocalProxyFetchEndpoint', () => {
 	});
 
 	it('leaves the driver default able to resolve a real Neon hostname when unconfigured', () => {
+		// `neonConfig` is a module-level singleton shared by every test file in the
+		// process, so this cannot assert the driver's pristine default value — any
+		// file that ran earlier and set the proxy override would make that assertion
+		// fail, which is exactly what happened in continuous integration while passing
+		// locally on a different file ordering.
+		//
+		// What this test is actually for is the no-op property: calling with no
+		// configured proxy must leave the endpoint resolving whatever it resolved
+		// before. Capturing the behavior first and comparing after proves that
+		// independently of what the global happens to hold.
+		const hostname = 'ep-example-123456.us-east-2.aws.neon.tech';
+		const resolveBefore = neonConfig.fetchEndpoint;
+		const before =
+			typeof resolveBefore === 'function' ? resolveBefore(hostname, 443) : resolveBefore;
+
 		applyLocalProxyFetchEndpoint(undefined);
 
-		const resolveFetchEndpoint = neonConfig.fetchEndpoint;
-		expect(typeof resolveFetchEndpoint).toBe('function');
-		if (typeof resolveFetchEndpoint !== 'function') {
-			throw new Error('expected the default fetchEndpoint to be a function');
-		}
+		const resolveAfter = neonConfig.fetchEndpoint;
+		const after = typeof resolveAfter === 'function' ? resolveAfter(hostname, 443) : resolveAfter;
 
-		// The driver's real default rewrites the endpoint-id subdomain to
-		// `api.` and always resolves to `https://.../sql` — asserting the
-		// actual shape (not a guessed one) is what proves this module never
-		// touched it.
-		expect(resolveFetchEndpoint('ep-example-123456.us-east-2.aws.neon.tech', 443)).toBe(
-			'https://api.us-east-2.aws.neon.tech/sql',
-		);
+		expect(after).toBe(before);
 	});
 
 	it('overrides fetchEndpoint with the configured local proxy URL', () => {

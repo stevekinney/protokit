@@ -197,3 +197,23 @@ describe('session cookie name in production', () => {
 		expect(cookie.startsWith('test_session=')).toBe(true);
 	});
 });
+
+/**
+ * Regression test for the review-thread claim on `scripts/rotate-secret.ts:91`
+ * (PRRT_kwDORZ0PbM6baF4x): SECRETS-ROTATION.md and a `credentialLifecyclePolicy` row used to
+ * claim that `session-cutover` rejects a "session cookie ... signed only under the retired
+ * secret" outright. That was never true -- `createSession`/`hydrateSession` never import or
+ * reference `SESSION_SIGNING_SECRET` (or `@web/lib/session-signing-secret`) at all: a session
+ * cookie is an opaque, random bearer token whose validity is looked up in `user_sessions` by
+ * its own hash, independent of any signing secret. Pinned here as a source-level assertion
+ * (rather than a full rotation simulation) so a future edit that starts coupling session
+ * validity to the signing secret -- silently changing what `session-cutover` actually does --
+ * fails this test instead of only being caught by re-reading the docs.
+ */
+describe('session validity is independent of SESSION_SIGNING_SECRET', () => {
+	it('session-authentication.ts never imports the session-signing-secret module', async () => {
+		const source = await Bun.file(new URL('./session-authentication.ts', import.meta.url)).text();
+		expect(source).not.toMatch(/session-signing-secret/);
+		expect(source).not.toMatch(/SESSION_SIGNING_SECRET/);
+	});
+});

@@ -107,7 +107,7 @@ export const credentialLifecyclePolicy: readonly CredentialLifecyclePolicyRow[] 
 		rotationProcedure:
 			'scripts/rotate-secret.ts session — issues a new current secret and moves the outgoing value to SESSION_SIGNING_SECRET_PREVIOUS as an overlap window (lib/session-signing-secret.ts resolveSessionSigningSecrets()).',
 		revocationPath:
-			'scripts/rotate-secret.ts session-cutover — clears SESSION_SIGNING_SECRET_PREVIOUS, after which a session cookie, CSRF token, or Google sign-in state cookie signed only under the retired secret is rejected outright.',
+			'scripts/rotate-secret.ts session-cutover — clears SESSION_SIGNING_SECRET_PREVIOUS, after which a CSRF token or Google sign-in state cookie signed only under the retired secret is rejected outright. Does NOT revoke any browser session: session cookies are opaque bearer tokens validated against user_sessions by hash, never signed with this secret (see SECRETS-ROTATION.md "Ending a session outright" for the separate, deliberately manual user_sessions revocation path).',
 		owner: 'The operator, via SECRETS-ROTATION.md.',
 	},
 	{

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
+import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@template/web/lib/credential-lifecycle-policy';
 
 import { writeSecretFileAtomic, ROOT_DIRECTORY } from './utilities.ts';
 
@@ -82,9 +83,11 @@ export async function seedOauthClient(clientId: string = SEED_CLIENT_ID): Promis
 	// Registered with the interactive authorization_code + refresh_token grants that
 	// Claude, Codex, and ChatGPT connectors use. client_credentials is not a supported
 	// grant on this server — see SEC-001.
+	const clientSecretExpiresAt = new Date(Date.now() + OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS);
 	await database.insert(schema.oauthClients).values({
 		clientId,
 		clientSecret: clientSecretHash,
+		clientSecretExpiresAt,
 		clientName: SEED_CLIENT_NAME,
 		clientType: 'confidential',
 		tokenEndpointAuthMethod: 'client_secret_post',

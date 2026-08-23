@@ -3,7 +3,13 @@ import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
 
 export type SessionSigningSecretResolution = {
-	/** The one secret every new signature (session cookie HMAC, CSRF token, Google state cookie) is created with. */
+	/**
+	 * The one secret every new signature (CSRF token, Google state cookie) is created with.
+	 * NOT the session cookie itself: a session cookie is an opaque, random bearer token
+	 * (`session-authentication.ts`), validated by looking up its own hash in `user_sessions`,
+	 * never signed with this secret. See SECRETS-ROTATION.md's "Ending a session outright"
+	 * for how a session is actually revoked.
+	 */
 	current: string;
 	/**
 	 * DATA-001 / S-18: the outgoing secret during a rotation's overlap window,

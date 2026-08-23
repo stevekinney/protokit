@@ -310,6 +310,23 @@ export function collectProductionStartupFailures(
 			.split(',')
 			.map((cidr) => cidr.trim())
 			.filter(Boolean);
+		if (cidrs.length === 0) {
+			// TRUSTED_PROXY_CIDRS was set to a nonempty string (so the both-set
+			// check above passed) but normalized to zero entries -- for example
+			// "," or " , ". `malformedCidrs` below would stay empty too, since
+			// filtering out blanks leaves nothing to call malformed, so this
+			// would otherwise start with an empty trusted-proxy list and
+			// silently trust no proxy, identifying every request by the
+			// proxy's own socket address -- exactly what the both-set branch
+			// above exists to prevent.
+			failures.push(
+				'TRUSTED_PROXY_CIDRS is set but contains no usable entries after removing blanks ' +
+					`(received "${configuration.trustedProxyCidrs}"). Provide at least one valid IPv4 ` +
+					'or IPv6 CIDR entry (e.g. 10.0.0.0/8 or 2001:db8::/32), or unset TRUSTED_PROXY_CIDRS ' +
+					'together with TRUSTED_PROXY_HEADER if this deployment genuinely runs without a ' +
+					'trusted reverse proxy.',
+			);
+		}
 		const malformedCidrs = cidrs.filter((cidr) => !isValidCidr(cidr));
 		if (malformedCidrs.length > 0) {
 			failures.push(
