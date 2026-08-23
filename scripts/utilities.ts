@@ -24,6 +24,14 @@ export const MANAGED_GITHUB_SECRETS = [
 	'DATABASE_URL',
 	'DATABASE_URL_UNPOOLED',
 	'SESSION_SIGNING_SECRET',
+	// A review finding (P2): `setup.ts`'s CI/CD phase has created this secret
+	// (the only credential `production.yml`'s `deploy` job uses) since it
+	// gained the `base-url`/Railway-deploy-job wiring, but this list -- the
+	// single source `doctor.ts`, `teardown.ts`, and `rotate-secret.ts` all
+	// read -- never grew to include it. `doctor` therefore never flagged it
+	// missing, `teardown` never offered to delete it, and `revoke-github
+	// RAILWAY_TOKEN` refused to manage a secret setup itself created.
+	'RAILWAY_TOKEN',
 ] as const;
 
 /**

@@ -15,6 +15,10 @@ function isServerEvent(value: unknown): value is ServerEvent {
 	);
 }
 
+/** Initial delay before retrying a failed Redis `SUBSCRIBE`; doubles on each consecutive failure up to `MAX_RESUBSCRIBE_RETRY_DELAY_MILLISECONDS`. */
+const INITIAL_RESUBSCRIBE_RETRY_DELAY_MILLISECONDS = 1_000;
+const MAX_RESUBSCRIBE_RETRY_DELAY_MILLISECONDS = 30_000;
+
 function deserializeEvent(message: string): ServerEvent | undefined {
 	try {
 		const parsed: unknown = JSON.parse(message);
@@ -65,7 +69,30 @@ export class RedisUserServerEventBus implements ServerEventBus {
 	 */
 	private transitionQueue: Promise<void> = Promise.resolve();
 
-	constructor(private readonly userId: string) {
+	/**
+	 * A review finding (P2): a transient `SUBSCRIBE` failure left
+	 * `redisSubscribed` false with nothing scheduled to try again, while
+	 * the listener stayed registered. Because `reconcileSubscription` only
+	 * runs when `subscribe()`/the unsubscribe teardown enqueue a new
+	 * transition, a single failed attempt meant a `subscriptions/listen`
+	 * stream stayed open indefinitely, silently receiving nothing — even
+	 * after Redis recovered. Retries with exponential backoff (capped, and
+	 * `unref`'d so a pending retry never keeps the process alive) for as
+	 * long as at least one listener is still registered; stops rescheduling
+	 * itself the moment the listener count drops to zero, and resets on
+	 * the next successful subscribe.
+	 */
+	private resubscribeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+	private resubscribeRetryDelayMilliseconds = INITIAL_RESUBSCRIBE_RETRY_DELAY_MILLISECONDS;
+
+	constructor(
+		private readonly userId: string,
+		// Defaults to the real client factory; a test can inject a stub that
+		// fails a bounded number of times to prove the retry path without
+		// needing to actually sever this process's connection to the shared
+		// Redis instance.
+		private readonly getSubscriberClient: typeof getRedisSubscriberClient = getRedisSubscriberClient,
+	) {
 		this.channel = channelForUser(userId);
 	}
 
@@ -114,6 +141,28 @@ export class RedisUserServerEventBus implements ServerEventBus {
 		await this.transitionQueue;
 	}
 
+	private scheduleResubscribeRetry(): void {
+		if (this.resubscribeRetryTimer) return;
+		const delay = this.resubscribeRetryDelayMilliseconds;
+		this.resubscribeRetryDelayMilliseconds = Math.min(
+			this.resubscribeRetryDelayMilliseconds * 2,
+			MAX_RESUBSCRIBE_RETRY_DELAY_MILLISECONDS,
+		);
+		this.resubscribeRetryTimer = setTimeout(() => {
+			this.resubscribeRetryTimer = null;
+			// A listener may have torn down (or the bus may already be
+			// re-subscribed by an unrelated transition) while this retry was
+			// pending -- only re-enter the queue if there is still someone to
+			// deliver events to and Redis still isn't subscribed.
+			if (this.listeners.size === 0 || this.redisSubscribed) {
+				this.resubscribeRetryDelayMilliseconds = INITIAL_RESUBSCRIBE_RETRY_DELAY_MILLISECONDS;
+				return;
+			}
+			void this.enqueueTransition();
+		}, delay);
+		this.resubscribeRetryTimer.unref?.();
+	}
+
 	private enqueueTransition(): Promise<void> {
 		const next = this.transitionQueue.then(
 			() => this.reconcileSubscription(),
@@ -136,22 +185,24 @@ export class RedisUserServerEventBus implements ServerEventBus {
 
 		if (shouldBeSubscribed) {
 			try {
-				const subscriber = await getRedisSubscriberClient();
+				const subscriber = await this.getSubscriberClient();
 				await subscriber.subscribe(this.channel, (message) => {
 					const event = deserializeEvent(message);
 					if (!event) return;
 					for (const listener of this.listeners) listener(event);
 				});
 				this.redisSubscribed = true;
+				this.resubscribeRetryDelayMilliseconds = INITIAL_RESUBSCRIBE_RETRY_DELAY_MILLISECONDS;
 			} catch (error) {
 				logger.error(
 					{ err: error, userId: this.userId },
-					'Failed to subscribe to MCP resource event channel',
+					'Failed to subscribe to MCP resource event channel; scheduling retry',
 				);
+				this.scheduleResubscribeRetry();
 			}
 		} else {
 			try {
-				const subscriber = await getRedisSubscriberClient();
+				const subscriber = await this.getSubscriberClient();
 				await subscriber.unsubscribe(this.channel);
 				this.redisSubscribed = false;
 			} catch (error) {

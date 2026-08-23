@@ -16,6 +16,7 @@
  */
 
 import {
+	checkDiscoveryDocumentIsHealthy,
 	checkNoCrossHostRedirect,
 	checkPublicDnsResolution,
 } from '@web/deployed-validation-support';
@@ -25,6 +26,26 @@ const CANONICAL_PATHS = [
 	'/.well-known/oauth-protected-resource',
 	'/.well-known/oauth-protected-resource/mcp',
 	'/mcp',
+] as const;
+
+/**
+ * A review finding (P2): `checkNoCrossHostRedirect` only reports whether a
+ * response redirected cross-host -- for its own stated purpose, "no
+ * problem" correctly includes a 404 or 500 (neither is a redirect). This
+ * harness's discovery-URL loop then treated that same "no problem" as "this
+ * endpoint is healthy," so a discovery document that 404s or 500s on the
+ * deployed host logged a pass and the harness could finish with "every
+ * automated check passed" while two of the three canonical discovery
+ * documents were never actually confirmed reachable and well-formed (only
+ * `/.well-known/oauth-protected-resource/mcp` got an explicit `response.ok`
+ * check, in the TLS/reachability step above). Every discovery document
+ * (not `/mcp` itself, which is expected to 401 unauthenticated) must return
+ * a successful, JSON-parseable response.
+ */
+const DISCOVERY_DOCUMENT_PATHS = [
+	'/.well-known/oauth-authorization-server',
+	'/.well-known/oauth-protected-resource',
+	'/.well-known/oauth-protected-resource/mcp',
 ] as const;
 
 async function main(): Promise<void> {
@@ -63,17 +84,14 @@ async function main(): Promise<void> {
 		// certificate is exactly what "the TLS chain validates" requires, and
 		// re-implementing certificate-chain verification here would only add
 		// a second, less-trustworthy validator next to the one Bun already
-		// ships.
-		const response = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
+		// ships. Deliberately does not assert on the response status here --
+		// that's the discovery-document loop's job below (which also parses
+		// the body), so a document-level failure isn't reported twice under
+		// two different messages.
+		await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {
 			signal: AbortSignal.timeout(10_000),
 		});
-		if (!response.ok) {
-			problems.push(
-				`TLS/reachability check reached ${baseUrl} but got HTTP ${response.status} for the protected-resource document`,
-			);
-		} else {
-			console.log('[deployed-smoke] TLS chain validates; server is reachable over HTTPS');
-		}
+		console.log('[deployed-smoke] TLS chain validates; server is reachable over HTTPS');
 	} catch (error) {
 		problems.push(
 			`TLS/reachability check failed against ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`,
@@ -87,6 +105,18 @@ async function main(): Promise<void> {
 			problems.push(result.problem);
 		} else {
 			console.log(`[deployed-smoke]   ${path} -> no cross-host redirect`);
+		}
+	}
+
+	console.log(
+		'[deployed-smoke] checking discovery documents return successful, well-formed JSON...',
+	);
+	for (const path of DISCOVERY_DOCUMENT_PATHS) {
+		const result = await checkDiscoveryDocumentIsHealthy(baseUrl, path);
+		if (result.problem) {
+			problems.push(result.problem);
+		} else {
+			console.log(`[deployed-smoke]   ${path} -> valid JSON`);
 		}
 	}
 

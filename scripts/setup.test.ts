@@ -8,6 +8,7 @@ import {
 	isValidTrustedProxyCidrList,
 	planRailwayVariables,
 	RAILWAY_EXCLUDED_ENVIRONMENT_KEYS,
+	shouldPromptForBaseUrl,
 } from './setup.ts';
 
 describe('isValidNeonRegionIdentifier', () => {
@@ -149,6 +150,33 @@ describe('BASE_URL setup phase ordering', () => {
 			source.indexOf('async function setupGithubSecrets'),
 		);
 		expect(railwayBody).toContain("getEnvironmentValue('BASE_URL')");
+	});
+});
+
+describe('shouldPromptForBaseUrl', () => {
+	// Regression for a round-9 review finding (P2): an existing BASE_URL was
+	// previously accepted on presence alone, so a leftover local-dev value or
+	// a URL with a path/query survived into `setupRailway` (which also only
+	// checks presence) and production later refused to start. This is the
+	// pure predicate `setupBaseUrl` now gates its skip check on.
+	test('re-prompts when no value exists yet', () => {
+		expect(shouldPromptForBaseUrl(undefined)).toBe(true);
+	});
+
+	test('does not re-prompt for an existing, valid production origin', () => {
+		expect(shouldPromptForBaseUrl('https://your-app.up.railway.app')).toBe(false);
+	});
+
+	test('re-prompts for an existing localhost value', () => {
+		expect(shouldPromptForBaseUrl('http://localhost:3000')).toBe(true);
+	});
+
+	test('re-prompts for an existing HTTPS value with a path', () => {
+		expect(shouldPromptForBaseUrl('https://your-app.up.railway.app/callback')).toBe(true);
+	});
+
+	test('re-prompts for an existing HTTPS value with a query string', () => {
+		expect(shouldPromptForBaseUrl('https://your-app.up.railway.app?ref=1')).toBe(true);
 	});
 });
 

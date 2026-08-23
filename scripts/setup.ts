@@ -280,12 +280,37 @@ export function isValidProductionBaseUrl(value: string): boolean {
  * the service). Required, not optional: skipping it here only defers the identical failure to a
  * point after Railway has already been configured.
  */
+/**
+ * A review finding (P2): the phase below used to skip re-prompting on mere
+ * presence of a `BASE_URL` value, so a leftover local-dev value
+ * (`http://localhost:3000`) or a URL with a path/query already sitting in
+ * `.env.local` survived untouched into `setupRailway`, which also only
+ * checks presence -- production would then refuse to start
+ * (`collectProductionStartupFailures` rejects it) after the deploy
+ * credential was already pushed. Split into a pure predicate, held to the
+ * exact same rule newly entered values are, so it can be unit tested
+ * without stdin: an existing value must both be present AND pass
+ * `isValidProductionBaseUrl` for the phase to skip.
+ */
+export function shouldPromptForBaseUrl(existingValue: string | undefined): boolean {
+	return existingValue === undefined || !isValidProductionBaseUrl(existingValue);
+}
+
 async function setupBaseUrl() {
 	console.log('\n--- Production Base URL ---\n');
 
-	if (getEnvironmentValue('BASE_URL')) {
+	const existingBaseUrl = getEnvironmentValue('BASE_URL');
+	if (existingBaseUrl && !shouldPromptForBaseUrl(existingBaseUrl)) {
 		console.log('BASE_URL already exists in .env.local.');
 		return;
+	}
+
+	if (existingBaseUrl) {
+		console.warn(
+			`BASE_URL already exists in .env.local but is not a valid production origin: "${existingBaseUrl}". ` +
+				'It must be a canonical https:// origin only (no path, query, fragment, or embedded ' +
+				'credentials). Replacing it.',
+		);
 	}
 
 	console.log('Production requires one canonical, HTTPS BASE_URL (OAuth issuer identity and MCP');

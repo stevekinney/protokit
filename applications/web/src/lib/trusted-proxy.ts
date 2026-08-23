@@ -113,7 +113,7 @@ function parseForwardedForHeaderValue(part: string): string | null {
 	return match ? match[2] : null;
 }
 
-function selectHopFromEnd(entries: string[], hopCount: number): string | null {
+function selectHopFromEnd(entries: (string | null)[], hopCount: number): string | null {
 	if (entries.length === 0) return null;
 	const index = entries.length - hopCount;
 	// A hop count that exceeds the number of entries actually present means
@@ -124,6 +124,14 @@ function selectHopFromEnd(entries: string[], hopCount: number): string | null {
 	// and trusting that unverified entry, reject the header outright so the
 	// caller falls back to the (verified) socket address.
 	if (index < 0) return null;
+	// A `null` here means the entry at this position (preserving the raw
+	// comma-delimited position, not the position after dropping entries
+	// without a `for=` token) carried no valid `for=` value — e.g. a
+	// `Forwarded` element like `by=proxy1` with no `for=` at all. Selecting
+	// it would either return `null` (fall back to socket address, correct)
+	// or, if we had instead compacted the array before indexing, silently
+	// shift every subsequent hop count into the wrong position. Reject
+	// rather than guess.
 	return entries[Math.min(index, entries.length - 1)] ?? null;
 }
 
@@ -149,11 +157,17 @@ function extractForwardedAddress(
 	if (configuration.trustedProxyHeader === 'forwarded') {
 		const raw = headers.get('forwarded');
 		if (!raw) return null;
-		const entries = raw
-			.split(',')
-			.map(parseForwardedForHeaderValue)
-			.filter((value): value is string => Boolean(value))
-			.map((value) => stripPort(value));
+		// Preserve one array entry per comma-delimited `Forwarded` element,
+		// even when an element carries no `for=` token (e.g. `by=proxy1`).
+		// `TRUSTED_PROXY_HOP_COUNT` indexes from the end of this list under
+		// the assumption that each position corresponds to one hop the
+		// trusted proxy chain actually appended; dropping `for=`-less
+		// elements before indexing would shift every hop count to the
+		// wrong element.
+		const entries = raw.split(',').map((part) => {
+			const value = parseForwardedForHeaderValue(part);
+			return value ? stripPort(value) : null;
+		});
 		return selectHopFromEnd(entries, configuration.trustedProxyHopCount);
 	}
 

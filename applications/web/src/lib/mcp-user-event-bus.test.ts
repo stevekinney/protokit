@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { createClient } from 'redis';
 import type { ServerEvent } from '@modelcontextprotocol/server';
 import { RedisUserServerEventBus, createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
+import { getRedisSubscriberClient } from '@web/lib/redis-client';
 
 // The bus publishes on a Redis channel named for the user, and Redis is shared
 // across concurrent test runs — so fixed identifiers let one run's published
@@ -181,6 +182,53 @@ describeWithRedis('RedisUserServerEventBus subscribe/unsubscribe race (requires 
 		expect(received).toEqual([{ kind: 'resources_list_changed' }]);
 	});
 });
+
+describeWithRedis(
+	'RedisUserServerEventBus resubscribe retry after a transient SUBSCRIBE failure (requires Redis)',
+	() => {
+		// A review finding (P2): a transient Redis `SUBSCRIBE` failure left
+		// `redisSubscribed` false with nothing scheduled to try again, while
+		// the listener stayed registered -- so a `subscriptions/listen`
+		// stream stayed open forever, silently receiving nothing, even after
+		// Redis recovered. Injects a client factory that fails exactly once
+		// before delegating to the real Redis subscriber client, so this
+		// proves the bus retries on its own and resumes real event delivery
+		// -- not merely that some internal flag flips back to `true`.
+		it('retries after a failed SUBSCRIBE and resumes delivering real events', async () => {
+			let attempts = 0;
+			const flakyGetSubscriberClient: typeof getRedisSubscriberClient = async () => {
+				attempts += 1;
+				if (attempts === 1) {
+					throw new Error('simulated transient SUBSCRIBE failure');
+				}
+				return getRedisSubscriberClient();
+			};
+
+			const bus = new RedisUserServerEventBus(
+				`user-bus-retry-${busRunId}`,
+				flakyGetSubscriberClient,
+			);
+			const received: ServerEvent[] = [];
+			bus.subscribe((event) => received.push(event));
+
+			// The first attempt fails immediately; the failed transition still
+			// settles (it catches internally rather than throwing).
+			await bus.whenSubscribed();
+			expect(attempts).toBe(1);
+
+			// Wait past the initial retry backoff for the scheduled retry to
+			// fire and enqueue a fresh transition, then wait for that one to
+			// settle too.
+			await new Promise((resolve) => setTimeout(resolve, 1200));
+			await bus.whenSubscribed();
+			expect(attempts).toBeGreaterThanOrEqual(2);
+
+			bus.publish({ kind: 'resources_list_changed' });
+			await waitForEvent(received, 1);
+			expect(received).toEqual([{ kind: 'resources_list_changed' }]);
+		}, 10000);
+	},
+);
 
 describe('createUserServerEventBus', () => {
 	it('exposes listenerCount whether backed by Redis or the in-memory fallback', () => {

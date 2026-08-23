@@ -6,6 +6,7 @@ import {
 	symlinkSync,
 	statSync,
 	writeFileSync,
+	readFileSync,
 	chmodSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,7 @@ import {
 	encodeEnvironmentValue,
 	writeSecretFileAtomic,
 	SECRET_FILE_MODE,
+	MANAGED_GITHUB_SECRETS,
 } from './utilities.ts';
 
 describe('execute', () => {
@@ -169,5 +171,30 @@ describe('writeSecretFileAtomic', () => {
 		}
 
 		await expect(Bun.file(real).text()).resolves.toBe('original');
+	});
+});
+
+describe('MANAGED_GITHUB_SECRETS', () => {
+	// Regression for a round-9 review finding (P2): `setup.ts`'s CI/CD phase
+	// creates a `RAILWAY_TOKEN` GitHub secret (the only credential
+	// `production.yml`'s `deploy` job uses), but this list -- the single
+	// source `doctor.ts`, `teardown.ts`, and `rotate-secret.ts` all read --
+	// never grew to include it, so `doctor` never flagged it missing,
+	// `teardown` never offered to delete it, and `revoke-github RAILWAY_TOKEN`
+	// refused to manage a secret setup itself created.
+	test('includes RAILWAY_TOKEN', () => {
+		expect(MANAGED_GITHUB_SECRETS).toContain('RAILWAY_TOKEN');
+	});
+
+	test('includes every GitHub secret setup.ts actually creates in its CI/CD phase', () => {
+		const setupSource = readFileSync(new URL('./setup.ts', import.meta.url), 'utf8');
+		const createdSecretNames = [...setupSource.matchAll(/setGithubSecret\(\s*'([A-Z0-9_]+)'/g)].map(
+			(match) => match[1],
+		);
+
+		expect(createdSecretNames.length).toBeGreaterThan(0);
+		for (const secretName of createdSecretNames) {
+			expect(MANAGED_GITHUB_SECRETS as readonly string[]).toContain(secretName);
+		}
 	});
 });

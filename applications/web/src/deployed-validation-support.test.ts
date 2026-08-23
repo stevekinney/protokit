@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+	checkDiscoveryDocumentIsHealthy,
 	checkNoCrossHostRedirect,
 	checkPublicDnsResolution,
 	detectStreamBuffering,
@@ -135,6 +136,74 @@ describe('checkNoCrossHostRedirect', () => {
 			throw new Error('network unreachable');
 		}) as typeof fetch;
 		const result = await checkNoCrossHostRedirect('https://mcp.example.com', '/mcp', fetchStub);
+		expect(result.problem).toContain('failed');
+	});
+});
+
+describe('checkDiscoveryDocumentIsHealthy', () => {
+	// Regression for a round-9 review finding (P2): `deployed-smoke.ts` used
+	// to rely on `checkNoCrossHostRedirect`'s "no problem" result (correct
+	// for its own narrow purpose, since a 404/500 is not a redirect) to also
+	// mean "this discovery document is healthy" -- so a 404 or 500 from a
+	// discovery endpoint logged a pass. This function is the actual
+	// success/well-formedness check that closes that gap.
+	it('flags a 404 from a discovery document as a problem, not a pass', async () => {
+		const fetchStub = (async () => new Response('not found', { status: 404 })) as typeof fetch;
+		const result = await checkDiscoveryDocumentIsHealthy(
+			'https://mcp.example.com',
+			'/.well-known/oauth-authorization-server',
+			fetchStub,
+		);
+		expect(result.problem).not.toBeNull();
+		expect(result.problem).toContain('404');
+	});
+
+	it('flags a 500 from a discovery document as a problem, not a pass', async () => {
+		const fetchStub = (async () => new Response('server error', { status: 500 })) as typeof fetch;
+		const result = await checkDiscoveryDocumentIsHealthy(
+			'https://mcp.example.com',
+			'/.well-known/oauth-protected-resource',
+			fetchStub,
+		);
+		expect(result.problem).not.toBeNull();
+		expect(result.problem).toContain('500');
+	});
+
+	it('flags a 2xx response with a non-JSON body', async () => {
+		const fetchStub = (async () =>
+			new Response('<html>not json</html>', { status: 200 })) as typeof fetch;
+		const result = await checkDiscoveryDocumentIsHealthy(
+			'https://mcp.example.com',
+			'/.well-known/oauth-authorization-server',
+			fetchStub,
+		);
+		expect(result.problem).not.toBeNull();
+		expect(result.problem).toContain('not valid JSON');
+	});
+
+	it('passes a 2xx response with a valid JSON body', async () => {
+		const fetchStub = (async () =>
+			new Response(JSON.stringify({ issuer: 'https://mcp.example.com' }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			})) as typeof fetch;
+		const result = await checkDiscoveryDocumentIsHealthy(
+			'https://mcp.example.com',
+			'/.well-known/oauth-authorization-server',
+			fetchStub,
+		);
+		expect(result.problem).toBeNull();
+	});
+
+	it('flags a request that fails outright rather than throwing', async () => {
+		const fetchStub = (async () => {
+			throw new Error('network unreachable');
+		}) as typeof fetch;
+		const result = await checkDiscoveryDocumentIsHealthy(
+			'https://mcp.example.com',
+			'/.well-known/oauth-authorization-server',
+			fetchStub,
+		);
 		expect(result.problem).toContain('failed');
 	});
 });

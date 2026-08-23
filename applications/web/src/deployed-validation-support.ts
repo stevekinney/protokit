@@ -190,6 +190,62 @@ export async function checkNoCrossHostRedirect(
 	return { path, requestedUrl, problem: null };
 }
 
+export interface DiscoveryDocumentHealthResult {
+	readonly path: string;
+	readonly requestedUrl: string;
+	readonly problem: string | null;
+}
+
+/**
+ * A review finding (P2): `checkNoCrossHostRedirect` correctly reports "no
+ * problem" for a 404 or 500 -- for its own stated purpose (detecting a
+ * cross-host redirect), neither is a redirect. `deployed-smoke.ts` used to
+ * treat that same "no problem" result as "this discovery document is
+ * healthy," so a 404/500 from `/.well-known/oauth-authorization-server` or
+ * `/.well-known/oauth-protected-resource` logged a pass. This is the
+ * distinct, narrower check that actually confirms a discovery document
+ * itself: a successful, JSON-parseable response, independent of whether it
+ * also happens to redirect cleanly.
+ */
+export async function checkDiscoveryDocumentIsHealthy(
+	baseUrl: string,
+	path: string,
+	fetchImplementation: typeof fetch = fetch,
+): Promise<DiscoveryDocumentHealthResult> {
+	const requestedUrl = new URL(path, baseUrl).toString();
+
+	let response: Response;
+	try {
+		response = await fetchImplementation(requestedUrl, { signal: AbortSignal.timeout(10_000) });
+	} catch (error) {
+		return {
+			path,
+			requestedUrl,
+			problem: `${requestedUrl} discovery-document check failed: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+
+	if (!response.ok) {
+		return {
+			path,
+			requestedUrl,
+			problem: `${requestedUrl} returned HTTP ${response.status}, expected a 2xx response`,
+		};
+	}
+
+	try {
+		await response.json();
+	} catch (error) {
+		return {
+			path,
+			requestedUrl,
+			problem: `${requestedUrl} returned HTTP ${response.status} but the body is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+
+	return { path, requestedUrl, problem: null };
+}
+
 export interface StreamChunkTiming {
 	readonly receivedAtMs: number;
 }

@@ -246,4 +246,42 @@ describe('resolveNetworkIdentity', () => {
 		});
 		expect(identity).toBe('10.0.0.5');
 	});
+
+	it('does not let a Forwarded element without for= shift hop-count positions', () => {
+		// Three comma-delimited elements: a client-forged `for=`, a real
+		// trusted-proxy `for=`, and a trailing `by=` element with no `for=`
+		// at all. With hop count 2, the intended selection is the middle
+		// element (the trusted proxy's own hop). If elements lacking `for=`
+		// were dropped before indexing, the array would collapse to two
+		// entries and hop count 2 would select the client-forged value
+		// instead.
+		const identity = resolveNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ forwarded: 'for=spoofed, for=198.51.100.9, by=proxy1' }),
+			configuration: {
+				...trustedXffConfiguration,
+				trustedProxyHeader: 'forwarded',
+				trustedProxyHopCount: 2,
+			},
+		});
+		expect(identity).toBe('198.51.100.9');
+		expect(identity).not.toBe('spoofed');
+	});
+
+	it('falls back to the trusted socket address when the selected Forwarded hop lacks a for= value', () => {
+		// Hop count 1 selects the last element, which is `by=proxy1` — a
+		// trusted hop that supplied no `for=` value. That must fail closed
+		// to the verified socket address, not silently skip to whichever
+		// element does have a `for=`.
+		const identity = resolveNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ forwarded: 'for=198.51.100.9, by=proxy1' }),
+			configuration: {
+				...trustedXffConfiguration,
+				trustedProxyHeader: 'forwarded',
+				trustedProxyHopCount: 1,
+			},
+		});
+		expect(identity).toBe('10.0.0.5');
+	});
 });

@@ -33,4 +33,25 @@ describe('isExactContentType', () => {
 		joined.append('content-type', 'text/plain');
 		expect(isExactContentType(joined.get('content-type'), 'application/json')).toBe(false);
 	});
+
+	it('rejects a joined header whose FIRST value has a parameter (round-9 review finding)', () => {
+		// Splitting only at the first semicolon before checking for a second
+		// comma-separated value used to yield "application/json" here and
+		// accept it, even though the header actually carries two conflicting
+		// media types once charset is attached to the first one.
+		const joined = new Headers();
+		joined.append('content-type', 'application/json; charset=utf-8');
+		joined.append('content-type', 'text/plain');
+		expect(joined.get('content-type')).toBe('application/json; charset=utf-8, text/plain');
+		expect(isExactContentType(joined.get('content-type'), 'application/json')).toBe(false);
+	});
+
+	it('does not reject a single value whose parameter happens to contain a comma', () => {
+		// A comma inside a quoted parameter value (e.g. a multipart boundary)
+		// is not a second, ambiguous media type -- only a real top-level
+		// comma is.
+		expect(isExactContentType('multipart/form-data; boundary="a,b,c"', 'multipart/form-data')).toBe(
+			true,
+		);
+	});
 });
