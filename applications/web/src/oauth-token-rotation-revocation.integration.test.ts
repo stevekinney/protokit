@@ -95,29 +95,39 @@ const clientBId = `rotation-revocation-test-client-b-${testRunId}`;
 const clientBSecret = 'test-client-b-secret';
 
 beforeAll(async () => {
-	await database.insert(schema.users).values({
-		id: userId,
-		email: `rotation-revocation-test-${testRunId}@example.com`,
-		name: 'Rotation Revocation Test User',
-		image: null,
-		emailVerified: true,
-		role: 'user',
-	});
-	for (const [clientId, clientSecret] of [
-		[clientAId, clientASecret],
-		[clientBId, clientBSecret],
-	] as const) {
-		await database.insert(schema.oauthClients).values({
-			clientId,
-			clientSecret: hashCredential(clientSecret),
-			clientName: `Rotation Revocation Test Client (${clientId})`,
-			clientType: 'confidential',
-			tokenEndpointAuthMethod: 'client_secret_post',
-			redirectUris: ['https://example.com/callback'],
-			grantTypes: ['authorization_code', 'refresh_token'],
-			responseTypes: ['code'],
-		});
-	}
+	// `users` and `oauth_clients` are independent parents here — neither
+	// references the other — and every statement is an HTTP round trip through
+	// the local Neon proxy. Three sequential trips became one wave; on a
+	// continuous-integration runner, which runs this suite several times slower
+	// than a developer machine, those trips are what pushed individual tests
+	// past bun's 5s budget.
+	await Promise.all([
+		database.insert(schema.users).values({
+			id: userId,
+			email: `rotation-revocation-test-${testRunId}@example.com`,
+			name: 'Rotation Revocation Test User',
+			image: null,
+			emailVerified: true,
+			role: 'user',
+		}),
+		...(
+			[
+				[clientAId, clientASecret],
+				[clientBId, clientBSecret],
+			] as const
+		).map(([clientId, clientSecret]) =>
+			database.insert(schema.oauthClients).values({
+				clientId,
+				clientSecret: hashCredential(clientSecret),
+				clientName: `Rotation Revocation Test Client (${clientId})`,
+				clientType: 'confidential',
+				tokenEndpointAuthMethod: 'client_secret_post',
+				redirectUris: ['https://example.com/callback'],
+				grantTypes: ['authorization_code', 'refresh_token'],
+				responseTypes: ['code'],
+			}),
+		),
+	]);
 });
 
 afterAll(async () => {
@@ -130,6 +140,18 @@ afterAll(async () => {
 });
 
 describeWithRedis('client-bound, atomic refresh rotation and revocation (requires Redis)', () => {
+	// Every test in this suite carries an explicit 30s budget rather than bun's
+	// generic 5s default. These are end-to-end flows against the real
+	// dispatcher, real Postgres through the local Neon proxy, and real Redis;
+	// the file averages under two seconds per test here and runs several times
+	// slower on a continuous-integration runner, which put every one of them
+	// near the default line and failed one of them there.
+	//
+	// The work was reduced first — the parent inserts above are one wave rather
+	// than three sequential round trips, and each seeded token pair is one
+	// instead of two. What remains is serial by nature: each step consumes the
+	// previous step's output over HTTP. A genuine hang still fails, at 30s.
+	// This follows the precedent already set for the other end-to-end suites.
 	async function seedTokenPair(
 		handle: TestServerHandle,
 		clientId: string,
@@ -141,24 +163,29 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		const oneHourFromNow = new Date(Date.now() + 60 * 60 * 1000);
 		const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
-		await database.insert(schema.oauthTokens).values({
-			accessToken: hashCredential(accessToken),
-			clientId,
-			userId,
-			scope,
-			resource,
-			expiresAt: oneHourFromNow,
-		});
-		await database.insert(schema.oauthRefreshTokens).values({
-			refreshToken: hashCredential(refreshToken),
-			clientId,
-			userId,
-			scope,
-			resource,
-			accessTokenHash: hashCredential(accessToken),
-			familyId: randomUUID(),
-			expiresAt: thirtyDaysFromNow,
-		});
+		// Both rows depend only on the client and user seeded in `beforeAll`, not
+		// on each other, so they go out together — one round trip instead of two,
+		// per seeded pair, and this helper is called repeatedly.
+		await Promise.all([
+			database.insert(schema.oauthTokens).values({
+				accessToken: hashCredential(accessToken),
+				clientId,
+				userId,
+				scope,
+				resource,
+				expiresAt: oneHourFromNow,
+			}),
+			database.insert(schema.oauthRefreshTokens).values({
+				refreshToken: hashCredential(refreshToken),
+				clientId,
+				userId,
+				scope,
+				resource,
+				accessTokenHash: hashCredential(accessToken),
+				familyId: randomUUID(),
+				expiresAt: thirtyDaysFromNow,
+			}),
+		]);
 
 		return { accessToken, refreshToken, resource };
 	}
@@ -240,7 +267,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			resource,
 		);
 		expect(legitimateResponse.status).toBe(200);
-	});
+	}, 30_000);
 
 	it("one client cannot redeem another client's refresh token, and the victim token survives the attempt", async () => {
 		const handle = startServer();
@@ -269,7 +296,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			resource,
 		);
 		expect(legitimateResponse.status).toBe(200);
-	});
+	}, 30_000);
 
 	it('at most one of two concurrent refresh attempts for the same token succeeds', async () => {
 		const handle = startServer();
@@ -281,7 +308,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		]);
 		const statuses = [first.status, second.status].sort();
 		expect(statuses).toEqual([200, 400]);
-	});
+	}, 30_000);
 
 	// P1 (review round 6): a stolen refresh token submitted concurrently with
 	// its legitimate rotation used to be able to leave the winner's brand-new
@@ -339,7 +366,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// live here even though reuse of the family was detected.
 		const mcpResponse = await callMcpToolsList(handle, winnerBody.access_token);
 		expect(mcpResponse.status).toBe(401);
-	});
+	}, 30_000);
 
 	it('reuse of a rotated refresh token revokes its whole token family', async () => {
 		const handle = startServer();
@@ -383,7 +410,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// ...and its access token can no longer authenticate at /mcp.
 		const mcpResponse = await callMcpToolsList(handle, rotatedBody.access_token);
 		expect(mcpResponse.status).toBe(401);
-	});
+	}, 30_000);
 
 	it('rejecting a refresh-time scope escalation does not consume the refresh token, and a corrected retry still succeeds', async () => {
 		const handle = startServer();
@@ -418,7 +445,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			resource,
 		);
 		expect(retryResponse.status).toBe(200);
-	});
+	}, 30_000);
 
 	// A review finding on `scheduled-cleanup.ts` (P1): a revoked refresh
 	// token used to become eligible for the hourly sweep the instant it
@@ -539,7 +566,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			resource,
 		);
 		expect(descendantRefreshResponse.status).toBe(200);
-	});
+	}, 30_000);
 
 	it("one client cannot revoke another client's token, and the victim token survives the attempt", async () => {
 		const handle = startServer();
@@ -553,7 +580,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 
 		const mcpResponse = await callMcpToolsList(handle, accessToken);
 		expect(mcpResponse.status).not.toBe(401);
-	});
+	}, 30_000);
 
 	it('a client authenticated as its own owner can revoke its own token', async () => {
 		const handle = startServer();
@@ -564,7 +591,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 
 		const mcpResponse = await callMcpToolsList(handle, accessToken);
 		expect(mcpResponse.status).toBe(401);
-	});
+	}, 30_000);
 
 	it('revocation with a wrong client secret is rejected and does not revoke the token', async () => {
 		const handle = startServer();
@@ -575,7 +602,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 
 		const mcpResponse = await callMcpToolsList(handle, accessToken);
 		expect(mcpResponse.status).not.toBe(401);
-	});
+	}, 30_000);
 
 	/**
 	 * A P2 review finding: `handleOauthRevokePostInner`'s refresh-token
@@ -632,7 +659,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// ...and its access token can no longer authenticate at /mcp.
 		const mcpResponse = await callMcpToolsList(handle, rotatedBody.access_token);
 		expect(mcpResponse.status).toBe(401);
-	});
+	}, 30_000);
 
 	it("a different client revoking client A's already-rotated-away refresh token cannot revoke client A's live token family", async () => {
 		const handle = startServer();
@@ -674,5 +701,5 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			resource,
 		);
 		expect(descendantRefreshResponse.status).toBe(200);
-	});
+	}, 30_000);
 });
