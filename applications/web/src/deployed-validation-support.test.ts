@@ -25,6 +25,25 @@ describe('isPubliclyRoutableIpv4', () => {
 	it('rejects a non-IPv4 string outright', () => {
 		expect(isPubliclyRoutableIpv4('not-an-ip')).toBe(false);
 	});
+
+	// Round 13 review finding (P2): the denylist omitted the documentation
+	// (TEST-NET-1/2/3), IETF protocol assignment, 6to4 relay anycast, and
+	// multicast ranges present in the more complete SSRF blocklist this
+	// server already maintains for CIMD fetches
+	// (`client-metadata-documents.ts`'s `blockedIpCidrs`), so a deployment
+	// hostname resolving only to one of these addresses was reported as
+	// publicly routable -- an address no real external client can actually
+	// reach.
+	it('rejects documentation, IETF protocol assignment, 6to4 relay, and multicast ranges', () => {
+		expect(isPubliclyRoutableIpv4('192.0.0.1')).toBe(false);
+		expect(isPubliclyRoutableIpv4('192.0.2.1')).toBe(false);
+		expect(isPubliclyRoutableIpv4('192.88.99.1')).toBe(false);
+		expect(isPubliclyRoutableIpv4('198.51.100.1')).toBe(false);
+		expect(isPubliclyRoutableIpv4('203.0.113.1')).toBe(false);
+		expect(isPubliclyRoutableIpv4('224.0.0.1')).toBe(false);
+		expect(isPubliclyRoutableIpv4('240.0.0.1')).toBe(false);
+		expect(isPubliclyRoutableIpv4('255.255.255.255')).toBe(false);
+	});
 });
 
 describe('isPubliclyRoutableIpv6', () => {

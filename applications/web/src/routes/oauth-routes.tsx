@@ -380,7 +380,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	const resource = context.requestUrl.searchParams.get('resource');
 	const rawScope = context.requestUrl.searchParams.get('scope');
 
-	if (!clientId || !redirectUri || responseType !== 'code' || !codeChallenge) {
+	if (!clientId || !redirectUri || !codeChallenge) {
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
@@ -516,6 +516,32 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
 			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
+		});
+	}
+
+	// RFC 6749 §4.1.2.1: `client_id` and `redirect_uri` are now verified
+	// (client lookup and registered-redirect-URI match above) and `state`
+	// is now bounded (the length-cap check immediately above), so an
+	// unsupported `response_type` is delivered back to the client through
+	// that verified redirect rather than a local error page — the same
+	// rule the scope, response_types, and grant_types checks below already
+	// follow. This must run AFTER the length-cap check, not before it:
+	// `authorizeProtocolErrorRedirect` echoes `state` unbounded into the
+	// `Location` header, and running it before the cap would let an
+	// oversized `state` bypass SEC-004's bound on that parameter. Before
+	// this point (missing `client_id`/`redirect_uri`, an unknown client, an
+	// unregistered redirect URI, or an oversized parameter) the client is
+	// intentionally NOT redirected: RFC 6749 §4.1.2.1 only allows returning
+	// the error to the client if the redirect URI itself is verified, and
+	// redirecting on an unverified URI would let an attacker use this
+	// endpoint as an open redirector.
+	if (responseType !== 'code') {
+		return authorizeProtocolErrorRedirect({
+			redirectUri,
+			error: 'unsupported_response_type',
+			errorDescription: 'Only the "code" response type is supported.',
+			state,
+			issuer,
 		});
 	}
 

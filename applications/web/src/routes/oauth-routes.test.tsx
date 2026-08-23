@@ -1214,6 +1214,39 @@ describe('authorization GET', () => {
 		expect(response.status).toBe(400);
 	});
 
+	it('redirects an unsupported response_type from a known client with a verified redirect URI per RFC 6749 §4.1.2.1', async () => {
+		mockOauthClients = [authorizeClient];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=token&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp&state=xyz',
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('unsupported_response_type');
+		expect(location.searchParams.get('state')).toBe('xyz');
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
+	it('rejects an unsupported response_type with an oversized state locally, never echoing the oversized value into a redirect', async () => {
+		mockOauthClients = [authorizeClient];
+		const oversizedState = 'x'.repeat(600); // oauthMaxStateLength is 512
+		const context = createContext({
+			url: `http://localhost:3000/oauth/authorize?client_id=c1&redirect_uri=https://example.com/cb&response_type=token&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://localhost:3000/mcp&state=${oversizedState}`,
+			method: 'GET',
+			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
+		});
+		const response = await handleOauthAuthorizeGet(context);
+		// The length-cap check must run BEFORE the response_type redirect --
+		// otherwise an oversized state would be echoed unbounded into the
+		// Location header, bypassing SEC-004's bound on this parameter.
+		expect(response.status).toBe(400);
+		expect(response.headers.get('location')).toBeNull();
+		expect(createAuthorizationTransactionCalls).toHaveLength(0);
+	});
+
 	it('rejects response_type=code for a client registered with an empty response_types array', async () => {
 		mockOauthClients = [
 			{

@@ -34,19 +34,36 @@ export async function deleteAsPrimaryKeyBatches(options: {
 }): Promise<{ deleted: number; iterations: number; exhaustedIterationCap: boolean }> {
 	let deleted = 0;
 	let iterationsRun = 0;
+	// Round 13 review finding (P2): a batch shorter than `batchSize` --
+	// including an empty one -- is the table's own proof there is nothing
+	// left matching the `WHERE` predicate right now, regardless of how many
+	// iterations that took to discover. Deriving `exhaustedIterationCap`
+	// from `iterationsRun >= maxIterations` alone conflated that case with
+	// "the cap was hit and MORE rows remain": a final short batch that
+	// happens to land exactly on the last allowed iteration (with the
+	// defaults, whenever the backlog is cleared by a partial twentieth
+	// batch) still made `iterationsRun` equal `maxIterations`, so the old
+	// check reported `exhaustedIterationCap: true` and warned that more
+	// rows remain even though the short batch just proved the table is
+	// fully caught up -- directly contradicted by
+	// `measureBoundedRemainingLag` reporting zero immediately afterward.
+	// Tracked explicitly instead of re-derived from the iteration count.
+	let caughtUp = false;
 	while (iterationsRun < options.maxIterations) {
 		const rows = await options.selectIds(options.batchSize);
 		if (rows.length === 0) {
+			caughtUp = true;
 			break;
 		}
 		const ids = rows.map((row) => row.id);
 		deleted += await options.deleteByIds(ids);
 		iterationsRun += 1;
 		if (rows.length < options.batchSize) {
+			caughtUp = true;
 			break;
 		}
 	}
-	const exhaustedIterationCap = iterationsRun >= options.maxIterations;
+	const exhaustedIterationCap = !caughtUp && iterationsRun >= options.maxIterations;
 	if (exhaustedIterationCap) {
 		// Not a failure -- there is simply more expired data than one sweep's
 		// bound covers. The next scheduled run picks up where this one

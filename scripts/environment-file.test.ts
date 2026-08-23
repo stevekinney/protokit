@@ -222,3 +222,165 @@ describe('rewriting a file with an unquoted inline comment', () => {
 		expect(parsed['GOOGLE_CLIENT_SECRET']).toBe('abc#def');
 	});
 });
+
+/**
+ * Round 13 review finding (P2, `scripts/environment-file.ts:107`): a
+ * Bun-supported multiline quoted value -- a literal newline embedded
+ * between the quotes, written across two physical lines in the file -- was
+ * parsed by splitting the file into physical lines FIRST. The opening
+ * line was read as the complete value (with the stray leading quote
+ * character kept literally, since it never closed on that line), and the
+ * continuation line was left behind as unrelated raw text; any later
+ * rewrite of a DIFFERENT key then serialized the corrupted value
+ * (`CERT="\"line1"`), permanently destroying the certificate on the very
+ * next unrelated rotation.
+ */
+describe('parsing and rewriting a file with a multiline quoted value', () => {
+	let directory: string;
+	let environmentFile: string;
+
+	beforeEach(() => {
+		directory = mkdtempSync(join(tmpdir(), 'protokit-env-multiline-test-'));
+		environmentFile = join(directory, '.env.local');
+	});
+
+	afterEach(() => {
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	test('reads a double-quoted value that spans two physical lines as one value joined by a real newline', () => {
+		const entries = parseEnvironmentEntries('CERT="line1\nline2"\nOTHER=value\n');
+		expect(entries).toEqual([
+			{ key: 'CERT', raw: 'CERT="line1\nline2"', value: 'line1\nline2' },
+			{ key: 'OTHER', raw: 'OTHER=value', value: 'value' },
+		]);
+	});
+
+	test('reads a single-quoted value that spans two physical lines as one value joined by a real newline', () => {
+		const entries = parseEnvironmentEntries("CERT='line1\nline2'\nOTHER=value\n");
+		expect(entries.find((entry) => entry.key === 'CERT')?.value).toBe('line1\nline2');
+	});
+
+	test('a rewrite triggered by an unrelated key does not corrupt a multiline quoted value', () => {
+		writeSecretFileAtomic(environmentFile, 'CERT="line1\nline2"\nOTHER=original\n');
+
+		appendEnvironmentEntryToFile(environmentFile, 'OTHER', 'updated');
+
+		const entries = readEnvironmentEntriesFromFile(environmentFile);
+		// The bug's concrete, observable failure mode: the pre-fix parser
+		// reported CERT as `"line1` (the stray opening quote kept literally)
+		// and re-serialized it as `CERT="\"line1"`, permanently corrupting it.
+		expect(entries['CERT']).toBe('line1\nline2');
+		expect(entries['OTHER']).toBe('updated');
+	});
+
+	test('falls back to reading only the first physical line when the quote never closes, matching a value with no continuation', () => {
+		const entries = parseEnvironmentEntries('CERT="line1\nline2\nOTHER=value\n');
+		const cert = entries.find((entry) => entry.key === 'CERT');
+		expect(cert?.value).toBe('"line1');
+		expect(entries.find((entry) => entry.key === 'OTHER')?.value).toBe('value');
+	});
+
+	test("Bun's own .env loader agrees with what this parser reads for a value spanning two physical lines", async () => {
+		// `.env` (not `.env.local`): Bun skips auto-loading `.env.local`
+		// under `NODE_ENV=test`, which the spawned child below inherits.
+		const dotEnvFile = join(directory, '.env');
+		writeSecretFileAtomic(dotEnvFile, 'CERT="line1\nline2"\n');
+
+		const parsed = readEnvironmentEntriesFromFile(dotEnvFile);
+
+		const proc = Bun.spawn(['bun', '-e', 'console.log(JSON.stringify(process.env["CERT"]))'], {
+			cwd: directory,
+			stdout: 'pipe',
+		});
+		const output = (await new Response(proc.stdout).text()).trim();
+		await proc.exited;
+		expect(JSON.parse(output)).toBe(parsed['CERT']);
+		expect(parsed['CERT']).toBe('line1\nline2');
+	});
+});
+
+/**
+ * Round 13 review finding (P2, `scripts/environment-file.ts:116`): a
+ * Bun-supported `export KEY=value` entry (used, for example, when a
+ * developer sources `.env.local` directly in a shell) was recorded with
+ * the key `export KEY` -- the literal string, `export` and all -- so
+ * `readEnvironmentEntriesFromFile` reported the real key as absent.
+ * `rotate-secret.ts`'s session-key rotation looks up
+ * `SESSION_SIGNING_SECRET` by its exact name before copying it into
+ * `SESSION_SIGNING_SECRET_PREVIOUS`; failing to recognize an `export`-
+ * prefixed entry meant rotation silently generated a new current secret
+ * with no outgoing value to overlap with, invalidating every existing
+ * session and pending OAuth state immediately instead of providing the
+ * promised overlap window.
+ */
+describe('parsing and rewriting a file with an export-prefixed entry', () => {
+	let directory: string;
+	let environmentFile: string;
+
+	beforeEach(() => {
+		directory = mkdtempSync(join(tmpdir(), 'protokit-env-export-test-'));
+		environmentFile = join(directory, '.env.local');
+	});
+
+	afterEach(() => {
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	test('recognizes the key of an export-prefixed entry, not the literal "export KEY" string', () => {
+		const entries = parseEnvironmentEntries('export SESSION_SIGNING_SECRET=abc123\n');
+		expect(entries).toEqual([
+			{
+				key: 'SESSION_SIGNING_SECRET',
+				raw: 'export SESSION_SIGNING_SECRET=abc123',
+				value: 'abc123',
+			},
+		]);
+	});
+
+	test('tolerates multiple spaces or a tab between export and the key', () => {
+		expect(parseEnvironmentEntries('export   SPACED=a\n')[0]?.key).toBe('SPACED');
+		expect(parseEnvironmentEntries('export\tTABBED=b\n')[0]?.key).toBe('TABBED');
+	});
+
+	test('does not strip a literal key named "export" with no following whitespace', () => {
+		expect(parseEnvironmentEntries('export=literal\n')[0]?.key).toBe('export');
+	});
+
+	test('readEnvironmentEntriesFromFile finds an export-prefixed key by its real name', () => {
+		writeSecretFileAtomic(environmentFile, 'export SESSION_SIGNING_SECRET=abc123\n');
+		const entries = readEnvironmentEntriesFromFile(environmentFile);
+		expect(entries['SESSION_SIGNING_SECRET']).toBe('abc123');
+		expect(entries['export SESSION_SIGNING_SECRET']).toBeUndefined();
+	});
+
+	test('a rewrite that updates an export-prefixed key by its real name replaces it correctly', () => {
+		writeSecretFileAtomic(environmentFile, 'export SESSION_SIGNING_SECRET=old\nOTHER=untouched\n');
+
+		appendEnvironmentEntryToFile(environmentFile, 'SESSION_SIGNING_SECRET', 'new-value');
+
+		const entries = readEnvironmentEntriesFromFile(environmentFile);
+		expect(entries['SESSION_SIGNING_SECRET']).toBe('new-value');
+		expect(entries['OTHER']).toBe('untouched');
+		const rewrittenContent = readFileSync(environmentFile, 'utf-8');
+		// Confirms the old `export ...` line was replaced, not left behind
+		// alongside a second, newly appended `SESSION_SIGNING_SECRET=` line.
+		expect(rewrittenContent).not.toContain('export SESSION_SIGNING_SECRET');
+	});
+
+	test("Bun's own .env loader agrees with what this parser reads for an export-prefixed entry", async () => {
+		const dotEnvFile = join(directory, '.env');
+		writeSecretFileAtomic(dotEnvFile, 'export FOO=bar\n');
+
+		const parsed = readEnvironmentEntriesFromFile(dotEnvFile);
+
+		const proc = Bun.spawn(['bun', '-e', 'console.log(JSON.stringify(process.env["FOO"]))'], {
+			cwd: directory,
+			stdout: 'pipe',
+		});
+		const output = (await new Response(proc.stdout).text()).trim();
+		await proc.exited;
+		expect(JSON.parse(output)).toBe(parsed['FOO']);
+		expect(parsed['FOO']).toBe('bar');
+	});
+});

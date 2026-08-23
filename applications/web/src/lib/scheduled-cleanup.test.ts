@@ -86,6 +86,57 @@ describe('deleteAsPrimaryKeyBatches', () => {
 		expect(result.exhaustedIterationCap).toBe(true);
 	});
 
+	// Round 13 review finding (P2): `iterationsRun` reaching `maxIterations`
+	// was previously treated as proof more rows remain, even when the LAST
+	// allowed batch itself was short -- the table's own signal that nothing
+	// is left. With the defaults this happens whenever the backlog is
+	// cleared by a partial final batch that happens to land exactly on the
+	// last allowed iteration.
+	it('does not report exhaustedIterationCap when the final batch, on the last allowed iteration, is short (table is fully caught up)', async () => {
+		// 4 full batches of 5 (iterations 1-4) plus a short 5th batch of 3,
+		// with maxIterations set to exactly 5 -- the short, caught-up batch
+		// lands precisely on the last allowed iteration.
+		const rows = Array.from({ length: 23 }, (_, index) => `row-${index}`);
+
+		const result = await deleteAsPrimaryKeyBatches({
+			label: 'exact-cap-short-batch-table',
+			batchSize: 5,
+			maxIterations: 5,
+			selectIds: async (limit) => rows.slice(0, limit).map((id) => ({ id })),
+			deleteByIds: async (ids) => {
+				for (const id of ids) {
+					const index = rows.indexOf(id);
+					if (index >= 0) rows.splice(index, 1);
+				}
+				return ids.length;
+			},
+		});
+
+		expect(result.iterations).toBe(5);
+		expect(result.deleted).toBe(23);
+		expect(rows).toHaveLength(0);
+		// The table is genuinely fully caught up -- the short final batch
+		// proves it, regardless of iterationsRun equaling maxIterations.
+		expect(result.exhaustedIterationCap).toBe(false);
+	});
+
+	// The genuine-exhaustion case must still be distinguishable: every
+	// batch up to and including the last allowed one is a FULL batch, so
+	// there is no short-batch signal proving the table is caught up.
+	it('still reports exhaustedIterationCap when every batch up to the cap is full (more rows genuinely remain)', async () => {
+		const result = await deleteAsPrimaryKeyBatches({
+			label: 'genuinely-exhausted-table',
+			batchSize: 5,
+			maxIterations: 5,
+			selectIds: async (limit) =>
+				Array.from({ length: limit }, (_, index) => ({ id: `x-${index}` })),
+			deleteByIds: async (ids) => ids.length,
+		});
+
+		expect(result.iterations).toBe(5);
+		expect(result.exhaustedIterationCap).toBe(true);
+	});
+
 	it('is idempotent: a second sweep over an already-clean table deletes nothing', async () => {
 		const first = await deleteAsPrimaryKeyBatches({
 			label: 'test-table',

@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
 
@@ -92,6 +92,20 @@ export type RevocationResult = {
 	consumedAuthorizationCodes: number;
 };
 
+type RevocationRow = {
+	revoked_access_tokens: string;
+	revoked_refresh_tokens: string;
+	consumed_authorization_codes: string;
+};
+
+function revocationResultFromRow(row: RevocationRow | undefined): RevocationResult {
+	return {
+		revokedAccessTokens: Number(row?.revoked_access_tokens ?? '0'),
+		revokedRefreshTokens: Number(row?.revoked_refresh_tokens ?? '0'),
+		consumedAuthorizationCodes: Number(row?.consumed_authorization_codes ?? '0'),
+	};
+}
+
 /**
  * Revokes every live access and refresh token this user has issued to one
  * client, and consumes every outstanding (not yet redeemed, not yet
@@ -118,86 +132,85 @@ export type RevocationResult = {
  * request, not the minutes-wide code-redemption hole this fix closes.
  * Flagged here, not silently left unmentioned, for whoever next hardens
  * consent revocation with a real grant-level flag.
+ *
+ * Round 13 review (P2): the previous implementation issued these as three
+ * separate `UPDATE` statements. `neon-http` has no multi-statement
+ * transaction support (the same limitation `account-deletion.ts` documents
+ * for `deleteUserAccount`/`deleteOauthClient`), so a transient failure
+ * after the access-token `UPDATE` committed but before the refresh-token
+ * `UPDATE` ran left the still-live refresh token able to immediately mint a
+ * replacement access token — the exact live-access-outliving-revocation gap
+ * this function exists to close. Folded into the same single `WITH`
+ * (CTE) statement construction `account-deletion.ts` already established
+ * for this driver: each mutation is still its own CTE with its own
+ * `RETURNING`, so every count is a real, self-observed row count, and the
+ * three `UPDATE`s are one Postgres statement, so they either all commit or
+ * none do — no transaction API required.
  */
 export async function revokeUserClientGrant(
 	userId: string,
 	clientId: string,
 ): Promise<RevocationResult> {
-	const revokedAccessTokens = await database
-		.update(schema.oauthTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthTokens.userId, userId),
-				eq(schema.oauthTokens.clientId, clientId),
-				isNull(schema.oauthTokens.revokedAt),
+	const { rows } = await database.execute<RevocationRow>(sql`
+		WITH
+			revoked_access_tokens AS (
+				UPDATE oauth_tokens
+				SET revoked_at = now()
+				WHERE user_id = ${userId} AND client_id = ${clientId} AND revoked_at IS NULL
+				RETURNING access_token
 			),
-		)
-		.returning({ accessToken: schema.oauthTokens.accessToken });
-
-	const revokedRefreshTokens = await database
-		.update(schema.oauthRefreshTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthRefreshTokens.userId, userId),
-				eq(schema.oauthRefreshTokens.clientId, clientId),
-				isNull(schema.oauthRefreshTokens.revokedAt),
+			revoked_refresh_tokens AS (
+				UPDATE oauth_refresh_tokens
+				SET revoked_at = now()
+				WHERE user_id = ${userId} AND client_id = ${clientId} AND revoked_at IS NULL
+				RETURNING refresh_token
 			),
-		)
-		.returning({ refreshToken: schema.oauthRefreshTokens.refreshToken });
+			consumed_authorization_codes AS (
+				UPDATE oauth_codes
+				SET used_at = now()
+				WHERE user_id = ${userId} AND client_id = ${clientId} AND used_at IS NULL
+				RETURNING code
+			)
+		SELECT
+			(SELECT count(*) FROM revoked_access_tokens)::text AS revoked_access_tokens,
+			(SELECT count(*) FROM revoked_refresh_tokens)::text AS revoked_refresh_tokens,
+			(SELECT count(*) FROM consumed_authorization_codes)::text AS consumed_authorization_codes
+	`);
 
-	const consumedAuthorizationCodes = await database
-		.update(schema.oauthCodes)
-		.set({ usedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthCodes.userId, userId),
-				eq(schema.oauthCodes.clientId, clientId),
-				isNull(schema.oauthCodes.usedAt),
-			),
-		)
-		.returning({ code: schema.oauthCodes.code });
-
-	const result = {
-		revokedAccessTokens: revokedAccessTokens.length,
-		revokedRefreshTokens: revokedRefreshTokens.length,
-		consumedAuthorizationCodes: consumedAuthorizationCodes.length,
-	};
+	const result = revocationResultFromRow(rows[0]);
 	consentLogger.info({ userId, clientId, ...result }, 'User revoked one client connection');
 	return result;
 }
 
-/** The revoke-all half of the same acceptance criterion — every client this user has ever granted access to, revoked in one action. See `revokeUserClientGrant`'s comment for the authorization-code-consumption rationale and this fix's stated scope boundary; identical here, just unfiltered by `clientId`. */
+/** The revoke-all half of the same acceptance criterion — every client this user has ever granted access to, revoked in one action. See `revokeUserClientGrant`'s comment for the authorization-code-consumption rationale, the atomic single-statement construction, and this fix's stated scope boundary; identical here, just unfiltered by `clientId`. */
 export async function revokeAllUserGrants(userId: string): Promise<RevocationResult> {
-	const revokedAccessTokens = await database
-		.update(schema.oauthTokens)
-		.set({ revokedAt: new Date() })
-		.where(and(eq(schema.oauthTokens.userId, userId), isNull(schema.oauthTokens.revokedAt)))
-		.returning({ accessToken: schema.oauthTokens.accessToken });
-
-	const revokedRefreshTokens = await database
-		.update(schema.oauthRefreshTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthRefreshTokens.userId, userId),
-				isNull(schema.oauthRefreshTokens.revokedAt),
+	const { rows } = await database.execute<RevocationRow>(sql`
+		WITH
+			revoked_access_tokens AS (
+				UPDATE oauth_tokens
+				SET revoked_at = now()
+				WHERE user_id = ${userId} AND revoked_at IS NULL
+				RETURNING access_token
 			),
-		)
-		.returning({ refreshToken: schema.oauthRefreshTokens.refreshToken });
+			revoked_refresh_tokens AS (
+				UPDATE oauth_refresh_tokens
+				SET revoked_at = now()
+				WHERE user_id = ${userId} AND revoked_at IS NULL
+				RETURNING refresh_token
+			),
+			consumed_authorization_codes AS (
+				UPDATE oauth_codes
+				SET used_at = now()
+				WHERE user_id = ${userId} AND used_at IS NULL
+				RETURNING code
+			)
+		SELECT
+			(SELECT count(*) FROM revoked_access_tokens)::text AS revoked_access_tokens,
+			(SELECT count(*) FROM revoked_refresh_tokens)::text AS revoked_refresh_tokens,
+			(SELECT count(*) FROM consumed_authorization_codes)::text AS consumed_authorization_codes
+	`);
 
-	const consumedAuthorizationCodes = await database
-		.update(schema.oauthCodes)
-		.set({ usedAt: new Date() })
-		.where(and(eq(schema.oauthCodes.userId, userId), isNull(schema.oauthCodes.usedAt)))
-		.returning({ code: schema.oauthCodes.code });
-
-	const result = {
-		revokedAccessTokens: revokedAccessTokens.length,
-		revokedRefreshTokens: revokedRefreshTokens.length,
-		consumedAuthorizationCodes: consumedAuthorizationCodes.length,
-	};
+	const result = revocationResultFromRow(rows[0]);
 	consentLogger.info({ userId, ...result }, 'User revoked all client connections');
 	return result;
 }

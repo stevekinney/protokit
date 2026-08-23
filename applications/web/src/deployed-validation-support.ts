@@ -28,12 +28,22 @@ const PRIVATE_IPV4_RANGES: ReadonlyArray<{ start: number; end: number }> = [
 	{ start: ipv4ToInt('169.254.0.0'), end: ipv4ToInt('169.254.255.255') },
 	// 172.16.0.0/12
 	{ start: ipv4ToInt('172.16.0.0'), end: ipv4ToInt('172.31.255.255') },
+	// 192.0.0.0/24 (IETF protocol assignments)
+	{ start: ipv4ToInt('192.0.0.0'), end: ipv4ToInt('192.0.0.255') },
+	// 192.0.2.0/24 (documentation, TEST-NET-1)
+	{ start: ipv4ToInt('192.0.2.0'), end: ipv4ToInt('192.0.2.255') },
+	// 192.88.99.0/24 (6to4 relay anycast)
+	{ start: ipv4ToInt('192.88.99.0'), end: ipv4ToInt('192.88.99.255') },
 	// 192.168.0.0/16
 	{ start: ipv4ToInt('192.168.0.0'), end: ipv4ToInt('192.168.255.255') },
 	// 198.18.0.0/15 (benchmarking)
 	{ start: ipv4ToInt('198.18.0.0'), end: ipv4ToInt('198.19.255.255') },
-	// 240.0.0.0/4 (reserved) + 255.255.255.255 (broadcast)
-	{ start: ipv4ToInt('240.0.0.0'), end: ipv4ToInt('255.255.255.255') },
+	// 198.51.100.0/24 (documentation, TEST-NET-2)
+	{ start: ipv4ToInt('198.51.100.0'), end: ipv4ToInt('198.51.100.255') },
+	// 203.0.113.0/24 (documentation, TEST-NET-3)
+	{ start: ipv4ToInt('203.0.113.0'), end: ipv4ToInt('203.0.113.255') },
+	// 224.0.0.0/4 (multicast) through 240.0.0.0/4 (reserved) + 255.255.255.255 (broadcast)
+	{ start: ipv4ToInt('224.0.0.0'), end: ipv4ToInt('255.255.255.255') },
 ];
 
 function ipv4ToInt(address: string): number {

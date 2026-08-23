@@ -1,3 +1,4 @@
+import { createServer } from 'node:net';
 import { commandExists } from './utilities.ts';
 
 const ANSI_CYAN = '\x1b[36m';
@@ -170,6 +171,34 @@ async function pollUntilReady(
 }
 
 /**
+ * Round 13 review finding (P1): `startTunnel` used to run unconditionally
+ * before the dev server was ever spawned. If another, unrelated process was
+ * already listening on port 3000 (a leftover server, a different project),
+ * cloudflared opened a public tunnel to THAT process before this script's
+ * own dev server ever started; the dev server's own `bun turbo dev` then
+ * failed to bind the already-occupied port, but `pollUntilReady` accepts
+ * any HTTP response from `http://localhost:3000` regardless of which
+ * process answered it, so the orchestration proceeded as if the tunnel
+ * were exposing the intended server -- potentially leaving someone else's
+ * local service publicly reachable indefinitely. Checked directly before
+ * `startTunnel` runs (not after, and not by trying to "authenticate" the
+ * readiness response, which the reviewer's own finding offers as an
+ * alternative but which cannot distinguish "the real dev server, freshly
+ * started" from "a different, unrelated service that happens to answer
+ * HTTP requests the same way").
+ */
+export function isLocalPortInUse(port: number, hostname = '127.0.0.1'): Promise<boolean> {
+	return new Promise((resolve) => {
+		const server = createServer();
+		server.once('error', () => resolve(true));
+		server.once('listening', () => {
+			server.close(() => resolve(false));
+		});
+		server.listen(port, hostname);
+	});
+}
+
+/**
  * Spawns the cloudflared tunnel using the locally installed binary that `commandExists('cloudflared')`
  * already verified — not `bunx cloudflared`, which resolves and runs an unpinned npm package
  * regardless of what is actually installed on PATH, defeating the point of checking for a
@@ -289,6 +318,16 @@ async function main(): Promise<void> {
 	// resource audience (see `buildDevelopmentServerEnvironment` above).
 	let resolvedTunnelUrl: string | undefined;
 	if (tunnelEnabled) {
+		// Refuse to open a public tunnel to whatever is already listening on
+		// port 3000 -- see `isLocalPortInUse`'s doc comment.
+		if (await isLocalPortInUse(3000)) {
+			write(
+				`${ANSI_BOLD}Error:${ANSI_RESET} Port 3000 is already in use by another process. ` +
+					'Refusing to start a public tunnel to it -- stop whatever is running on port 3000 first.\n',
+			);
+			process.exit(1);
+		}
+
 		// `startTunnel` registers its process into `childProcesses` itself, immediately after
 		// spawning -- see the comment there. No push needed here.
 		const tunnel = await startTunnel();

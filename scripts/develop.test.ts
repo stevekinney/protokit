@@ -1,9 +1,11 @@
+import { createServer } from 'node:net';
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
 	buildDevelopmentServerEnvironment,
 	childProcesses,
 	exposedRoutes,
 	formatExposedRoutesBanner,
+	isLocalPortInUse,
 	type ManagedChildProcess,
 	parseTunnelUrl,
 	resetChildProcessesForTesting,
@@ -23,6 +25,50 @@ describe('shouldEnableTunnel', () => {
 
 	it('is true with --tunnel', () => {
 		expect(shouldEnableTunnel(['bun', 'scripts/develop.ts', '--tunnel'])).toBe(true);
+	});
+});
+
+/**
+ * Round 13 review finding (P1, `scripts/develop.ts:205`): before this
+ * check existed, `--tunnel` opened a public cloudflared tunnel to
+ * `http://localhost:3000` unconditionally, before the dev server was ever
+ * spawned. If another, unrelated process was already listening on port
+ * 3000, the tunnel exposed THAT process to the public internet instead --
+ * `pollUntilReady` accepts any HTTP response regardless of which process
+ * answered it, so nothing downstream would have noticed.
+ */
+describe('isLocalPortInUse', () => {
+	it('reports a genuinely free port as not in use', async () => {
+		// Bind to port 0 first to get an ephemeral port the OS confirms is
+		// free, then close it and check the same number -- avoids a flaky
+		// hardcoded port number colliding with something else on this
+		// machine or in CI.
+		const probe = createServer();
+		const freePort = await new Promise<number>((resolve) => {
+			probe.listen(0, '127.0.0.1', () => {
+				const address = probe.address();
+				resolve(typeof address === 'object' && address ? address.port : 0);
+			});
+		});
+		await new Promise<void>((resolve) => probe.close(() => resolve()));
+
+		expect(await isLocalPortInUse(freePort)).toBe(false);
+	});
+
+	it('reports a port with an active listener as in use', async () => {
+		const server = createServer();
+		const port = await new Promise<number>((resolve) => {
+			server.listen(0, '127.0.0.1', () => {
+				const address = server.address();
+				resolve(typeof address === 'object' && address ? address.port : 0);
+			});
+		});
+
+		try {
+			expect(await isLocalPortInUse(port)).toBe(true);
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
 	});
 });
 

@@ -102,21 +102,125 @@ export interface ParsedEnvironmentEntry {
 	value?: string;
 }
 
-export function parseEnvironmentEntries(content: string): ParsedEnvironmentEntry[] {
-	const lines = content.replace(/\r\n?/g, '\n').split('\n');
-	if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+/**
+ * Round 13 review finding (P2): a Bun-supported `export KEY=value` entry
+ * (Bun strips a leading `export` token followed by whitespace before
+ * looking for the `=`, confirmed directly against `bun -e
+ * 'console.log(process.env.KEY)'`) was previously recorded with the key
+ * `export KEY` -- the literal string, `export` and all -- so every reader
+ * of `readEnvironmentEntriesFromFile` (including `rotate-secret.ts`'s
+ * session-key rotation, which looks up `SESSION_SIGNING_SECRET` by that
+ * exact name) reported the real key as absent. A bare `export` with no
+ * following whitespace before `=` (e.g. a literal key named `export`) is
+ * NOT stripped, matching the same empirical Bun behavior.
+ */
+function stripExportPrefix(key: string): string {
+	return key.replace(/^export\s+/, '');
+}
 
-	return lines.map((rawLine) => {
-		const line = rawLine.trim();
-		if (!line || line.startsWith('#') || !line.includes('=')) {
-			return { key: undefined, raw: rawLine };
+/**
+ * Round 13 review finding (P2): a Bun-supported multiline quoted value (a
+ * literal newline embedded between the quotes, e.g. `CERT="line1\nline2"`
+ * written across two physical lines in the file) was previously parsed by
+ * splitting the file into physical lines FIRST and parsing each
+ * independently -- the opening line was parsed as the complete value (with
+ * the stray leading quote character kept literally, since the value never
+ * closed on that line), and the continuation line was left behind as
+ * unrelated raw text, corrupting the value on the very next rewrite.
+ * Confirmed empirically against Bun's own `.env` loader: a value that
+ * opens with a quote and closes on a LATER physical line joins with a real
+ * `\n` between the lines, exactly like the same escape sequence written on
+ * one line; a value that never finds a closing quote anywhere before end
+ * of file falls back to exactly today's single-physical-line behavior.
+ * This finds the matching closing quote across as many physical lines as
+ * it takes (or reports none found), using the same escape rule
+ * `decodeEnvironmentValue` already applies for a same-line double-quoted
+ * value -- `\\` and `\"` do not close it.
+ */
+function findClosingQuoteIndex(text: string, openIndex: number, quoteChar: string): number | null {
+	let index = openIndex + 1;
+	while (index < text.length) {
+		const char = text[index];
+		if (quoteChar === '"' && char === '\\' && index + 1 < text.length) {
+			const next = text[index + 1];
+			if (next === 'n' || next === 'r' || next === '"' || next === '\\') {
+				index += 2;
+				continue;
+			}
 		}
+		if (char === quoteChar) return index;
+		index++;
+	}
+	return null;
+}
+
+export function parseEnvironmentEntries(content: string): ParsedEnvironmentEntry[] {
+	const normalized = content.replace(/\r\n?/g, '\n');
+	const length = normalized.length;
+	const entries: ParsedEnvironmentEntry[] = [];
+	let cursor = 0;
+
+	// Mirrors the old `lines.pop()` on a trailing empty logical line: a file
+	// ending in a newline has no further content to emit.
+	while (cursor < length) {
+		const newlineIndex = normalized.indexOf('\n', cursor);
+		const lineEnd = newlineIndex === -1 ? length : newlineIndex;
+		const rawLine = normalized.slice(cursor, lineEnd);
+		const line = rawLine.trim();
+
+		if (!line || line.startsWith('#') || !line.includes('=')) {
+			entries.push({ key: undefined, raw: rawLine });
+			cursor = lineEnd + 1;
+			continue;
+		}
+
 		const separatorIndex = line.indexOf('=');
-		const key = line.slice(0, separatorIndex).trim();
-		const rawValue = line.slice(separatorIndex + 1);
-		if (!key) return { key: undefined, raw: rawLine };
-		return { key, raw: rawLine, value: decodeEnvironmentValue(rawValue) };
-	});
+		const key = stripExportPrefix(line.slice(0, separatorIndex).trim());
+		const rawValueFirstLine = line.slice(separatorIndex + 1);
+
+		if (!key) {
+			entries.push({ key: undefined, raw: rawLine });
+			cursor = lineEnd + 1;
+			continue;
+		}
+
+		const trimmedValueStart = rawValueFirstLine.trimStart();
+		const quoteChar = trimmedValueStart.startsWith('"')
+			? '"'
+			: trimmedValueStart.startsWith("'")
+				? "'"
+				: null;
+
+		if (quoteChar) {
+			const equalsIndexInRawLine = rawLine.indexOf('=');
+			let openQuoteIndex = cursor + equalsIndexInRawLine + 1;
+			while (
+				openQuoteIndex < lineEnd &&
+				(normalized[openQuoteIndex] === ' ' || normalized[openQuoteIndex] === '\t')
+			) {
+				openQuoteIndex++;
+			}
+
+			const closingQuoteIndex = findClosingQuoteIndex(normalized, openQuoteIndex, quoteChar);
+			if (closingQuoteIndex !== null && closingQuoteIndex >= lineEnd) {
+				const closingLineNewline = normalized.indexOf('\n', closingQuoteIndex);
+				const logicalLineEnd = closingLineNewline === -1 ? length : closingLineNewline;
+				const rawValueLogical = normalized.slice(cursor + equalsIndexInRawLine + 1, logicalLineEnd);
+				entries.push({
+					key,
+					raw: normalized.slice(cursor, logicalLineEnd),
+					value: decodeEnvironmentValue(rawValueLogical),
+				});
+				cursor = logicalLineEnd + 1;
+				continue;
+			}
+		}
+
+		entries.push({ key, raw: rawLine, value: decodeEnvironmentValue(rawValueFirstLine) });
+		cursor = lineEnd + 1;
+	}
+
+	return entries;
 }
 
 export function serializeEnvironmentEntries(entries: ParsedEnvironmentEntry[]): string {
