@@ -54,7 +54,27 @@ export function decodeEnvironmentValue(raw: string): string {
 		}
 		return result;
 	}
-	return trimmed;
+
+	// P2 review finding: an unquoted value like `PORT=3000 # local` was
+	// previously returned verbatim as `3000 # local` -- the comment became
+	// part of the runtime value, and re-serializing this entry then quoted
+	// it (`PORT="3000 # local"`), permanently baking the comment text into
+	// the value on the very first rewrite. Dotenv-style parsers treat an
+	// unquoted `#` as starting a comment that runs to end of line,
+	// regardless of whether it's preceded by whitespace -- confirmed
+	// directly against Bun's own `.env` loader, which this repository's
+	// runtime already uses to populate `process.env` from `.env.local`:
+	// `A=value#nocomment` -> `"value"`, `PORT=3000 # local` -> `"3000"`,
+	// `D=#leadinghash` -> `""`. Only a *quoted* value (handled above) may
+	// contain a literal `#`. No escape sequence lets an unquoted value
+	// contain a literal `#` either, matching that same observed behavior
+	// (`val\#ue` truncates at `#`, the same as an unescaped one) -- a
+	// value that needs a literal `#` must be quoted, which
+	// `encodeEnvironmentValue` already does automatically on the next
+	// write.
+	const commentIndex = trimmed.indexOf('#');
+	const withoutComment = commentIndex === -1 ? trimmed : trimmed.slice(0, commentIndex);
+	return withoutComment.trimEnd();
 }
 
 export interface ParsedEnvironmentEntry {

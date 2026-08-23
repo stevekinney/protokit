@@ -5,6 +5,7 @@ import {
 	checkBearerCredential,
 	isPlaintextTransport,
 } from '@web/lib/bearer-credential-authentication';
+import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceMetricsRateLimit } from '@web/lib/request-rate-limiter';
@@ -25,6 +26,8 @@ export async function handleMetricsGet(context: RequestContext): Promise<Respons
 		isPlaintextTransport({
 			request: context.request,
 			isProduction: environment.NODE_ENV === 'production',
+			socketAddress: context.clientAddress,
+			trustedProxyConfiguration: getTrustedProxyConfiguration(),
 		})
 	) {
 		return jsonResponse(

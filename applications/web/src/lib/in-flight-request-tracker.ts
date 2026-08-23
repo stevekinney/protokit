@@ -32,7 +32,60 @@
  * streaming responses instead of ordinary ones. Fixed by tracking a
  * `Response`'s body stream to its actual completion (natural close,
  * cancellation, or error) rather than the promise that produced it.
+ *
+ * A second review finding (P1), on top of the first fix: a
+ * `subscriptions/listen` stream's body only ever settles one of three
+ * ways -- the client disconnects, the SDK's own subscription cap evicts
+ * it, or this process calls `shutdownMcpTransports()`. During graceful
+ * shutdown, that third path is gated behind `drain()` finishing first (see
+ * `server.ts`), so counting such a stream toward `activeCount` made
+ * `drain()` wait on something only the code AFTER `drain()` can ever
+ * release -- bounded by `drain()`'s own timeout, so not a true infinite
+ * hang, but every graceful shutdown with an open listen stream burned its
+ * *entire* drain budget waiting on nothing, leaving no time for the
+ * transport/Redis cleanup that budget exists to protect, and the client
+ * still saw the abrupt disconnect this tracker was built to prevent --
+ * just delayed by up to the full budget instead of happening instantly.
+ * `markAsServerOnlyCloseableStream` lets a caller (`mcp-handler.ts`, for
+ * exactly this one response shape) opt a `Response` out of blocking
+ * `drain()` while still tracking it structurally the same way -- the one
+ * deliberate exception to "no special-cased 'is this streaming' branch"
+ * below, because this is not a "how do we detect streaming" branch, it is
+ * a "can anything other than our own later shutdown code ever finish
+ * this" branch.
  */
+
+/**
+ * Marks a `Response` whose body can only be closed by this process's own
+ * explicit transport-shutdown call, never by anything `drain()` waiting
+ * longer could hasten. See the module comment above for why counting it
+ * toward `activeCount` created a self-referential wait.
+ *
+ * A header, not a non-enumerable object property: confirmed empirically
+ * that `mcp-routes.ts` reconstructs the `Response` at least once between
+ * `mcp-handler.ts` marking it and `server.ts`'s `track()` ever seeing it
+ * (`attachConcurrencySlotToResponseLifetime`'s own body-lifetime wrapper
+ * builds a fresh `new Response(trackedBody, { headers: response.headers,
+ * ... })`) -- a property set directly on the `Response` instance does not
+ * survive that reconstruction, but `headers` is threaded through every
+ * such rebuild in this codebase, so a header does. `track()` strips this
+ * header from the final `Response` before it can ever reach Bun's actual
+ * HTTP output, so it never becomes client-observable.
+ */
+const serverOnlyCloseableStreamHeader = 'x-protokit-internal-server-only-closeable-stream';
+
+export function markAsServerOnlyCloseableStream(response: Response): Response {
+	response.headers.set(serverOnlyCloseableStreamHeader, '1');
+	return response;
+}
+
+function isServerOnlyCloseableStream(response: Response): boolean {
+	return response.headers.has(serverOnlyCloseableStreamHeader);
+}
+
+function stripServerOnlyCloseableStreamHeader(response: Response): void {
+	response.headers.delete(serverOnlyCloseableStreamHeader);
+}
 
 /**
  * Wraps a `Response`'s body so `onBodySettled` fires once the stream is
@@ -106,6 +159,11 @@ export function createInFlightRequestTracker() {
 		 * actually finishes -- not merely until the `Response` was returned
 		 * -- so a long-lived SSE stream keeps `drain()` waiting for as long
 		 * as it stays open.
+		 *
+		 * Exception: a `Response` marked with `markAsServerOnlyCloseableStream`
+		 * is decremented immediately instead, the same as a non-streaming
+		 * result. See the module comment for why -- waiting on it would be
+		 * waiting on a call that only happens after this wait is over.
 		 */
 		async track<T>(handle: () => Promise<T>): Promise<T> {
 			activeCount++;
@@ -113,6 +171,10 @@ export function createInFlightRequestTracker() {
 			try {
 				const result = await handle();
 				if (result instanceof Response) {
+					if (isServerOnlyCloseableStream(result)) {
+						stripServerOnlyCloseableStreamHeader(result);
+						return result;
+					}
 					bodyTrackingStarted = true;
 					return trackResponseBody(result, () => {
 						activeCount--;

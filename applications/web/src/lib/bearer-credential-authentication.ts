@@ -1,4 +1,6 @@
+import { canonicalizeIpAddress } from '@web/lib/canonicalize-ip-address';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
+import { isSocketPeerTrusted, type TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
 
 /**
  * OPS-002 / S-15: shared bearer-credential check for `/metrics` and
@@ -36,25 +38,58 @@ export function checkBearerCredential(input: {
 
 /**
  * OPS-002: refuses a credential-bearing request sent over plaintext HTTP in
- * production. Trusts `X-Forwarded-Proto` rather than requiring its own
- * trusted-proxy CIDR configuration (unlike `request-client-identifier.ts`,
- * which must resolve a real client *identity* an attacker could spoof to
- * evade a rate limit or impersonate another caller) — spoofing this header
- * gains an attacker nothing: the bearer credential is still checked
- * unconditionally afterward, and the only thing a forged "https" value can
- * do is let a request that is *actually* plaintext skip a warning-shaped
- * guard whose entire purpose is protecting the credential the caller who
- * sent it already possesses. Skipped outside production because local/dev
+ * production. `X-Forwarded-Proto` is honored only when the immediate
+ * socket peer is a configured trusted proxy (`TRUSTED_PROXY_CIDRS`, the
+ * same mechanism `request-client-identifier.ts` uses for client identity),
+ * never unconditionally.
+ *
+ * A P2 review finding, and a correction to an earlier round's dismissal of
+ * the same finding: the earlier reasoning was that a forged header
+ * "exposes nothing new" because the credential the header spoof accompanies
+ * is already the sender's own, already sent in the clear on their own
+ * connection. That much is still true -- this check cannot let one caller
+ * steal another caller's credential. What that reasoning missed is that
+ * `TRUSTED_PROXY_CIDRS`/`TRUSTED_PROXY_HEADER` (added by `SEC-003`, and
+ * REQUIRED in production by `assertProductionStartupInvariants`) already
+ * give this codebase a real way to know "this specific forwarded-\* header
+ * came from a reverse proxy I actually operate," not merely "some caller
+ * chose to send it." Trusting `X-Forwarded-Proto` unconditionally meant an
+ * on-path attacker who downgrades a genuine caller's TLS connection to
+ * plaintext (or anyone who can simply reach this origin directly) could
+ * also forge `https` on that same request, defeating the one signal this
+ * check exists to produce -- "was this transport actually secure" -- in
+ * exactly the direct-origin/misconfigured-proxy scenario the check is
+ * supposed to catch. Reusing the already-required trusted-proxy
+ * configuration costs nothing new operationally (every real production
+ * deployment already configures it) and makes the header trustworthy only
+ * when it actually can be. Skipped outside production because local/dev
  * traffic is routinely plain HTTP on loopback, same reasoning as HSTS in
  * `application.tsx`.
  */
-export function isPlaintextTransport(input: { request: Request; isProduction: boolean }): boolean {
+export function isPlaintextTransport(input: {
+	request: Request;
+	isProduction: boolean;
+	socketAddress: string | undefined;
+	trustedProxyConfiguration: TrustedProxyConfiguration;
+}): boolean {
 	if (!input.isProduction) return false;
 
 	const forwardedProto = input.request.headers.get('x-forwarded-proto');
-	if (forwardedProto) {
+	if (forwardedProto && isForwardedProtoTrustworthy(input)) {
 		return forwardedProto.toLowerCase() !== 'https';
 	}
 
 	return new URL(input.request.url).protocol !== 'https:';
+}
+
+function isForwardedProtoTrustworthy(input: {
+	socketAddress: string | undefined;
+	trustedProxyConfiguration: TrustedProxyConfiguration;
+}): boolean {
+	if (!input.socketAddress) return false;
+	if (input.trustedProxyConfiguration.trustedProxyCidrs.length === 0) return false;
+	return isSocketPeerTrusted(
+		canonicalizeIpAddress(input.socketAddress),
+		input.trustedProxyConfiguration,
+	);
 }

@@ -89,7 +89,17 @@ export function isValidCidr(cidr: string): boolean {
 	return parseCidr(cidr) !== null;
 }
 
-function isSocketPeerTrusted(
+/**
+ * Whether the immediate socket peer is one of the configured trusted
+ * proxies -- exported so any caller that needs to decide "can I trust a
+ * self-reported header from whoever is directly connected to me" can reuse
+ * this exact check, rather than re-deriving it (see
+ * `bearer-credential-authentication.ts`'s `isPlaintextTransport`, which
+ * uses this to decide whether `X-Forwarded-Proto` is trustworthy, the same
+ * way `resolveNetworkIdentity` below uses it to decide whether a
+ * forwarded-for-style header is).
+ */
+export function isSocketPeerTrusted(
 	canonicalSocketAddress: string,
 	configuration: TrustedProxyConfiguration,
 ): boolean {

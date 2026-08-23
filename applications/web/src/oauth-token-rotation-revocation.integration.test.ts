@@ -576,4 +576,103 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		const mcpResponse = await callMcpToolsList(handle, accessToken);
 		expect(mcpResponse.status).not.toBe(401);
 	});
+
+	/**
+	 * A P2 review finding: `handleOauthRevokePostInner`'s refresh-token
+	 * predicate excluded an already-revoked row, so revoking an
+	 * already-rotated refresh token matched nothing and fell straight
+	 * through to the generic RFC 7009 200 -- without ever consulting
+	 * `familyId`, leaving the live descendant refresh and access tokens
+	 * usable despite the explicit revocation request. This is the same
+	 * reuse signal the refresh grant's own replay detection already treats
+	 * as family compromise (see "reuse of a rotated refresh token revokes
+	 * its whole token family" above); this endpoint must not offer a way
+	 * to dodge that defense.
+	 */
+	it('revoking an already-rotated refresh token revokes its whole token family, and still returns 200', async () => {
+		const handle = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(handle, clientAId);
+
+		const rotateResponse = await refreshRequest(
+			handle,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(rotateResponse.status).toBe(200);
+		const rotatedBody = (await rotateResponse.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
+
+		// Revoke the now-dead original refresh token instead of replaying it
+		// through /oauth/token.
+		const revokeResponse = await revokeRequest(
+			handle,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+		);
+		// RFC 7009 §2.2: still an unconditional 200 -- reuse detection must
+		// not change what this endpoint reveals to the caller.
+		expect(revokeResponse.status).toBe(200);
+
+		// The family -- including the live descendant the rotation above
+		// produced -- must now be dead: it can no longer rotate...
+		const descendantRefreshResponse = await refreshRequest(
+			handle,
+			rotatedBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(descendantRefreshResponse.status).toBe(400);
+
+		// ...and its access token can no longer authenticate at /mcp.
+		const mcpResponse = await callMcpToolsList(handle, rotatedBody.access_token);
+		expect(mcpResponse.status).toBe(401);
+	});
+
+	it("a different client revoking client A's already-rotated-away refresh token cannot revoke client A's live token family", async () => {
+		const handle = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(handle, clientAId);
+
+		const rotateResponse = await refreshRequest(
+			handle,
+			originalRefreshToken,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(rotateResponse.status).toBe(200);
+		const rotatedBody = (await rotateResponse.json()) as {
+			access_token: string;
+			refresh_token: string;
+		};
+
+		// Client B -- with no relationship to client A's family -- revokes
+		// client A's now-dead original refresh token value under its own
+		// credentials. Must not be treated as a replay of client B's own
+		// (nonexistent) family: client A's live descendant must survive.
+		const crossClientRevoke = await revokeRequest(
+			handle,
+			originalRefreshToken,
+			clientBId,
+			clientBSecret,
+		);
+		expect(crossClientRevoke.status).toBe(200);
+
+		const mcpResponse = await callMcpToolsList(handle, rotatedBody.access_token);
+		expect(mcpResponse.status).not.toBe(401);
+
+		const descendantRefreshResponse = await refreshRequest(
+			handle,
+			rotatedBody.refresh_token,
+			clientAId,
+			clientASecret,
+			resource,
+		);
+		expect(descendantRefreshResponse.status).toBe(200);
+	});
 });

@@ -1820,6 +1820,54 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 			metricsCollector.recordEvent('revocation', 'refresh_token_revoked');
 			return new Response(null, { status: 200, headers: revocationResponseHeaders });
 		}
+
+		// P2 review finding: the mutating predicate above deliberately
+		// excludes an already-revoked row (`isNull(revokedAt)`), so it
+		// matches nothing for a refresh token that was already rotated away
+		// -- the exact same "presented a stale, previously-issued refresh
+		// token" signal `handleOauthTokenRefreshGrant`'s own
+		// `respondToRefreshTokenNotFound` already treats as family
+		// compromise. Without this, a caller could dodge that reuse defense
+		// entirely just by calling `/oauth/revoke` instead of `/oauth/token`
+		// with the same stale token, leaving the live descendant refresh and
+		// access tokens usable despite an explicit revocation request for
+		// their ancestor. Read-only lookup by hash, bound to the
+		// authenticated client -- the same binding the mutating predicate
+		// above uses -- so this can only ever revoke a family the
+		// authenticated client actually owns, never one merely guessed at by
+		// presenting another client's stale token value (see the sibling
+		// cross-client test on the refresh grant for why that binding
+		// matters). RFC 7009 §2.2 is preserved either way: the response
+		// below stays the same unconditional 200 regardless of what this
+		// finds.
+		const [existingByHash] = await database
+			.select({
+				familyId: schema.oauthRefreshTokens.familyId,
+				revokedAt: schema.oauthRefreshTokens.revokedAt,
+			})
+			.from(schema.oauthRefreshTokens)
+			.where(
+				and(
+					eq(schema.oauthRefreshTokens.refreshToken, tokenHash),
+					eq(schema.oauthRefreshTokens.clientId, client.clientId),
+				),
+			)
+			.limit(1);
+
+		if (existingByHash?.revokedAt) {
+			await revokeOauthRefreshTokenFamily(existingByHash.familyId);
+			// OBS-001: the same "refresh replay" signal as the token
+			// endpoint's, just observed at the revocation endpoint instead.
+			logger.warn(
+				{
+					event: 'oauth_revocation',
+					outcome: 'refresh_replay',
+					familyId: existingByHash.familyId,
+				},
+				'stale refresh token presented at /oauth/revoke; revoked token family',
+			);
+			metricsCollector.recordEvent('revocation', 'replay_detected');
+		}
 	}
 
 	// RFC 7009 §2.2: return 200 even if the token was not found, was already

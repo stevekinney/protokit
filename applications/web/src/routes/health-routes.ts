@@ -11,6 +11,7 @@ import { jsonResponse } from '@web/lib/http-response';
 import { instanceIdentifier } from '@web/lib/instance-identifier';
 import { mcpSupportedProtocolVersions } from '@web/lib/mcp-protocol-constants';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier';
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceHealthProbeRateLimit } from '@web/lib/request-rate-limiter';
 import { isRedisConfigured, isRedisHealthy } from '@web/lib/redis-client';
@@ -115,6 +116,8 @@ export async function handleHealthReadinessGet(context: RequestContext): Promise
 		isPlaintextTransport({
 			request: context.request,
 			isProduction: environment.NODE_ENV === 'production',
+			socketAddress: context.clientAddress,
+			trustedProxyConfiguration: getTrustedProxyConfiguration(),
 		})
 	) {
 		return jsonResponse(

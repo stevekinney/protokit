@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
@@ -226,6 +227,92 @@ describeWithRedis('graceful shutdown (requires Redis, spawns a real subprocess)'
 			for (const result of successfulResults) {
 				expect(result.body?.id).toBe(result.requestId);
 			}
+		} finally {
+			if (!subprocess.killed) subprocess.kill('SIGKILL');
+			await subprocess.exited;
+		}
+	}, 30_000);
+
+	/**
+	 * A P1 review finding: a `subscriptions/listen` stream's body only ever
+	 * settles via this same process's own `shutdownMcpTransports()` call (a
+	 * client disconnect aside) -- and that call was gated behind `drain()`
+	 * finishing first, so counting the stream toward `drain()`'s
+	 * `activeCount` made every graceful shutdown with an open listen stream
+	 * burn its *entire* `GRACEFUL_SHUTDOWN_TIMEOUT_MS` budget waiting on
+	 * nothing before `shutdownMcpTransports()` ever ran. Fixed in
+	 * `in-flight-request-tracker.ts` (`markAsServerOnlyCloseableStream`) /
+	 * `mcp-handler.ts`. The discriminating assertion here is wall-clock
+	 * time: on the buggy version this takes close to the full 10-second
+	 * budget to exit; after the fix, with no other in-flight work, it exits
+	 * almost immediately once `SIGTERM` arrives.
+	 */
+	it('does not burn the full shutdown budget on an open subscriptions/listen stream', async () => {
+		const port = await findFreePort();
+		const baseUrl = `http://127.0.0.1:${port}`;
+		const streamAccessToken = `${accessToken}-listen-stream`;
+
+		await database.insert(schema.oauthTokens).values({
+			accessToken: hashCredential(streamAccessToken),
+			clientId,
+			userId,
+			scope: 'profile',
+			resource: `${baseUrl}/mcp`,
+			expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+		});
+
+		const subprocess = Bun.spawn(['bun', 'src/server.ts'], {
+			cwd: `${import.meta.dir}/..`,
+			env: {
+				...process.env,
+				NODE_ENV: 'test',
+				PORT: String(port),
+				BASE_URL: baseUrl,
+				GOOGLE_CLIENT_ID: process.env['GOOGLE_CLIENT_ID'] ?? 'google-client-id',
+				GOOGLE_CLIENT_SECRET: process.env['GOOGLE_CLIENT_SECRET'] ?? 'google-client-secret',
+				SESSION_SIGNING_SECRET:
+					process.env['SESSION_SIGNING_SECRET'] ??
+					'development-session-secret-with-at-least-32-characters',
+				MCP_ALLOWED_ORIGINS: baseUrl,
+				RATE_LIMIT_KEY_NAMESPACE: `graceful-shutdown-listen-${testRunId}`,
+			},
+			stdout: 'pipe',
+			stderr: 'pipe',
+		});
+
+		try {
+			await waitForHealthy(baseUrl, 15_000);
+
+			const client = new Client(
+				{ name: 'graceful-shutdown-listen-test', version: '1.0.0' },
+				{ versionNegotiation: { mode: { pin: '2026-07-28' } } },
+			);
+			const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+				fetch: (input, init) => {
+					const headers = new Headers(init?.headers);
+					headers.set('authorization', `Bearer ${streamAccessToken}`);
+					return fetch(input, { ...init, headers });
+				},
+			});
+
+			await client.connect(transport);
+			expect(client.getProtocolEra()).toBe('modern');
+
+			await client.listen({ resourceSubscriptions: ['user://profile'] });
+
+			const beforeSignal = Date.now();
+			subprocess.kill('SIGTERM');
+
+			const exitCode = await subprocess.exited;
+			const shutdownDurationMs = Date.now() - beforeSignal;
+
+			expect(exitCode).toBe(0);
+			// The server's own forced-exit budget is 10 seconds
+			// (`GRACEFUL_SHUTDOWN_TIMEOUT_MS` in `server.ts`). With no other
+			// in-flight work, a correct shutdown closes the listen stream and
+			// exits in well under a second; the buggy version reliably took
+			// several seconds, close to the full budget.
+			expect(shutdownDurationMs).toBeLessThan(3_000);
 		} finally {
 			if (!subprocess.killed) subprocess.kill('SIGKILL');
 			await subprocess.exited;

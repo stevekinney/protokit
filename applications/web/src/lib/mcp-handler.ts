@@ -14,6 +14,7 @@ import { environment } from '@web/env';
 import { createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
 import { McpUserHandlerCache } from '@web/lib/mcp-user-handler-cache';
 import { disconnectRedisSubscriberClient } from '@web/lib/redis-client';
+import { markAsServerOnlyCloseableStream } from '@web/lib/in-flight-request-tracker';
 import { readMcpRequestAuthExtra } from '@web/lib/mcp-request-context';
 import { boundRequestBody, PayloadTooLargeError } from '@web/lib/bounded-request-body';
 import { createMcpProtocolErrorResponse } from '@web/lib/mcp-protocol-error-response';
@@ -169,6 +170,43 @@ userHandlers.startSweep(mcpUserHandlerSweepIntervalMs, mcpUserHandlerIdleMs);
  * stable JSON-RPC parse-error response rather than ever reaching the
  * server factory.
  */
+/**
+ * A P1 review finding on `in-flight-request-tracker.ts`: a
+ * `subscriptions/listen` response is the one shape whose body only ever
+ * settles via this process's own explicit `shutdownMcpTransports()` call
+ * (the client disconnecting or the SDK's own subscription cap evicting it
+ * aside) -- never on its own, and never sooner because something waited
+ * longer. Counting it toward `gracefulShutdown`'s drain made the drain
+ * wait on a call that only runs after the drain returns. Peeking the
+ * already-bounded request body here (a cheap, already-small JSON-RPC
+ * envelope -- `boundedRequest` enforces `S-05`'s size cap before this ever
+ * runs) is the one place this module can know a request is a listen call
+ * BEFORE handing it to the SDK, so the resulting response can be marked
+ * for the tracker to treat specially. `request.clone()` tees the
+ * already-bounded stream rather than consuming it -- verified directly
+ * against Bun that both the clone and the original independently parse
+ * the identical body -- so this never risks the real request seeing a
+ * different, already-partially-read stream.
+ */
+async function isSubscriptionsListenRequest(request: Request): Promise<boolean> {
+	if (!request.body) return false;
+	try {
+		const parsed: unknown = await request.clone().json();
+		const messages = Array.isArray(parsed) ? parsed : [parsed];
+		return messages.some(
+			(message) =>
+				typeof message === 'object' &&
+				message !== null &&
+				(message as { method?: unknown }).method === 'subscriptions/listen',
+		);
+	} catch {
+		// Malformed JSON here just means "not a listen request" -- the SDK
+		// still sees the original, unconsumed request and produces its own
+		// real JSON-RPC parse-error response.
+		return false;
+	}
+}
+
 export async function handleMcpRequest(request: Request, authInfo: AuthInfo): Promise<Response> {
 	const options: McpHandlerRequestOptions = { authInfo };
 
@@ -195,7 +233,9 @@ export async function handleMcpRequest(request: Request, authInfo: AuthInfo): Pr
 	}
 
 	const { handler } = userHandlers.get(requestAuthExtra.userId);
-	return handler.fetch(boundedRequest, options);
+	const isListenRequest = await isSubscriptionsListenRequest(boundedRequest);
+	const response = await handler.fetch(boundedRequest, options);
+	return isListenRequest ? markAsServerOnlyCloseableStream(response) : response;
 }
 
 export async function shutdownMcpTransports(): Promise<void> {

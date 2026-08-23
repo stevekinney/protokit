@@ -3,6 +3,7 @@ import {
 	checkBearerCredential,
 	isPlaintextTransport,
 } from '@web/lib/bearer-credential-authentication';
+import type { TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
 
 describe('checkBearerCredential', () => {
 	it('returns not_configured when no key is set', () => {
@@ -46,32 +47,133 @@ describe('checkBearerCredential', () => {
 });
 
 describe('isPlaintextTransport', () => {
+	const noTrustedProxies: TrustedProxyConfiguration = {
+		trustedProxyCidrs: [],
+		trustedProxyHeader: undefined,
+		trustedProxyHopCount: 1,
+	};
+
+	/** A configuration matching real production (`CONFIG-001` requires this to be set). */
+	const trustedReverseProxy: TrustedProxyConfiguration = {
+		trustedProxyCidrs: ['10.0.0.0/8'],
+		trustedProxyHeader: 'x-forwarded-for',
+		trustedProxyHopCount: 1,
+	};
+
 	it('is never plaintext outside production', () => {
 		const request = new Request('http://example.com/metrics');
-		expect(isPlaintextTransport({ request, isProduction: false })).toBe(false);
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: false,
+				socketAddress: undefined,
+				trustedProxyConfiguration: noTrustedProxies,
+			}),
+		).toBe(false);
 	});
 
 	it('is plaintext in production when there is no forwarded-proto header and the URL is http', () => {
 		const request = new Request('http://example.com/metrics');
-		expect(isPlaintextTransport({ request, isProduction: true })).toBe(true);
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: true,
+				socketAddress: undefined,
+				trustedProxyConfiguration: noTrustedProxies,
+			}),
+		).toBe(true);
 	});
 
 	it('is not plaintext in production when the URL itself is https', () => {
 		const request = new Request('https://example.com/metrics');
-		expect(isPlaintextTransport({ request, isProduction: true })).toBe(false);
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: true,
+				socketAddress: undefined,
+				trustedProxyConfiguration: noTrustedProxies,
+			}),
+		).toBe(false);
 	});
 
-	it('trusts an https forwarded-proto header even when the raw URL is http', () => {
+	it('trusts an https forwarded-proto header from a configured trusted proxy peer', () => {
 		const request = new Request('http://example.com/metrics', {
 			headers: { 'x-forwarded-proto': 'https' },
 		});
-		expect(isPlaintextTransport({ request, isProduction: true })).toBe(false);
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: true,
+				socketAddress: '10.1.2.3',
+				trustedProxyConfiguration: trustedReverseProxy,
+			}),
+		).toBe(false);
 	});
 
-	it('is plaintext in production when forwarded-proto is explicitly http', () => {
+	it('is plaintext in production when a trusted proxy explicitly forwards http', () => {
 		const request = new Request('https://example.com/metrics', {
 			headers: { 'x-forwarded-proto': 'http' },
 		});
-		expect(isPlaintextTransport({ request, isProduction: true })).toBe(true);
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: true,
+				socketAddress: '10.1.2.3',
+				trustedProxyConfiguration: trustedReverseProxy,
+			}),
+		).toBe(true);
+	});
+
+	/**
+	 * A P2 review finding (and a reversal of an earlier round's dismissal
+	 * of the same finding, see the doc comment on `isPlaintextTransport`):
+	 * a caller that is NOT a configured trusted proxy cannot spoof
+	 * `X-Forwarded-Proto: https` to make a genuinely plaintext connection
+	 * to this origin report as secure. This is the exact "direct-origin or
+	 * proxy-misconfiguration scenario" the review named -- an attacker (or
+	 * an on-path TLS-downgrade) reaching this server directly over HTTP,
+	 * whose immediate socket peer is therefore never inside
+	 * `TRUSTED_PROXY_CIDRS`.
+	 */
+	it('does not trust a forwarded-proto header from a socket peer outside the trusted CIDRs', () => {
+		const request = new Request('http://example.com/metrics', {
+			headers: { 'x-forwarded-proto': 'https' },
+		});
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: true,
+				socketAddress: '203.0.113.7',
+				trustedProxyConfiguration: trustedReverseProxy,
+			}),
+		).toBe(true);
+	});
+
+	it('does not trust a forwarded-proto header when no trusted proxy is configured at all', () => {
+		const request = new Request('http://example.com/metrics', {
+			headers: { 'x-forwarded-proto': 'https' },
+		});
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: true,
+				socketAddress: '10.1.2.3',
+				trustedProxyConfiguration: noTrustedProxies,
+			}),
+		).toBe(true);
+	});
+
+	it('does not trust a forwarded-proto header when the socket address is unknown', () => {
+		const request = new Request('http://example.com/metrics', {
+			headers: { 'x-forwarded-proto': 'https' },
+		});
+		expect(
+			isPlaintextTransport({
+				request,
+				isProduction: true,
+				socketAddress: undefined,
+				trustedProxyConfiguration: trustedReverseProxy,
+			}),
+		).toBe(true);
 	});
 });
