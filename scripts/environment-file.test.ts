@@ -12,6 +12,71 @@ import {
 } from './environment-file.ts';
 
 /**
+ * Review finding (P2, `scripts/environment-file.ts:195`): rewriting a key
+ * that appears more than once in the file used to replace only the FIRST
+ * occurrence. Both `readEnvironmentEntriesFromFile` (an assignment loop
+ * that lets a later duplicate overwrite an earlier one in the returned
+ * `Record`) and Bun's own dotenv loader use the LAST occurrence as the
+ * effective value, so the old value on that later duplicate line stayed
+ * authoritative at runtime even after `appendEnvironmentEntryToFile`
+ * reported success -- e.g. rotating `SESSION_SIGNING_SECRET` against a
+ * file with two occurrences wrote the new secret into the first line but
+ * left the old one live on the second.
+ */
+describe('appendEnvironmentEntryToFile with a duplicated key', () => {
+	let directory: string;
+	let environmentFile: string;
+
+	beforeEach(() => {
+		directory = mkdtempSync(join(tmpdir(), 'protokit-env-duplicate-test-'));
+		environmentFile = join(directory, '.env.local');
+	});
+
+	afterEach(() => {
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	test('collapses every duplicate occurrence of the rewritten key to a single, updated entry', () => {
+		writeSecretFileAtomic(
+			environmentFile,
+			'SESSION_SIGNING_SECRET=old-first\nOTHER=untouched\nSESSION_SIGNING_SECRET=old-second\n',
+		);
+
+		appendEnvironmentEntryToFile(environmentFile, 'SESSION_SIGNING_SECRET', 'new-value');
+
+		const rewrittenContent = readFileSync(environmentFile, 'utf-8');
+		const occurrences = rewrittenContent
+			.split('\n')
+			.filter((line) => line.startsWith('SESSION_SIGNING_SECRET='));
+		expect(occurrences).toEqual(['SESSION_SIGNING_SECRET=new-value']);
+		expect(rewrittenContent).toContain('OTHER=untouched');
+
+		// The parser's own LAST-occurrence-wins semantics must agree with
+		// what actually got written -- there is now only one occurrence, so
+		// this is no longer ambiguous either way.
+		const parsed = readEnvironmentEntriesFromFile(environmentFile);
+		expect(parsed['SESSION_SIGNING_SECRET']).toBe('new-value');
+	});
+
+	test("Bun's own .env loader reads the same value this rewrite reports for a file that started with a duplicate key", async () => {
+		const dotEnvFile = join(directory, '.env');
+		writeSecretFileAtomic(dotEnvFile, 'DUPLICATED_KEY=old-first\nDUPLICATED_KEY=old-second\n');
+
+		appendEnvironmentEntryToFile(dotEnvFile, 'DUPLICATED_KEY', 'rotated-value');
+		const parsed = readEnvironmentEntriesFromFile(dotEnvFile);
+		expect(parsed['DUPLICATED_KEY']).toBe('rotated-value');
+
+		const proc = Bun.spawn(
+			['bun', '-e', 'console.log(JSON.stringify(process.env["DUPLICATED_KEY"]))'],
+			{ cwd: directory, stdout: 'pipe' },
+		);
+		const output = (await new Response(proc.stdout).text()).trim();
+		await proc.exited;
+		expect(JSON.parse(output)).toBe('rotated-value');
+	});
+});
+
+/**
  * A P2 review finding: `PORT=3000 # local` was parsed as the literal value
  * `3000 # local` -- the inline comment became part of the runtime value --
  * and any later rewrite of the file (updating a different key) then

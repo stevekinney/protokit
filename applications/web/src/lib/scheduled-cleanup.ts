@@ -129,11 +129,23 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 	const maxIterationsPerTable = options.maxIterationsPerTable ?? defaultMaxIterationsPerTable;
 	const now = options.now ?? new Date();
 
+	// Review finding (P2): `handleOauthTokenAuthorizationCodeGrant`
+	// (`oauth-routes.tsx`) marks a code `usedAt` BEFORE minting its tokens,
+	// then compensates a failed mint by setting `usedAt` back to null so the
+	// client's retry can redeem the same code -- the identical
+	// mark-then-maybe-reopen shape `OAUTH-003` already established for
+	// refresh tokens above. Deleting on `isNotNull(usedAt)` (as this used to)
+	// could race that compensation window and permanently delete a code
+	// between "marked used" and "reopened", turning a transient issuance
+	// failure into a permanent one with no evidence why. Retention is
+	// bounded by `expiresAt` alone (ten minutes from issuance), the same
+	// fix applied to `selectOauthRefreshTokenIds` and
+	// `selectOauthAuthorizationTransactionIds` below.
 	const selectOauthCodeIds = (limit: number) =>
 		database
 			.select({ id: schema.oauthCodes.code })
 			.from(schema.oauthCodes)
-			.where(or(lt(schema.oauthCodes.expiresAt, now), isNotNull(schema.oauthCodes.usedAt)))
+			.where(lt(schema.oauthCodes.expiresAt, now))
 			.limit(limit);
 	const oauthCodes = await deleteAsPrimaryKeyBatches({
 		label: 'oauth_codes',
@@ -204,16 +216,20 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 		},
 	});
 
+	// Review finding (P2): the identical hazard as `selectOauthCodeIds`
+	// above -- `handleOauthAuthorizeApprove` marks a transaction
+	// `consumedAt` before inserting the code it issues, then
+	// `unconsumeAuthorizationTransaction` reopens it (sets `consumedAt`
+	// back to null) if that insert fails. Deleting on
+	// `isNotNull(consumedAt)` could delete the row inside that same window,
+	// silently defeating the retry the compensation exists to offer.
+	// Retention is bounded by `expiresAt` alone, same as the two tables
+	// above.
 	const selectOauthAuthorizationTransactionIds = (limit: number) =>
 		database
 			.select({ id: schema.oauthAuthorizationTransactions.transactionId })
 			.from(schema.oauthAuthorizationTransactions)
-			.where(
-				or(
-					lt(schema.oauthAuthorizationTransactions.expiresAt, now),
-					isNotNull(schema.oauthAuthorizationTransactions.consumedAt),
-				),
-			)
+			.where(lt(schema.oauthAuthorizationTransactions.expiresAt, now))
 			.limit(limit);
 	const oauthAuthorizationTransactions = await deleteAsPrimaryKeyBatches({
 		label: 'oauth_authorization_transactions',

@@ -176,6 +176,36 @@ function buildOauthSignInRedirectPath(requestUrl: URL): string {
 }
 
 /**
+ * RFC 6749 §4.1.2.1: once `client_id` and `redirect_uri` are both verified
+ * against a registered client, every subsequent authorization error
+ * (invalid_scope, unauthorized_client, ...) MUST be delivered back to the
+ * client through that verified redirect URI rather than rendered as a
+ * local page — an error page here leaves the client's flow hanging with no
+ * response it can ever see. Errors discovered before the client/redirect
+ * URI are verified (unknown client, unregistered redirect URI, and the
+ * presence checks that precede them) correctly stay local pages: RFC
+ * 6749 explicitly forbids redirecting to an unverified URI.
+ */
+function authorizeProtocolErrorRedirect(input: {
+	redirectUri: string;
+	error: string;
+	errorDescription: string;
+	state: string;
+	issuer: string;
+}): Response {
+	const redirectUrl = new URL(input.redirectUri);
+	redirectUrl.searchParams.set('error', input.error);
+	redirectUrl.searchParams.set('error_description', input.errorDescription);
+	if (input.state) {
+		redirectUrl.searchParams.set('state', input.state);
+	}
+	// RFC 9207 §2.4: applies to error responses too, matching the approve
+	// and deny handlers below.
+	redirectUrl.searchParams.set('iss', input.issuer);
+	return redirectResponse(redirectUrl.toString(), 302);
+}
+
+/**
  * The known token/revoke endpoint parameters, checked for duplicates
  * (RFC 6749 §3.1: a parameter appearing more than once is ambiguous, not
  * merely redundant) before the body is handed to grant-specific handling.
@@ -363,82 +393,6 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
-	// OAUTH-001 / RFC 8707: this server has exactly one protected resource
-	// (the MCP endpoint), so `resource` must be present and must name it
-	// exactly — never inferred from what the client happened to ask for.
-	// Rejecting a missing or mismatched value here, before any client
-	// lookup or transaction is created, is what makes every authorization
-	// code (and everything minted from it) provably scoped to this
-	// resource rather than merely labeled with it after the fact.
-	if (!resource || resource !== getMcpResourceUrl(context.request)) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: (
-				<OauthAuthorizePage
-					mode="error"
-					error="Missing or unsupported resource parameter. resource must exactly match this server's MCP resource URL."
-				/>
-			),
-		});
-	}
-
-	if (
-		clientId.length > oauthMaxClientIdLength ||
-		redirectUri.length > oauthMaxRedirectUriLength ||
-		state.length > oauthMaxStateLength ||
-		resource.length > oauthMaxResourceLength ||
-		(rawScope && rawScope.length > oauthMaxScopeLength)
-	) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
-		});
-	}
-
-	// AUTHZ-001 / RFC 6749 §3.3: an unrecognized scope token is rejected
-	// outright, before any client lookup or transaction is created — the
-	// same fail-fast placement as the resource check above. A request that
-	// names no `scope` at all gets this server's pre-defined default (every
-	// scope it supports); see `parseRequestedScope`'s own comment for why.
-	const scopeRequest = parseRequestedScope(rawScope);
-	if (!scopeRequest.ok) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: (
-				<OauthAuthorizePage
-					mode="error"
-					error={
-						scopeRequest.unknownScopes.length > 0
-							? `Unsupported scope: ${scopeRequest.unknownScopes.join(', ')}.`
-							: 'The scope parameter must not be empty.'
-					}
-				/>
-			),
-		});
-	}
-	const grantedScope = canonicalizeScopes(scopeRequest.scopes);
-
-	if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: (
-				<OauthAuthorizePage mode="error" error="Only S256 code challenge method is supported." />
-			),
-		});
-	}
-
-	if (!isValidPkceCodeChallenge(codeChallenge)) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: <OauthAuthorizePage mode="error" error="Malformed code_challenge." />,
-		});
-	}
-
 	type OauthClientRow = typeof schema.oauthClients.$inferSelect;
 	let client: OauthClientRow | undefined;
 
@@ -456,6 +410,12 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	// those in the metadata document." A row from an earlier successful
 	// fetch that a later fetch cannot revalidate is treated as unknown
 	// rather than trusted indefinitely on stale data.
+	//
+	// Review finding (P2): client lookup and redirect_uri validation moved
+	// here, ahead of every other check, so `client_id`/`redirect_uri` are
+	// verified before any later protocol error (scope, response_types,
+	// grant_types, ...) decides whether it is allowed to redirect back to
+	// the client per RFC 6749 §4.1.2.1 — see `authorizeProtocolErrorRedirect`.
 	if (isClientIdMetadataDocumentUrl(clientId)) {
 		const document = await fetchClientIdMetadataDocument(clientId);
 		if (document) {
@@ -523,6 +483,82 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		});
 	}
 
+	const issuer = getBaseUrl(context.request);
+
+	// OAUTH-001 / RFC 8707: this server has exactly one protected resource
+	// (the MCP endpoint), so `resource` must be present and must name it
+	// exactly — never inferred from what the client happened to ask for.
+	// Rejecting a missing or mismatched value here, before any client
+	// lookup or transaction is created, is what makes every authorization
+	// code (and everything minted from it) provably scoped to this
+	// resource rather than merely labeled with it after the fact.
+	if (!resource || resource !== getMcpResourceUrl(context.request)) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: (
+				<OauthAuthorizePage
+					mode="error"
+					error="Missing or unsupported resource parameter. resource must exactly match this server's MCP resource URL."
+				/>
+			),
+		});
+	}
+
+	if (
+		clientId.length > oauthMaxClientIdLength ||
+		redirectUri.length > oauthMaxRedirectUriLength ||
+		state.length > oauthMaxStateLength ||
+		resource.length > oauthMaxResourceLength ||
+		(rawScope && rawScope.length > oauthMaxScopeLength)
+	) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
+		});
+	}
+
+	// AUTHZ-001 / RFC 6749 §3.3: an unrecognized scope token is rejected
+	// outright, before any transaction is created. `client_id` and
+	// `redirect_uri` are already verified above, so per RFC 6749 §4.1.2.1
+	// this is delivered back to the client through that verified redirect
+	// rather than a local error page — review finding (P2): it previously
+	// rendered locally, leaving the client waiting on a callback it would
+	// never receive.
+	const scopeRequest = parseRequestedScope(rawScope);
+	if (!scopeRequest.ok) {
+		return authorizeProtocolErrorRedirect({
+			redirectUri,
+			error: 'invalid_scope',
+			errorDescription:
+				scopeRequest.unknownScopes.length > 0
+					? `Unsupported scope: ${scopeRequest.unknownScopes.join(', ')}.`
+					: 'The scope parameter must not be empty.',
+			state,
+			issuer,
+		});
+	}
+	const grantedScope = canonicalizeScopes(scopeRequest.scopes);
+
+	if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: (
+				<OauthAuthorizePage mode="error" error="Only S256 code challenge method is supported." />
+			),
+		});
+	}
+
+	if (!isValidPkceCodeChallenge(codeChallenge)) {
+		return createStaticHtmlResponse({
+			metadata: { title: 'OAuth Authorize' },
+			status: 400,
+			body: <OauthAuthorizePage mode="error" error="Malformed code_challenge." />,
+		});
+	}
+
 	// RFC 7591 §2 / RFC 6749 §3.1.1: a client's `response_types` at
 	// registration is the set it is authorized to request here. Both DCR
 	// (`oauthRegistrationSchema`) and CIMD (`client-metadata-documents.ts`)
@@ -532,17 +568,16 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	// the `code` response type, even though `responseType !== 'code'` was
 	// already rejected above. Enforce that before a consent transaction (and
 	// therefore before any code could ever be issued) rather than trusting
-	// the client's own name for what it stores.
+	// the client's own name for what it stores. Same RFC 6749 §4.1.2.1
+	// redirect rule as the scope check above — `unauthorized_client` is a
+	// standard error code delivered through the verified redirect.
 	if (!client.responseTypes.includes('code')) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: (
-				<OauthAuthorizePage
-					mode="error"
-					error="This client is not registered for the code response type."
-				/>
-			),
+		return authorizeProtocolErrorRedirect({
+			redirectUri,
+			error: 'unauthorized_client',
+			errorDescription: 'This client is not registered for the code response type.',
+			state,
+			issuer,
 		});
 	}
 
@@ -555,17 +590,15 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 	// endpoint's own `client.grantTypes.includes('authorization_code')`
 	// check (below, in the token handler) is guaranteed to then reject —
 	// the user completes consent for a code the client can never redeem.
-	// Reject before creating the transaction instead.
+	// Reject before creating the transaction instead, through the verified
+	// redirect (RFC 6749 §4.1.2.1), same as the two checks above.
 	if (!client.grantTypes.includes('authorization_code')) {
-		return createStaticHtmlResponse({
-			metadata: { title: 'OAuth Authorize' },
-			status: 400,
-			body: (
-				<OauthAuthorizePage
-					mode="error"
-					error="This client is not registered for the authorization_code grant type."
-				/>
-			),
+		return authorizeProtocolErrorRedirect({
+			redirectUri,
+			error: 'unauthorized_client',
+			errorDescription: 'This client is not registered for the authorization_code grant type.',
+			state,
+			issuer,
 		});
 	}
 
@@ -579,7 +612,7 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		codeChallenge,
 		codeChallengeMethod: codeChallengeMethod || 'S256',
 		state: state || null,
-		issuer: getBaseUrl(context.request),
+		issuer,
 		resource,
 		scope: grantedScope,
 	});
@@ -1271,6 +1304,12 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	}
 
 	const tokens = issueTokens();
+	// Only clients registered for the refresh_token grant get a refresh token.
+	// Otherwise the token is minted and returned but is deterministically
+	// rejected by `handleOauthTokenRefreshGrant`'s own grant-type check,
+	// leaving an unusable credential stored in the database and handed to the
+	// client for nothing.
+	const issueRefreshToken = client.grantTypes.includes('refresh_token');
 	try {
 		await database.insert(schema.oauthTokens).values({
 			accessToken: tokens.accessTokenHash,
@@ -1280,19 +1319,21 @@ async function handleOauthTokenAuthorizationCodeGrant(
 			resource: authorizationCode.resource,
 			expiresAt: tokens.accessTokenExpiresAt,
 		});
-		await database.insert(schema.oauthRefreshTokens).values({
-			refreshToken: tokens.refreshTokenHash,
-			clientId: authorizationCode.clientId,
-			userId: authorizationCode.userId,
-			scope: authorizationCode.scope || '',
-			resource: authorizationCode.resource,
-			accessTokenHash: tokens.accessTokenHash,
-			// OAUTH-003: the authorization-code exchange starts a new refresh-token
-			// lineage, so this refresh token is the root of its own family. Every
-			// token this one rotates into carries the same familyId forward.
-			familyId: randomUUID(),
-			expiresAt: tokens.refreshTokenExpiresAt,
-		});
+		if (issueRefreshToken) {
+			await database.insert(schema.oauthRefreshTokens).values({
+				refreshToken: tokens.refreshTokenHash,
+				clientId: authorizationCode.clientId,
+				userId: authorizationCode.userId,
+				scope: authorizationCode.scope || '',
+				resource: authorizationCode.resource,
+				accessTokenHash: tokens.accessTokenHash,
+				// OAUTH-003: the authorization-code exchange starts a new refresh-token
+				// lineage, so this refresh token is the root of its own family. Every
+				// token this one rotates into carries the same familyId forward.
+				familyId: randomUUID(),
+				expiresAt: tokens.refreshTokenExpiresAt,
+			});
+		}
 	} catch (error) {
 		// Review finding: neon-http has no multi-statement transaction support
 		// (the same limitation `handleOauthAuthorizeApprove`'s code-insert catch
@@ -1338,7 +1379,7 @@ async function handleOauthTokenAuthorizationCodeGrant(
 			access_token: tokens.accessToken,
 			token_type: 'Bearer',
 			expires_in: tokens.tokenTimeToLiveSeconds,
-			refresh_token: tokens.refreshToken,
+			...(issueRefreshToken ? { refresh_token: tokens.refreshToken } : {}),
 			scope: authorizationCode.scope || '',
 		},
 		{ headers: tokenResponseHeaders },

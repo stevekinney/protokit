@@ -193,6 +193,18 @@ export function appendEnvironmentEntriesToFile(
 		const existingIndex = entries.findIndex((entry) => entry.key === key);
 		if (existingIndex >= 0) {
 			entries[existingIndex] = { key, raw: '', value };
+			// Review finding (P2): both `readEnvironmentEntriesFromFile` above
+			// and Bun's own dotenv loader use the LAST occurrence of a
+			// duplicated key as the effective value. Replacing only the FIRST
+			// occurrence (as this used to do) left any later duplicate line
+			// with the OLD value still in the file and still authoritative at
+			// runtime, even though this call reports -- and callers like
+			// `rotate-secret.ts` may publish -- the value just written here.
+			// Every duplicate is removed so exactly one, now-correct entry for
+			// this key remains.
+			for (let index = entries.length - 1; index > existingIndex; index--) {
+				if (entries[index]!.key === key) entries.splice(index, 1);
+			}
 		} else {
 			entries.push({ key, raw: '', value });
 		}

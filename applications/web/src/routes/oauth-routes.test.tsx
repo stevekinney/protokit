@@ -1094,18 +1094,25 @@ describe('authorization GET', () => {
 			expect(call.scope).toBe('profile:read prompts:read');
 		});
 
-		it('rejects an unsupported scope token before creating a transaction', async () => {
+		it('rejects an unsupported scope token before creating a transaction, redirected back to the client per RFC 6749 §4.1.2.1', async () => {
 			mockOauthClients = [authorizeClient];
 			const response = await handleOauthAuthorizeGet(
 				createContext({
-					url: `${authorizeUrlBase}&scope=${encodeURIComponent('profile:read admin:everything')}`,
+					url: `${authorizeUrlBase}&scope=${encodeURIComponent('profile:read admin:everything')}&state=xyz`,
 					method: 'GET',
 					user: authorizeUser,
 				}),
 			);
-			expect(response.status).toBe(400);
-			const body = await response.text();
-			expect(body).toContain('Unsupported scope');
+			// Review finding (P2): a client with a verified client_id/redirect_uri
+			// must receive protocol errors through that redirect, not a local
+			// HTML page it can never see -- it would otherwise wait forever on a
+			// callback that never arrives.
+			expect(response.status).toBe(302);
+			const location = new URL(response.headers.get('location')!);
+			expect(location.origin + location.pathname).toBe('https://example.com/cb');
+			expect(location.searchParams.get('error')).toBe('invalid_scope');
+			expect(location.searchParams.get('error_description')).toContain('Unsupported scope');
+			expect(location.searchParams.get('state')).toBe('xyz');
 			expect(createAuthorizationTransactionCalls).toHaveLength(0);
 		});
 
@@ -1222,9 +1229,15 @@ describe('authorization GET', () => {
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeGet(context);
-		expect(response.status).toBe(400);
-		const body = await response.text();
-		expect(body).toContain('not registered for the code response type');
+		// client_id/redirect_uri are verified before this check runs, so per
+		// RFC 6749 §4.1.2.1 the error is delivered through that redirect.
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('unauthorized_client');
+		expect(location.searchParams.get('error_description')).toContain(
+			'not registered for the code response type',
+		);
 		expect(createAuthorizationTransactionCalls).toHaveLength(0);
 	});
 
@@ -1244,9 +1257,15 @@ describe('authorization GET', () => {
 			user: { id: 'u1', email: 'alice@example.com', name: 'Alice', image: null, role: 'user' },
 		});
 		const response = await handleOauthAuthorizeGet(context);
-		expect(response.status).toBe(400);
-		const body = await response.text();
-		expect(body).toContain('not registered for the authorization_code grant type');
+		// client_id/redirect_uri are verified before this check runs, so per
+		// RFC 6749 §4.1.2.1 the error is delivered through that redirect.
+		expect(response.status).toBe(302);
+		const location = new URL(response.headers.get('location')!);
+		expect(location.origin + location.pathname).toBe('https://example.com/cb');
+		expect(location.searchParams.get('error')).toBe('unauthorized_client');
+		expect(location.searchParams.get('error_description')).toContain(
+			'not registered for the authorization_code grant type',
+		);
 		expect(createAuthorizationTransactionCalls).toHaveLength(0);
 	});
 
@@ -1860,6 +1879,39 @@ describe('authorization code token exchange', () => {
 		expect(body.access_token).toBeTruthy();
 		expect(body.refresh_token).toBeTruthy();
 		expect(mockInsertedValues).toHaveLength(2);
+	});
+
+	it('omits refresh_token when the client is not registered for the refresh_token grant', async () => {
+		mockOauthClients = [
+			{
+				clientId: 'c1',
+				tokenEndpointAuthMethod: 'none',
+				clientSecret: null,
+				grantTypes: ['authorization_code'],
+			},
+		];
+		mockOauthCodes = [
+			{
+				code: 'hashed:valid-code',
+				clientId: 'c1',
+				userId: 'u1',
+				redirectUri: 'https://example.com/cb',
+				codeChallenge: validCodeChallenge,
+				codeChallengeMethod: 'S256',
+				resource: 'http://localhost:3000/mcp',
+				scope: 'profile:read',
+				usedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+		const response = await handleOauthTokenPost(validCodeGrantContext());
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.access_token).toBeTruthy();
+		expect(body.refresh_token).toBeUndefined();
+		// Only the access-token row is written -- no unusable refresh token is
+		// stored or returned for a client that cannot ever redeem it.
+		expect(mockInsertedValues).toHaveLength(1);
 	});
 
 	it('reopens the authorization code and removes the orphaned access-token row when token issuance fails after the code is consumed', async () => {

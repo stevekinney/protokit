@@ -1,6 +1,21 @@
 import { z } from 'zod';
 
 /**
+ * Review finding (P1, `environment-schema.ts:155`): `server.ts` multiplies
+ * `SCHEDULED_CLEANUP_INTERVAL_SECONDS` by 1000 before handing it to
+ * `setInterval`. Node/Bun's timer delay is a 32-bit signed integer
+ * (`TIMEOUT_MAX` = 2147483647 ms, confirmed directly against Bun: a larger
+ * delay logs a `TimeoutOverflowWarning` and silently substitutes 1ms). A
+ * configured value above the largest whole-second count that still fits
+ * after that multiplication -- `Math.floor(2147483647 / 1000)` -- would
+ * therefore not "run rarely"; it would run on almost every tick of the
+ * event loop, which is a full production cleanup sweep firing continuously
+ * rather than hourly. Exported so both this schema and its test can share
+ * one source of truth instead of two copies of the same arithmetic.
+ */
+export const maxTimerSafeIntervalSeconds = Math.floor(2147483647 / 1000);
+
+/**
  * SEC-002: `z.coerce.boolean()` calls JavaScript's `Boolean(value)` on
  * whatever string `process.env` handed it. Every non-empty string
  * (including the literal string `"false"`, `"0"`, or `"no"`) is truthy in
@@ -152,5 +167,16 @@ export const webServerEnvironmentSchema = {
 	// the server starts (`server.ts`). One hour by default -- frequent enough
 	// that expired-row backlog stays small, infrequent enough that it is
 	// never the dominant source of database load.
-	SCHEDULED_CLEANUP_INTERVAL_SECONDS: z.coerce.number().int().positive().optional().default(3600),
+	SCHEDULED_CLEANUP_INTERVAL_SECONDS: z.coerce
+		.number()
+		.int()
+		.positive()
+		.max(
+			maxTimerSafeIntervalSeconds,
+			`SCHEDULED_CLEANUP_INTERVAL_SECONDS must be at most ${maxTimerSafeIntervalSeconds} seconds -- ` +
+				"above that, seconds*1000 overflows Node/Bun's 32-bit setInterval delay, which silently " +
+				'substitutes a 1ms interval instead of the configured one.',
+		)
+		.optional()
+		.default(3600),
 };

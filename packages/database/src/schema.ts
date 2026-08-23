@@ -163,12 +163,17 @@ export const oauthCodes = pgTable(
 	},
 	(table) => ({
 		expiresAtIndex: index('oauth_codes_expires_at_idx').on(table.expiresAt),
-		// DATA-001 review (R6): cleanup's predicate is `expires_at < now OR used_at IS NOT
-		// NULL` (scheduled-cleanup.ts). A plain index on `used_at` would index every row,
-		// including the vast majority that are still `NULL` and never match this branch. A
-		// partial index over only the non-null rows is exactly what the `IS NOT NULL` branch
-		// needs, stays small as the table grows, and lets Postgres satisfy the whole `OR` with
-		// a BitmapOr across both indexes instead of a sequential scan.
+		// DATA-001 review (R6), UPDATED by a later review finding
+		// (`scheduled-cleanup.ts:136`): this index was originally built to
+		// serve cleanup's predicate when it included `OR used_at IS NOT
+		// NULL`. That branch was removed -- it could delete a code between
+		// `handleOauthTokenAuthorizationCodeGrant` marking it used and its
+		// own compensating reopen on a failed mint, permanently destroying
+		// the retry path the compensation exists to offer. Cleanup now
+		// retains every row until `expiresAt` alone. Left in place rather
+		// than dropped: harmless (a normal, if now less-targeted, index on
+		// an occasionally-queried column), and dropping it is a schema
+		// change with its own migration this fix does not otherwise need.
 		usedAtIndex: index('oauth_codes_used_at_idx').on(table.usedAt).where(isNotNull(table.usedAt)),
 	}),
 );
@@ -253,9 +258,13 @@ export const oauthAuthorizationTransactions = pgTable(
 	},
 	(table) => ({
 		expiresAtIndex: index('oauth_authorization_transactions_expires_at_idx').on(table.expiresAt),
-		// DATA-001 review (R6): same reasoning as `oauth_codes_used_at_idx` above -- cleanup's
-		// predicate is `expires_at < now OR consumed_at IS NOT NULL`; a partial index over only
-		// the consumed rows satisfies that branch without indexing every still-pending row.
+		// DATA-001 review (R6), UPDATED -- see `oauth_codes_used_at_idx`
+		// above for the full explanation: cleanup no longer deletes on
+		// `consumed_at IS NOT NULL` (`scheduled-cleanup.ts:136`), since
+		// `unconsumeAuthorizationTransaction` can reopen a consumed row on a
+		// failed code insert and cleanup deleting it first would defeat
+		// that retry. Index left in place; dropping it needs its own
+		// migration this fix does not otherwise require.
 		consumedAtIndex: index('oauth_authorization_transactions_consumed_at_idx')
 			.on(table.consumedAt)
 			.where(isNotNull(table.consumedAt)),

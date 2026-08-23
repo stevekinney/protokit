@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { z } from 'zod';
-import { webServerEnvironmentSchema } from '@web/environment-schema';
+import { maxTimerSafeIntervalSeconds, webServerEnvironmentSchema } from '@web/environment-schema';
 
 /**
  * SEC-002 regression: `z.coerce.boolean()` treats every non-empty string,
@@ -78,4 +78,55 @@ describe('webServerEnvironmentSchema operational bearer keys', () => {
 			expect(parsed[fieldName]).toBeUndefined();
 		});
 	}
+});
+
+/**
+ * Review finding (P1, `environment-schema.ts:155`): `server.ts` multiplies
+ * `SCHEDULED_CLEANUP_INTERVAL_SECONDS` by 1000 before calling `setInterval`.
+ * Node/Bun's timer delay overflows a 32-bit signed integer above
+ * 2147483647ms and silently substitutes a 1ms interval (confirmed directly
+ * against Bun -- see `environment-schema.ts`'s own doc comment) -- turning
+ * a configured "run rarely" interval into a full production cleanup sweep
+ * firing continuously. The schema must reject any value that would
+ * overflow after that multiplication rather than accept it and let the
+ * overflow happen silently at the timer.
+ */
+describe('webServerEnvironmentSchema SCHEDULED_CLEANUP_INTERVAL_SECONDS', () => {
+	const schema = z.object({
+		SCHEDULED_CLEANUP_INTERVAL_SECONDS:
+			webServerEnvironmentSchema.SCHEDULED_CLEANUP_INTERVAL_SECONDS,
+	});
+
+	it('accepts the default one-hour interval when the value is omitted', () => {
+		const parsed = schema.parse({});
+		expect(parsed.SCHEDULED_CLEANUP_INTERVAL_SECONDS).toBe(3600);
+	});
+
+	it('accepts exactly the timer-safe maximum', () => {
+		const parsed = schema.parse({
+			SCHEDULED_CLEANUP_INTERVAL_SECONDS: String(maxTimerSafeIntervalSeconds),
+		});
+		expect(parsed.SCHEDULED_CLEANUP_INTERVAL_SECONDS).toBe(maxTimerSafeIntervalSeconds);
+		// The concrete overflow this fix prevents: multiplying the accepted
+		// maximum by 1000 (what server.ts does before calling setInterval)
+		// must stay within the 32-bit signed integer setInterval actually
+		// honors.
+		expect(maxTimerSafeIntervalSeconds * 1000).toBeLessThanOrEqual(2147483647);
+	});
+
+	it('rejects a reasonable-looking 30-day interval that overflows the timer after *1000', () => {
+		const thirtyDaysInSeconds = 30 * 24 * 60 * 60;
+		expect(thirtyDaysInSeconds).toBeGreaterThan(maxTimerSafeIntervalSeconds);
+		expect(() =>
+			schema.parse({ SCHEDULED_CLEANUP_INTERVAL_SECONDS: String(thirtyDaysInSeconds) }),
+		).toThrow();
+	});
+
+	it('rejects one second past the timer-safe maximum', () => {
+		expect(() =>
+			schema.parse({
+				SCHEDULED_CLEANUP_INTERVAL_SECONDS: String(maxTimerSafeIntervalSeconds + 1),
+			}),
+		).toThrow();
+	});
 });

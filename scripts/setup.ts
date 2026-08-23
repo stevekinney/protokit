@@ -407,19 +407,67 @@ export function isValidTrustedProxyCidrList(value: string): boolean {
 
 const trustedProxyHeaderChoices = ['x-forwarded-for', 'forwarded', 'cf-connecting-ip'] as const;
 
+export function isValidTrustedProxyHeader(
+	value: string | undefined,
+): value is (typeof trustedProxyHeaderChoices)[number] {
+	return (
+		value !== undefined &&
+		trustedProxyHeaderChoices.includes(value as (typeof trustedProxyHeaderChoices)[number])
+	);
+}
+
+/**
+ * Same shape as `shouldPromptForBaseUrl` above: an existing value only excuses the phase from
+ * prompting if it actually satisfies the same validator the prompt loop below enforces on a
+ * freshly entered one.
+ */
+export function shouldPromptForTrustedProxyCidrs(existingValue: string | undefined): boolean {
+	return existingValue === undefined || !isValidTrustedProxyCidrList(existingValue);
+}
+
+export function shouldPromptForTrustedProxyHeader(existingValue: string | undefined): boolean {
+	return existingValue === undefined || !isValidTrustedProxyHeader(existingValue);
+}
+
 /**
  * `TRUSTED-PROXY-P1` (round 4 review): `assertProductionStartupInvariants` refuses production
  * startup unless both `TRUSTED_PROXY_CIDRS` and `TRUSTED_PROXY_HEADER` are set, but no phase
  * ever collected them — the same missing-phase defect `setupBaseUrl` above was added to fix for
  * `BASE_URL`. Collected here, before Railway is touched, for the same reason: failing the wizard
  * phase is cheaper than an operator discovering the deployed service won't boot.
+ *
+ * Review finding (P2): this used to skip both prompts on presence alone —
+ * two nonempty but invalid values (`TRUSTED_PROXY_CIDRS=not-a-cidr`,
+ * `TRUSTED_PROXY_HEADER=bogus`) satisfied the old `&&` check and were
+ * copied straight through to Railway, where `assertProductionStartupInvariants`
+ * rejects them at boot. Same predicate-driven fix `setupBaseUrl` already
+ * applies to `BASE_URL`: validate an existing value with the same
+ * validator the prompt loop uses, and only skip when it actually passes.
  */
 async function setupTrustedProxy() {
 	console.log('\n--- Trusted Proxy (production) ---\n');
 
-	if (getEnvironmentValue('TRUSTED_PROXY_CIDRS') && getEnvironmentValue('TRUSTED_PROXY_HEADER')) {
+	const existingCidrs = getEnvironmentValue('TRUSTED_PROXY_CIDRS');
+	const existingHeader = getEnvironmentValue('TRUSTED_PROXY_HEADER');
+	if (
+		!shouldPromptForTrustedProxyCidrs(existingCidrs) &&
+		!shouldPromptForTrustedProxyHeader(existingHeader)
+	) {
 		console.log('TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER already exist in .env.local.');
 		return;
+	}
+
+	if (existingCidrs && shouldPromptForTrustedProxyCidrs(existingCidrs)) {
+		console.warn(
+			`TRUSTED_PROXY_CIDRS already exists in .env.local but is not a valid comma-separated CIDR ` +
+				`list: "${existingCidrs}". Replacing it.`,
+		);
+	}
+	if (existingHeader && shouldPromptForTrustedProxyHeader(existingHeader)) {
+		console.warn(
+			`TRUSTED_PROXY_HEADER already exists in .env.local but is not one of ` +
+				`${trustedProxyHeaderChoices.join(', ')}: "${existingHeader}". Replacing it.`,
+		);
 	}
 
 	console.log("Production runs behind Railway's reverse proxy. Without both of these, rate");
@@ -429,7 +477,7 @@ async function setupTrustedProxy() {
 	console.log("X-Forwarded-For header; find Railway's current published proxy CIDR ranges in");
 	console.log('their documentation before entering them here.\n');
 
-	if (!getEnvironmentValue('TRUSTED_PROXY_CIDRS')) {
+	if (shouldPromptForTrustedProxyCidrs(existingCidrs)) {
 		for (;;) {
 			const input = await prompt('TRUSTED_PROXY_CIDRS (comma-separated, e.g. 10.0.0.0/8): ');
 			if (!input || !isValidTrustedProxyCidrList(input)) {
@@ -444,15 +492,13 @@ async function setupTrustedProxy() {
 		}
 	}
 
-	if (!getEnvironmentValue('TRUSTED_PROXY_HEADER')) {
+	if (shouldPromptForTrustedProxyHeader(existingHeader)) {
 		for (;;) {
 			const input = await prompt(
 				`TRUSTED_PROXY_HEADER (${trustedProxyHeaderChoices.join(' | ')}, default: x-forwarded-for): `,
 			);
 			const value = input || 'x-forwarded-for';
-			if (
-				!trustedProxyHeaderChoices.includes(value as (typeof trustedProxyHeaderChoices)[number])
-			) {
+			if (!isValidTrustedProxyHeader(value)) {
 				console.warn(
 					`TRUSTED_PROXY_HEADER must be one of: ${trustedProxyHeaderChoices.join(', ')}.`,
 				);

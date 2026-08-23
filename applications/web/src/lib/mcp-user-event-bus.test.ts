@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { createClient } from 'redis';
 import type { ServerEvent } from '@modelcontextprotocol/server';
-import { RedisUserServerEventBus, createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
+import {
+	RedisUserServerEventBus,
+	createUserServerEventBus,
+	publishUserResourceUpdate,
+} from '@web/lib/mcp-user-event-bus';
 import { getRedisSubscriberClient } from '@web/lib/redis-client';
 
 // The bus publishes on a Redis channel named for the user, and Redis is shared
@@ -238,5 +242,35 @@ describe('createUserServerEventBus', () => {
 		expect(bus.listenerCount).toBe(1);
 		unsubscribe();
 		expect(bus.listenerCount).toBe(0);
+	});
+});
+
+// Review finding (P2): before this fix, no production code path ever
+// called `publishResourceUpdate`/`bus.publish` for a real profile
+// mutation, so a client that subscribed to `user://profile` received the
+// capability advertisement but no update, ever. This proves the fix's
+// actual delivery mechanism -- a fresh bus constructed for the same
+// `userId` elsewhere in the process reaches an already-open subscription,
+// matching `google-authentication-routes.tsx`'s call site, which does not
+// hold a reference to the subscriber's own bus instance.
+describeWithRedis('publishUserResourceUpdate (requires Redis)', () => {
+	it('delivers a resource_updated event to an independently-constructed listener for the same user', async () => {
+		const userId = `user-profile-publish-${busRunId}`;
+		const listenerBus = new RedisUserServerEventBus(userId);
+		const collected: ServerEvent[] = [];
+		const unsubscribe = listenerBus.subscribe((event) => collected.push(event));
+		try {
+			await listenerBus.whenSubscribed();
+
+			publishUserResourceUpdate(userId, 'user://profile');
+
+			await waitForEvent(collected, 1);
+			expect(collected).toEqual([{ kind: 'resource_updated', uri: 'user://profile' }]);
+		} finally {
+			unsubscribe();
+			await getRedisSubscriberClient()
+				.then((client) => client.unsubscribe(`mcp:events:user:${userId}`))
+				.catch(() => {});
+		}
 	});
 });

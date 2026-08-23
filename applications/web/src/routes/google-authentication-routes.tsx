@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@template/mcp/logger';
+import { userProfileResource } from '@template/mcp';
 import { environment } from '@web/env';
 import { PayloadTooLargeError, readBoundedFormUrlEncoded } from '@web/lib/bounded-request-body';
 import { getBaseUrl } from '@web/lib/base-url';
 import { isTrustedRequestOrigin, isValidSessionCsrfToken } from '@web/lib/csrf-protection';
 import { isExactContentType } from '@web/lib/exact-content-type';
+import { publishUserResourceUpdate } from '@web/lib/mcp-user-event-bus';
 import {
 	clearGoogleStateCookie,
 	createGoogleSignInRedirectResponse,
@@ -97,6 +99,11 @@ async function upsertGoogleUser(input: {
 				updatedAt: new Date(),
 			})
 			.where(eq(schema.userGoogleAccounts.googleSubject, input.subject));
+		// Review finding: this is the one place `users` rows actually change
+		// after the profile MCP resource is first published, so it is the
+		// single choke point for keeping a `user://profile` subscription
+		// honest -- see `publishUserResourceUpdate`'s own doc comment.
+		publishUserResourceUpdate(existingGoogleAccount.userId, userProfileResource.uri);
 		return existingGoogleAccount.userId;
 	}
 

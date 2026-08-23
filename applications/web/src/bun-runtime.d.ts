@@ -13,6 +13,7 @@ declare module 'bun:test' {
 		toBeGreaterThan: (expected: number) => void;
 		toBeGreaterThanOrEqual: (expected: number) => void;
 		toBeLessThan: (expected: number) => void;
+		toBeLessThanOrEqual: (expected: number) => void;
 		toBeNull: () => void;
 		toBeUndefined: () => void;
 		toBeDefined: () => void;

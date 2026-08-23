@@ -6,9 +6,12 @@ import {
 	isValidProductionRedisUrl,
 	isValidTrustedProxyCidr,
 	isValidTrustedProxyCidrList,
+	isValidTrustedProxyHeader,
 	planRailwayVariables,
 	RAILWAY_EXCLUDED_ENVIRONMENT_KEYS,
 	shouldPromptForBaseUrl,
+	shouldPromptForTrustedProxyCidrs,
+	shouldPromptForTrustedProxyHeader,
 } from './setup.ts';
 
 describe('isValidNeonRegionIdentifier', () => {
@@ -229,6 +232,53 @@ describe('isValidTrustedProxyCidr / isValidTrustedProxyCidrList', () => {
 		expect(isValidTrustedProxyCidrList('10.0.0.0/8, not-an-address')).toBe(false);
 		expect(isValidTrustedProxyCidrList('')).toBe(false);
 		expect(isValidTrustedProxyCidrList('   ')).toBe(false);
+	});
+});
+
+describe('shouldPromptForTrustedProxyCidrs / shouldPromptForTrustedProxyHeader', () => {
+	// Regression for the review finding at `scripts/setup.ts:422` (P2): an
+	// existing TRUSTED_PROXY_CIDRS/TRUSTED_PROXY_HEADER pair was previously
+	// accepted on presence alone -- `TRUSTED_PROXY_CIDRS=not-a-cidr` and
+	// `TRUSTED_PROXY_HEADER=bogus` both satisfied the old `&&` skip check and
+	// were copied through to Railway, where
+	// `assertProductionStartupInvariants`/the environment schema reject them
+	// at boot. Same predicate-driven shape as `shouldPromptForBaseUrl` above.
+	test('re-prompts for CIDRs when no value exists yet', () => {
+		expect(shouldPromptForTrustedProxyCidrs(undefined)).toBe(true);
+	});
+
+	test('does not re-prompt for an existing, valid CIDR list', () => {
+		expect(shouldPromptForTrustedProxyCidrs('10.0.0.0/8, 2001:db8::/32')).toBe(false);
+	});
+
+	test('re-prompts for an existing invalid CIDR value', () => {
+		expect(shouldPromptForTrustedProxyCidrs('not-a-cidr')).toBe(true);
+	});
+
+	test('re-prompts for the header when no value exists yet', () => {
+		expect(shouldPromptForTrustedProxyHeader(undefined)).toBe(true);
+	});
+
+	test('does not re-prompt for an existing, valid header choice', () => {
+		expect(shouldPromptForTrustedProxyHeader('x-forwarded-for')).toBe(false);
+	});
+
+	test('re-prompts for an existing invalid header value', () => {
+		expect(shouldPromptForTrustedProxyHeader('bogus')).toBe(true);
+	});
+});
+
+describe('isValidTrustedProxyHeader', () => {
+	test('accepts every documented header choice', () => {
+		expect(isValidTrustedProxyHeader('x-forwarded-for')).toBe(true);
+		expect(isValidTrustedProxyHeader('forwarded')).toBe(true);
+		expect(isValidTrustedProxyHeader('cf-connecting-ip')).toBe(true);
+	});
+
+	test('rejects an unknown or missing value', () => {
+		expect(isValidTrustedProxyHeader('bogus')).toBe(false);
+		expect(isValidTrustedProxyHeader('')).toBe(false);
+		expect(isValidTrustedProxyHeader(undefined)).toBe(false);
 	});
 });
 
