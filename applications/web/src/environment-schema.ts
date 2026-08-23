@@ -97,14 +97,21 @@ export const webServerEnvironmentSchema = {
 	TRUSTED_PROXY_CIDRS: z.string().min(1).optional(),
 	TRUSTED_PROXY_HEADER: z.enum(['x-forwarded-for', 'forwarded', 'cf-connecting-ip']).optional(),
 	TRUSTED_PROXY_HOP_COUNT: z.coerce.number().int().positive().optional().default(1),
-	METRICS_API_KEY: z.string().min(1).optional(),
+	// Round 10 review finding: `.min(1)` let an operator configure a
+	// one-character bearer key (`x`) that both environment validation and
+	// production startup accepted -- the network rate limit does not make a
+	// trivially guessable shared secret adequate against a distributed
+	// caller. Raised to a minimum comparable to `SESSION_SIGNING_SECRET`'s
+	// entropy-oriented floor, while omission (unset, disabling the route
+	// entirely) remains the way to opt out.
+	METRICS_API_KEY: z.string().min(32).optional(),
 	RATE_LIMIT_METRICS_MAX: z.coerce.number().int().positive().default(30),
 	RATE_LIMIT_METRICS_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
 	// OPS-002: gates `GET /health/ready`, the authenticated readiness endpoint
 	// that carries the dependency-topology detail `GET /health` (public
 	// liveness) no longer does. Same shape as `METRICS_API_KEY` — unset
 	// disables the route entirely (404) rather than defaulting to open.
-	HEALTH_READINESS_API_KEY: z.string().min(1).optional(),
+	HEALTH_READINESS_API_KEY: z.string().min(32).optional(),
 	// OPS-002: how long a readiness response's Postgres/Redis probe result is
 	// cached and coalesced before it is re-run, so a burst of authenticated
 	// readiness callers cannot multiply real dependency connection work.

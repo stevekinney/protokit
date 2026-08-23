@@ -25,9 +25,24 @@ export function checkBearerCredential(input: {
 		return 'not_configured';
 	}
 
-	const presented = input.authorizationHeader?.startsWith('Bearer ')
-		? input.authorizationHeader.slice('Bearer '.length)
-		: undefined;
+	// Round 10 review finding: RFC 7235 §2.1 defines the HTTP authentication
+	// scheme name as case-insensitive ("auth-scheme = token", and §2 notes
+	// scheme names are registered case-insensitively) -- a compliant client
+	// sending `Authorization: bearer <key>` (or `BEARER`/any other casing)
+	// was rejected outright by this case-sensitive `startsWith`. Parses the
+	// scheme independently of the credential and compares it
+	// case-insensitively; the credential itself (after the scheme and
+	// exactly one space) is never lowercased, since a bearer token's own
+	// characters remain case-sensitive.
+	const schemeSeparatorIndex = input.authorizationHeader?.indexOf(' ') ?? -1;
+	const scheme =
+		schemeSeparatorIndex === -1
+			? undefined
+			: input.authorizationHeader?.slice(0, schemeSeparatorIndex);
+	const presented =
+		scheme?.toLowerCase() === 'bearer'
+			? input.authorizationHeader?.slice(schemeSeparatorIndex + 1)
+			: undefined;
 
 	if (!presented || !constantTimeEquals(presented, input.configuredKey)) {
 		return 'unauthorized';

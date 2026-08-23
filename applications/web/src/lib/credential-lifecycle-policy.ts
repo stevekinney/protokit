@@ -88,7 +88,7 @@ export const credentialLifecyclePolicy: readonly CredentialLifecyclePolicyRow[] 
 		rotationProcedure:
 			'None for the identifier itself — a client re-registers under a new client_id if it wants a clean identity.',
 		revocationPath:
-			'lib/account-deletion.ts deleteOauthClient() — cascades (onDelete: "cascade" in packages/database/src/schema.ts) into every code, token, refresh token, and authorization transaction naming that client.',
+			'lib/account-deletion.ts deleteOauthClient() — cascades (onDelete: "cascade" in packages/database/src/schema.ts) into every code, token, refresh token, and authorization transaction naming that client, revoking every currently valid credential immediately. Durable ONLY for a DCR (randomUUID()) client_id. For a Client ID Metadata Document client, deleting the row is not durable: handleOauthAuthorizeGet re-fetches and re-upserts it on the next /oauth/authorize naming the same document URL (deliberate, OAUTH-002) — deleteOauthClient() reports this via its cimdClientMayReauthorize result field rather than silently claiming a complete ban. Durably blocking a CIMD client requires denying its document at the hosting/network layer, outside this application.',
 		owner:
 			'An operator (no self-service client-deletion HTTP route exists in this template; deleteOauthClient() is available to whoever administers the deployment).',
 	},

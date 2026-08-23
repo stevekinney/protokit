@@ -55,6 +55,24 @@ export function decodeEnvironmentValue(raw: string): string {
 		return result;
 	}
 
+	// Round 10 review finding: a single-quoted value (`GOOGLE_CLIENT_SECRET='abc#def'`)
+	// fell all the way through to the unquoted-comment branch below, which
+	// treated the `#` as a comment marker and truncated the value to `'abc`
+	// -- corrupting it on the very next rewrite. Confirmed directly against
+	// Bun's own `.env` loader (the same subprocess comparison the inline-comment
+	// fix above already uses): Bun honors single quotes as a second quoting
+	// style, entirely literal -- no backslash escaping, and a `#` inside the
+	// quotes is never a comment, exactly like the double-quoted case above.
+	// Bun's own parser does not support an escaped `'` inside single quotes
+	// either, so matching to the very next `'` is the same construction Bun
+	// itself uses, not an approximation of it.
+	if (trimmed.startsWith("'") && trimmed.length >= 2) {
+		const closingIndex = trimmed.indexOf("'", 1);
+		if (closingIndex !== -1) {
+			return trimmed.slice(1, closingIndex);
+		}
+	}
+
 	// P2 review finding: an unquoted value like `PORT=3000 # local` was
 	// previously returned verbatim as `3000 # local` -- the comment became
 	// part of the runtime value, and re-serializing this entry then quoted
@@ -150,21 +168,41 @@ export function readEnvironmentEntriesFromFile(path: string): Record<string, str
 	return result;
 }
 
-export function appendEnvironmentEntryToFile(path: string, key: string, value: string): void {
+/**
+ * Round 10 review finding: `rotate-secret.ts` used to set two related keys
+ * (`SESSION_SIGNING_SECRET` and `SESSION_SIGNING_SECRET_PREVIOUS`) via two
+ * separate calls to the single-key form below -- two separate reads and two
+ * separate `writeSecretFileAtomic` calls. Each individual write is atomic,
+ * but the *pair* was not: an interruption (process kill, disk full) between
+ * the two writes left `.env.local` with the new current secret and no
+ * previous one, destroying the overlap window rotation exists to provide.
+ * This reads the file once, applies every entry in memory, and persists all
+ * of them with one `writeSecretFileAtomic` call, so a set of related keys
+ * either all land together or none do.
+ */
+export function appendEnvironmentEntriesToFile(
+	path: string,
+	values: ReadonlyArray<{ key: string; value: string }>,
+): void {
 	const existingContent = existsSync(path)
 		? (assertNotSymlink(path), readFileSync(path, 'utf-8'))
 		: '';
 
 	const entries = parseEnvironmentEntries(existingContent);
-	const existingIndex = entries.findIndex((entry) => entry.key === key);
-
-	if (existingIndex >= 0) {
-		entries[existingIndex] = { key, raw: '', value };
-	} else {
-		entries.push({ key, raw: '', value });
+	for (const { key, value } of values) {
+		const existingIndex = entries.findIndex((entry) => entry.key === key);
+		if (existingIndex >= 0) {
+			entries[existingIndex] = { key, raw: '', value };
+		} else {
+			entries.push({ key, raw: '', value });
+		}
 	}
 
 	writeSecretFileAtomic(path, serializeEnvironmentEntries(entries));
+}
+
+export function appendEnvironmentEntryToFile(path: string, key: string, value: string): void {
+	appendEnvironmentEntriesToFile(path, [{ key, value }]);
 }
 
 export function removeEnvironmentEntryFromFile(path: string, key: string): void {

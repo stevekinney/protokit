@@ -137,6 +137,25 @@ export type ClientDeletionResult = {
 	deletedCodes: number;
 	deletedTransactions: number;
 	deletedClient: boolean;
+	/**
+	 * Round 10 review finding: `true` when the deleted row's
+	 * `client_id_metadata_url` was set -- i.e. the client is a Client ID
+	 * Metadata Document client, not a DCR (`randomUUID()`) one. Deleting a
+	 * CIMD-backed row is NOT a durable revocation the way it is for a DCR
+	 * client: `handleOauthAuthorizeGet` re-fetches and re-upserts a CIMD
+	 * client's row on EVERY authorization request that names its document
+	 * URL, deliberately (`OAUTH-002`), so a client's own `redirect_uris`
+	 * update takes effect. The very next `/oauth/authorize` request naming
+	 * the same URL silently re-registers this "deleted" client. This call
+	 * still revokes every currently valid credential immediately (the
+	 * counts above are real and unaffected) -- only the "this client can
+	 * never authorize again" guarantee does not durably hold for a CIMD
+	 * client without also denying the document at its own hosting/network
+	 * layer, which this application has no way to do. A caller must not
+	 * treat `deletedClient: true` alone as proof a CIMD client is gone for
+	 * good; check this field too.
+	 */
+	cimdClientMayReauthorize: boolean;
 };
 
 type ClientDeletionRow = {
@@ -145,6 +164,7 @@ type ClientDeletionRow = {
 	deleted_codes: string;
 	deleted_transactions: string;
 	deleted_client: string;
+	deleted_client_metadata_url: string | null;
 };
 
 /**
@@ -182,28 +202,44 @@ export async function deleteOauthClient(clientId: string): Promise<ClientDeletio
 			deleted_client AS (
 				DELETE FROM oauth_clients
 				WHERE client_id = ${clientId} AND (SELECT true FROM child_deletion_barrier)
-				RETURNING client_id
+				RETURNING client_id, client_id_metadata_url
 			)
 		SELECT
 			(SELECT access_tokens FROM child_deletion_barrier)::text AS deleted_access_tokens,
 			(SELECT refresh_tokens FROM child_deletion_barrier)::text AS deleted_refresh_tokens,
 			(SELECT codes FROM child_deletion_barrier)::text AS deleted_codes,
 			(SELECT transactions FROM child_deletion_barrier)::text AS deleted_transactions,
-			(SELECT count(*) FROM deleted_client)::text AS deleted_client
+			(SELECT count(*) FROM deleted_client)::text AS deleted_client,
+			(SELECT client_id_metadata_url FROM deleted_client LIMIT 1) AS deleted_client_metadata_url
 	`);
 
 	const row = rows[0];
+	const cimdClientMayReauthorize = Boolean(row?.deleted_client_metadata_url);
 	const result: ClientDeletionResult = {
 		deletedAccessTokens: Number(row?.deleted_access_tokens ?? '0'),
 		deletedRefreshTokens: Number(row?.deleted_refresh_tokens ?? '0'),
 		deletedCodes: Number(row?.deleted_codes ?? '0'),
 		deletedTransactions: Number(row?.deleted_transactions ?? '0'),
 		deletedClient: Number(row?.deleted_client ?? '0') > 0,
+		cimdClientMayReauthorize,
 	};
 
 	deletionLogger.info(
 		{ clientId, ...result },
 		'Deleted OAuth client and every dependent credential',
 	);
+	if (cimdClientMayReauthorize) {
+		// Round 10 review finding: explicit, not silent. An operator relying
+		// on `deletedClient: true` alone would believe this client can never
+		// authorize again -- false for a CIMD-backed client, whose row is
+		// re-created by the very next `/oauth/authorize` request naming the
+		// same document URL. See `ClientDeletionResult.cimdClientMayReauthorize`'s
+		// doc comment for the full explanation and why a durable tombstone
+		// is not implemented here (it would require a schema migration).
+		deletionLogger.warn(
+			{ clientId, event: 'oauth_client_deletion', outcome: 'cimd_client_not_durably_revoked' },
+			'Deleted a CIMD-backed OAuth client and every currently valid credential for it, but this is not a durable revocation: the client can silently re-register itself the next time /oauth/authorize names the same Client ID Metadata Document URL. Durably blocking it requires denying that document at its own hosting/network layer.',
+		);
+	}
 	return result;
 }

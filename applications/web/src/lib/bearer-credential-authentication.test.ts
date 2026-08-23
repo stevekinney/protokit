@@ -44,6 +44,42 @@ describe('checkBearerCredential', () => {
 			checkBearerCredential({ configuredKey: 'secret', authorizationHeader: 'Bearer secret' }),
 		).toBe('authorized');
 	});
+
+	// Round 10 review finding: RFC 7235 §2.1 makes the HTTP auth scheme name
+	// case-insensitive. A standards-compliant client sending `bearer` (or any
+	// other casing) must still authenticate.
+	it('returns authorized when the scheme is lowercase ("bearer")', () => {
+		expect(
+			checkBearerCredential({ configuredKey: 'secret', authorizationHeader: 'bearer secret' }),
+		).toBe('authorized');
+	});
+
+	it('returns authorized when the scheme is uppercase ("BEARER")', () => {
+		expect(
+			checkBearerCredential({ configuredKey: 'secret', authorizationHeader: 'BEARER secret' }),
+		).toBe('authorized');
+	});
+
+	it('returns authorized when the scheme is mixed-case ("BeArEr")', () => {
+		expect(
+			checkBearerCredential({ configuredKey: 'secret', authorizationHeader: 'BeArEr secret' }),
+		).toBe('authorized');
+	});
+
+	it('does not lowercase the credential itself -- only the scheme is case-insensitive', () => {
+		expect(
+			checkBearerCredential({ configuredKey: 'SeCrEt', authorizationHeader: 'bearer SeCrEt' }),
+		).toBe('authorized');
+		expect(
+			checkBearerCredential({ configuredKey: 'SeCrEt', authorizationHeader: 'bearer secret' }),
+		).toBe('unauthorized');
+	});
+
+	it('still returns unauthorized for a non-bearer scheme regardless of case', () => {
+		expect(
+			checkBearerCredential({ configuredKey: 'secret', authorizationHeader: 'basic secret' }),
+		).toBe('unauthorized');
+	});
 });
 
 describe('isPlaintextTransport', () => {

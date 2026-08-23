@@ -49,6 +49,25 @@ describe('decodeEnvironmentValue', () => {
 	test('a quoted value keeps a literal hash -- never treated as a comment', () => {
 		expect(decodeEnvironmentValue('"value # not a comment"')).toBe('value # not a comment');
 	});
+
+	// Round 10 review finding: a Bun-supported single-quoted value (e.g.
+	// `GOOGLE_CLIENT_SECRET='abc#def'`) was falling through to the unquoted
+	// branch above and getting truncated at the `#`.
+	test('a single-quoted value keeps a literal hash -- never treated as a comment', () => {
+		expect(decodeEnvironmentValue("'abc#def'")).toBe('abc#def');
+	});
+
+	test('a single-quoted value preserves leading/trailing whitespace inside the quotes', () => {
+		expect(decodeEnvironmentValue("'  padded  '")).toBe('  padded  ');
+	});
+
+	test('a single-quoted value with no hash round-trips unchanged', () => {
+		expect(decodeEnvironmentValue("'hello world'")).toBe('hello world');
+	});
+
+	test('an empty single-quoted value decodes to an empty string', () => {
+		expect(decodeEnvironmentValue("''")).toBe('');
+	});
 });
 
 describe('parseEnvironmentEntries', () => {
@@ -118,5 +137,23 @@ describe('rewriting a file with an unquoted inline comment', () => {
 		const output = (await new Response(proc.stdout).text()).trim();
 		await proc.exited;
 		expect(JSON.parse(output)).toBe(parsed['PORT']);
+	});
+
+	test("Bun's own .env loader agrees with what this parser reads for a single-quoted value containing a hash", async () => {
+		const dotEnvFile = join(directory, '.env');
+		writeSecretFileAtomic(dotEnvFile, "GOOGLE_CLIENT_SECRET='abc#def'\n");
+
+		const parsed = readEnvironmentEntriesFromFile(dotEnvFile);
+
+		const proc = Bun.spawn(
+			['bun', '-e', 'console.log(JSON.stringify(process.env["GOOGLE_CLIENT_SECRET"]))'],
+			{ cwd: directory, stdout: 'pipe' },
+		);
+		const output = (await new Response(proc.stdout).text()).trim();
+		await proc.exited;
+		expect(JSON.parse(output)).toBe(parsed['GOOGLE_CLIENT_SECRET']);
+		// The concrete corruption this fix prevents: the pre-fix parser
+		// returned `'abc` (the leading quote retained, truncated at `#`).
+		expect(parsed['GOOGLE_CLIENT_SECRET']).toBe('abc#def');
 	});
 });

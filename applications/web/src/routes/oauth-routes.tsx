@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { database, schema } from '@template/database';
 import {
@@ -1066,33 +1066,48 @@ async function authenticateOauthClient(
  * In the ordinary case there is exactly one live member -- rotation always
  * revokes the previous member immediately -- but this stays correct if a
  * race ever produced more than one live member in the same family.
+ *
+ * Round 10 review (P1): the previous version was two separate statements --
+ * revoke the live family members, THEN revoke the access tokens those rows
+ * referenced. `neon-http` has no multi-statement transaction support
+ * (confirmed directly against the installed driver -- the same limitation
+ * every prior round on this file documents), so if the second statement
+ * failed after the first had already committed, every family member was
+ * left revoked with its access token still live. Worse, a RETRY of this
+ * same function (the natural response to a failure) could no longer repair
+ * that: the first statement's own `revoked_at IS NULL` predicate now
+ * matched nothing (every member was already revoked from the partial first
+ * attempt), so `revokedFamilyMembers` came back empty and the function
+ * returned having revoked no access token at all -- a stolen refresh token
+ * would be correctly flagged as replayed, but its still-live access token
+ * would remain usable until expiry.
+ *
+ * Fixed with the same construction `deleteUserAccount`/`deleteOauthClient`
+ * (`account-deletion.ts`) already established for this exact driver
+ * limitation: one Postgres statement, via `database.execute(sql\`...\`)`,
+ * combining both mutations with a `WITH` CTE. A single Postgres statement
+ * is atomic by construction -- it either fully commits or fully rolls back
+ * -- so the partial-failure state this finding describes is no longer
+ * reachable at all, not merely less likely. The second CTE's `WHERE`
+ * clause selects directly from the first CTE's own `RETURNING` output
+ * (`revoked_family`), the same dependency-forced-ordering technique
+ * `account-deletion.ts`'s doc comment explains in full: Postgres must
+ * fully evaluate a data-modifying CTE before a later part of the same
+ * statement can read its `RETURNING` output.
  */
 async function revokeOauthRefreshTokenFamily(familyId: string): Promise<void> {
-	const revokedFamilyMembers = await database
-		.update(schema.oauthRefreshTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthRefreshTokens.familyId, familyId),
-				isNull(schema.oauthRefreshTokens.revokedAt),
-			),
-		)
-		.returning({ accessTokenHash: schema.oauthRefreshTokens.accessTokenHash });
-
-	const liveAccessTokenHashes = revokedFamilyMembers.map((member) => member.accessTokenHash);
-	if (liveAccessTokenHashes.length === 0) {
-		return;
-	}
-
-	await database
-		.update(schema.oauthTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				inArray(schema.oauthTokens.accessToken, liveAccessTokenHashes),
-				isNull(schema.oauthTokens.revokedAt),
-			),
-		);
+	await database.execute(sql`
+		WITH
+			revoked_family AS (
+				UPDATE oauth_refresh_tokens
+				SET revoked_at = now()
+				WHERE family_id = ${familyId} AND revoked_at IS NULL
+				RETURNING access_token_hash
+			)
+		UPDATE oauth_tokens
+		SET revoked_at = now()
+		WHERE access_token IN (SELECT access_token_hash FROM revoked_family) AND revoked_at IS NULL
+	`);
 }
 
 async function handleOauthTokenAuthorizationCodeGrant(
@@ -1678,15 +1693,44 @@ async function handleOauthTokenRefreshGrant(
 		return respondToRefreshTokenNotFound();
 	}
 
-	await database
-		.update(schema.oauthTokens)
-		.set({ revokedAt: new Date() })
-		.where(
-			and(
-				eq(schema.oauthTokens.accessToken, currentRefreshToken.accessTokenHash),
-				isNull(schema.oauthTokens.revokedAt),
-			),
+	// Round 10 review (P2): this used to be an unguarded `await` -- if it
+	// failed (a transient network/database error, not the ordinary "no
+	// matching row" case, which this predicate handles by design), the
+	// exception propagated out of this whole handler AFTER the replacement
+	// access/refresh pair had already been inserted and committed, and AFTER
+	// the mutex UPDATE above had already committed revoking the caller's old
+	// refresh token. The client would receive a 500 with no tokens at all,
+	// yet its old refresh token was already dead -- no usable retry path,
+	// forcing a full re-authorization for what was a transient failure on a
+	// step that is not load-bearing for the rotation's own correctness (this
+	// call revokes the OLD access token; it neither mints anything nor
+	// decides who won the mutex, both of which already succeeded above).
+	// `neon-http` has no multi-statement transaction support (confirmed
+	// directly against the installed driver, same limitation every prior
+	// round on this file documents), so this cannot be folded into the
+	// mutex UPDATE itself. Best-effort instead: a failure here is logged and
+	// swallowed, not thrown, so the client still receives its new,
+	// already-committed credentials. The old access token stays live a
+	// little longer than intended in this rare failure case -- a narrower
+	// exposure window, not a correctness gap, and strictly better than the
+	// previous behavior of losing the new credentials entirely while still
+	// killing the old refresh token.
+	try {
+		await database
+			.update(schema.oauthTokens)
+			.set({ revokedAt: new Date() })
+			.where(
+				and(
+					eq(schema.oauthTokens.accessToken, currentRefreshToken.accessTokenHash),
+					isNull(schema.oauthTokens.revokedAt),
+				),
+			);
+	} catch (error) {
+		logger.error(
+			{ err: error },
+			'Failed to revoke the old access token after a successful refresh rotation; the new credentials are still returned',
 		);
+	}
 
 	metricsCollector.recordEvent('refresh', 'success');
 
@@ -1807,15 +1851,30 @@ async function handleOauthRevokePostInner(context: RequestContext): Promise<Resp
 			.returning();
 
 		if (revokedRefreshToken) {
-			await database
-				.update(schema.oauthTokens)
-				.set({ revokedAt: new Date() })
-				.where(
-					and(
-						eq(schema.oauthTokens.accessToken, revokedRefreshToken.accessTokenHash),
-						isNull(schema.oauthTokens.revokedAt),
-					),
+			// Round 10 review (P2): same shape as the refresh grant's own
+			// post-mutex access-token revoke (see that function's comment for
+			// the full argument) -- the refresh token above is already
+			// revoked and committed by the time this runs, so a failure here
+			// must not turn RFC 7009's own success response into a 500. This
+			// call is best-effort cleanup of the access token the refresh
+			// token was paired with; the caller's actual request (revoke this
+			// refresh token) already succeeded.
+			try {
+				await database
+					.update(schema.oauthTokens)
+					.set({ revokedAt: new Date() })
+					.where(
+						and(
+							eq(schema.oauthTokens.accessToken, revokedRefreshToken.accessTokenHash),
+							isNull(schema.oauthTokens.revokedAt),
+						),
+					);
+			} catch (error) {
+				logger.error(
+					{ err: error },
+					'Failed to revoke the paired access token after a successful refresh token revocation',
 				);
+			}
 
 			metricsCollector.recordEvent('revocation', 'refresh_token_revoked');
 			return new Response(null, { status: 200, headers: revocationResponseHeaders });

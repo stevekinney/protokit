@@ -209,6 +209,7 @@ describe('deleteOauthClient', () => {
 			deletedCodes: 1,
 			deletedTransactions: 1,
 			deletedClient: true,
+			cimdClientMayReauthorize: false,
 		});
 
 		const remainingTokens = await database
@@ -238,5 +239,53 @@ describe('deleteOauthClient', () => {
 			.where(eq(schema.userGoogleAccounts.userId, userId));
 		await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
 		await database.delete(schema.users).where(eq(schema.users.id, userId));
+	});
+
+	// Round 10 review finding: deleting a CIMD-backed client's row is not a
+	// durable revocation, because `handleOauthAuthorizeGet` re-fetches and
+	// re-upserts it on the next `/oauth/authorize` naming the same document
+	// URL. This proves the explicit signal that closes the "silent, misleading
+	// success" defect: a caller can no longer mistake `deletedClient: true`
+	// alone for "this client can never authorize again".
+	it('flags cimdClientMayReauthorize when the deleted client was CIMD-backed', async () => {
+		const clientId = `https://cimd-example.test/clients/${randomUUID()}`;
+		createdClientIds.push(clientId);
+
+		await database.insert(schema.oauthClients).values({
+			clientId,
+			clientName: 'CIMD Deletion Test Client',
+			clientType: 'public',
+			tokenEndpointAuthMethod: 'none',
+			redirectUris: ['https://cimd-example.test/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+			clientIdMetadataUrl: clientId,
+		});
+
+		const result = await deleteOauthClient(clientId);
+
+		expect(result).toEqual({
+			deletedAccessTokens: 0,
+			deletedRefreshTokens: 0,
+			deletedCodes: 0,
+			deletedTransactions: 0,
+			deletedClient: true,
+			cimdClientMayReauthorize: true,
+		});
+
+		const [remainingClient] = await database
+			.select()
+			.from(schema.oauthClients)
+			.where(eq(schema.oauthClients.clientId, clientId))
+			.limit(1);
+		expect(remainingClient).toBeUndefined();
+	});
+
+	it('does not flag cimdClientMayReauthorize for a DCR (non-CIMD) client', async () => {
+		const { clientId } = await seedFullAccount();
+
+		const result = await deleteOauthClient(clientId);
+
+		expect(result.cimdClientMayReauthorize).toBe(false);
 	});
 });

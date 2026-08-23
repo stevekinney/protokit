@@ -135,8 +135,18 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		});
 	}
 
+	// Round 10 review (P2, sibling of the fix on
+	// `bearer-credential-authentication.ts`'s `checkBearerCredential` --
+	// same RFC 7235 §2.1 case-insensitive-scheme defect, same shape,
+	// flagged explicitly here per this pull request's standing lesson that
+	// a fix on one path while its sibling goes untouched keeps recurring).
+	// Parses the scheme independently of the credential and compares it
+	// case-insensitively; the token itself is never lowercased.
 	const authorizationHeader = context.request.headers.get('authorization');
-	if (!authorizationHeader?.startsWith('Bearer ')) {
+	const schemeSeparatorIndex = authorizationHeader?.indexOf(' ') ?? -1;
+	const authorizationScheme =
+		schemeSeparatorIndex === -1 ? undefined : authorizationHeader?.slice(0, schemeSeparatorIndex);
+	if (authorizationScheme?.toLowerCase() !== 'bearer') {
 		const baseUrl = getBaseUrl(context.request);
 		const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/mcp`;
 		return createMcpProtocolErrorResponse({
@@ -151,7 +161,7 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		});
 	}
 
-	const accessToken = authorizationHeader.slice(7);
+	const accessToken = authorizationHeader!.slice(schemeSeparatorIndex + 1);
 	if (accessToken.length === 0 || accessToken.length > mcpMaxBearerTokenLength) {
 		const baseUrl = getBaseUrl(context.request);
 		const resourceMetadataUrl = `${baseUrl}/.well-known/oauth-protected-resource/mcp`;

@@ -1,5 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
-import { describe, test, expect, afterEach } from 'bun:test';
+import { describe, test, expect, afterEach, spyOn } from 'bun:test';
+import * as nodeFs from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -115,6 +116,47 @@ describe('rotateSessionSigningSecretLocally', () => {
 		expect(readEnvironmentEntriesFromFile(environmentFile)['SESSION_SIGNING_SECRET_PREVIOUS']).toBe(
 			first.nextValue,
 		);
+	});
+
+	// Round 10 review finding: writing SESSION_SIGNING_SECRET and
+	// SESSION_SIGNING_SECRET_PREVIOUS used to be two separate atomic
+	// writes (two `renameSync` calls) -- an interruption between them
+	// left `.env.local` with a new current secret and no previous one,
+	// destroying the overlap window. Proves the fix by counting real
+	// `renameSync` invocations (each `writeSecretFileAtomic` call makes
+	// exactly one) during a rotation that writes both keys.
+	test('persists both SESSION_SIGNING_SECRET and SESSION_SIGNING_SECRET_PREVIOUS with exactly one atomic write', () => {
+		directory = mkdtempSync(join(tmpdir(), 'protokit-rotate-test-'));
+		environmentFile = join(directory, '.env.local');
+
+		const oldSecret = 'e'.repeat(64);
+		appendEnvironmentEntryToFile(environmentFile, 'SESSION_SIGNING_SECRET', oldSecret);
+
+		const realRenameSync = nodeFs.renameSync.bind(nodeFs);
+		let renameCount = 0;
+		const renameSpy = spyOn(nodeFs, 'renameSync').mockImplementation(
+			(...args: Parameters<typeof nodeFs.renameSync>) => {
+				renameCount++;
+				return realRenameSync(...args);
+			},
+		);
+
+		let result;
+		try {
+			result = rotateSessionSigningSecretLocally(environmentFile);
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		// A rotation that sets both keys must reach `writeSecretFileAtomic`
+		// exactly once, not once per key -- two separate atomic writes is
+		// exactly the gap this fix closes, even though each individual write
+		// is itself atomic.
+		expect(renameCount).toBe(1);
+
+		const entries = readEnvironmentEntriesFromFile(environmentFile);
+		expect(entries['SESSION_SIGNING_SECRET']).toBe(result.nextValue);
+		expect(entries['SESSION_SIGNING_SECRET_PREVIOUS']).toBe(oldSecret);
 	});
 
 	test('writes a fresh secret when none existed before', () => {

@@ -11,7 +11,7 @@ import {
 	MANAGED_GITHUB_SECRETS,
 } from './utilities.ts';
 import {
-	appendEnvironmentEntryToFile,
+	appendEnvironmentEntriesToFile,
 	readEnvironmentEntriesFromFile,
 	removeEnvironmentEntryFromFile,
 } from './environment-file.ts';
@@ -69,14 +69,22 @@ export function rotateSessionSigningSecretLocally(environmentFilePath: string): 
 	}
 	const previousValue = entries['SESSION_SIGNING_SECRET'];
 	const nextValue = generateSessionSigningSecret();
-	appendEnvironmentEntryToFile(environmentFilePath, 'SESSION_SIGNING_SECRET', nextValue);
-	if (previousValue) {
-		appendEnvironmentEntryToFile(
-			environmentFilePath,
-			'SESSION_SIGNING_SECRET_PREVIOUS',
-			previousValue,
-		);
-	}
+	// Round 10 review finding: this used to be two separate
+	// `appendEnvironmentEntryToFile` calls -- two separate atomic writes.
+	// An interruption between them left `.env.local` with the new current
+	// secret and no `SESSION_SIGNING_SECRET_PREVIOUS`, destroying the
+	// overlap window this function exists to provide (every session,
+	// CSRF token, and pending Google OAuth state signed under the
+	// outgoing key would stop verifying immediately, before the
+	// documented cutover step ever ran -- the exact failure mode the
+	// grace period exists to prevent). Both entries are now built in
+	// memory and persisted with one `appendEnvironmentEntriesToFile` call
+	// (one `writeSecretFileAtomic`), so they either both land or neither
+	// does.
+	appendEnvironmentEntriesToFile(environmentFilePath, [
+		{ key: 'SESSION_SIGNING_SECRET', value: nextValue },
+		...(previousValue ? [{ key: 'SESSION_SIGNING_SECRET_PREVIOUS', value: previousValue }] : []),
+	]);
 	return { previousValuePresent: Boolean(previousValue), rotated: true, nextValue };
 }
 

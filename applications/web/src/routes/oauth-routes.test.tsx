@@ -17,6 +17,19 @@ let mockDeleteCalls: Array<{ table: unknown; where: unknown }> = [];
 // UPDATE's `WHERE ... RETURNING` can match nothing even when a moment-old
 // read saw the row as live.
 let mockRefreshRotationMutexShouldMiss = false;
+let mockExecuteCalls: unknown[] = [];
+// Distinguishes the refresh grant's two, sequential `select()` calls
+// against `oauthRefreshTokensTable` -- the first is the read-only "is this
+// exact token currently live" lookup (`currentRefreshToken`), the second
+// (only reached when the first comes back empty) is
+// `respondToRefreshTokenNotFound`'s "was this token already used" replay
+// lookup (`existingByHash`). The mock otherwise can't tell them apart,
+// since it ignores `.where()` predicates entirely -- the same limitation
+// `mockRefreshRotationMutexShouldMiss` above was already introduced to work
+// around.
+let mockOauthRefreshTokensSelectCallCount = 0;
+let mockFirstRefreshTokenSelectShouldMiss = false;
+let mockOldAccessTokenRevokeShouldThrow = false;
 
 const oauthClientsTable = Symbol('oauthClients');
 const oauthCodesTable = Symbol('oauthCodes');
@@ -45,7 +58,16 @@ mock.module('@template/database', () => ({
 						if (table === oauthClientsTable) return Promise.resolve(mockOauthClients);
 						if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
 						if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
-						if (table === oauthRefreshTokensTable) return Promise.resolve(mockOauthRefreshTokens);
+						if (table === oauthRefreshTokensTable) {
+							mockOauthRefreshTokensSelectCallCount += 1;
+							if (
+								mockFirstRefreshTokenSelectShouldMiss &&
+								mockOauthRefreshTokensSelectCallCount === 1
+							) {
+								return Promise.resolve([]);
+							}
+							return Promise.resolve(mockOauthRefreshTokens);
+						}
 						return Promise.resolve([]);
 					},
 				}),
@@ -75,18 +97,29 @@ mock.module('@template/database', () => ({
 			set: (setValues: Record<string, unknown>) => {
 				mockUpdateCalls.push({ table, set: setValues });
 				return {
-					where: () => ({
-						returning: () => {
-							if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
-							if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
-							if (table === oauthRefreshTokensTable) {
-								return Promise.resolve(
-									mockRefreshRotationMutexShouldMiss ? [] : mockOauthRefreshTokens,
-								);
-							}
-							return Promise.resolve([]);
-						},
-					}),
+					where: () => {
+						// Round 10 review (P2): simulates the post-mutex/post-refresh-
+						// revoke "revoke the paired old access token" step failing --
+						// the specific `oauthTokens` update that never calls
+						// `.returning()`, awaited bare, in both
+						// `handleOauthTokenRefreshGrant` and
+						// `handleOauthRevokePostInner`.
+						if (mockOldAccessTokenRevokeShouldThrow && table === oauthTokensTable) {
+							return Promise.reject(new Error('simulated old access token revoke failure'));
+						}
+						return {
+							returning: () => {
+								if (table === oauthCodesTable) return Promise.resolve(mockOauthCodes);
+								if (table === oauthTokensTable) return Promise.resolve(mockOauthTokens);
+								if (table === oauthRefreshTokensTable) {
+									return Promise.resolve(
+										mockRefreshRotationMutexShouldMiss ? [] : mockOauthRefreshTokens,
+									);
+								}
+								return Promise.resolve([]);
+							},
+						};
+					},
 				};
 			},
 		}),
@@ -96,6 +129,15 @@ mock.module('@template/database', () => ({
 				return Promise.resolve(undefined);
 			},
 		}),
+		// OAUTH-003 / round 10: `revokeOauthRefreshTokenFamily` now issues a
+		// single atomic CTE statement via `database.execute(sql\`...\`)`
+		// instead of two separate `update()` calls -- see that function's own
+		// comment. Records the call so tests can assert it ran without
+		// needing to parse the raw SQL string.
+		execute: async (query: unknown) => {
+			mockExecuteCalls.push(query);
+			return { rows: [] };
+		},
 	},
 	schema: {
 		oauthClients: oauthClientsTable,
@@ -112,6 +154,10 @@ mock.module('drizzle-orm', () => ({
 	gt: (column: unknown, value: unknown) => ({ column, value }),
 	isNull: (column: unknown) => ({ column }),
 	inArray: (column: unknown, values: unknown) => ({ column, values }),
+	sql: Object.assign(
+		(strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+		{ raw: (value: string) => value },
+	),
 }));
 
 const mockRateLimitState = {
@@ -787,6 +833,7 @@ describe('token revocation', () => {
 		mockOauthRefreshTokens = [];
 		mockOauthClients = [];
 		recordFailedAuthenticationCalls = [];
+		mockOldAccessTokenRevokeShouldThrow = false;
 	});
 
 	it('returns 400 when token parameter is missing', async () => {
@@ -964,6 +1011,30 @@ describe('token revocation', () => {
 		});
 		const response = await handleOauthRevokePost(context);
 		expect(response.status).toBe(400);
+	});
+
+	// Round 10 review (P2): the same shape as the refresh grant's own
+	// post-mutex access-token revoke (this file's "still returns the new
+	// tokens when revoking the old access token fails after a successful
+	// rotation" test) -- a sibling this branch shares, flagged explicitly
+	// per the standing lesson on this pull request that a fix on one path
+	// while its sibling goes untouched has recurred. The refresh token
+	// revocation above already committed by the time the paired
+	// access-token revoke runs; a failure there must not turn RFC 7009's
+	// unconditional success response into a 500.
+	it('still returns 200 when revoking the paired access token fails after a successful refresh token revocation', async () => {
+		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthRefreshTokens = [
+			{ refreshToken: 'hashed-refresh', clientId: 'c1', accessTokenHash: 'hashed-access' },
+		];
+		mockOldAccessTokenRevokeShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/revoke',
+			body: 'token=some-refresh-token&client_id=c1&token_type_hint=refresh_token',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+		const response = await handleOauthRevokePost(context);
+		expect(response.status).toBe(200);
 	});
 });
 
@@ -1845,6 +1916,10 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		mockUpdateCalls = [];
 		mockDeleteCalls = [];
 		mockRefreshRotationMutexShouldMiss = false;
+		mockExecuteCalls = [];
+		mockOauthRefreshTokensSelectCallCount = 0;
+		mockFirstRefreshTokenSelectShouldMiss = false;
+		mockOldAccessTokenRevokeShouldThrow = false;
 	});
 
 	it('carries the stored scope forward when the refresh request omits scope entirely', async () => {
@@ -1983,5 +2058,77 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		// attempting the mutex must be deleted once the mutex loses.
 		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
 		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(true);
+	});
+
+	// Round 10 review (P1): `revokeOauthRefreshTokenFamily` used to be two
+	// separate `update()` calls -- revoke the family, then revoke its access
+	// tokens -- which could leave a family revoked with its access token
+	// still live if the second call failed. Fixed by combining both
+	// mutations into one atomic `database.execute(sql\`...\`)` CTE
+	// statement, so the two-statement partial-failure window this finding
+	// describes can no longer be reached at all. This proves the
+	// CONSTRUCTION, not just the outcome: presenting an already-rotated
+	// (replayed) refresh token must trigger exactly one `database.execute`
+	// call and zero direct `update()` calls against either token table for
+	// the family-revocation path -- not the old two-`update()`-call shape.
+	it('revokes a replayed refresh token family with exactly one atomic statement, not two separate updates', async () => {
+		mockFirstRefreshTokenSelectShouldMiss = true;
+		mockOauthRefreshTokens = [
+			{
+				...(mockOauthRefreshTokens[0] as Record<string, unknown>),
+				familyId: 'family-1',
+				revokedAt: new Date(Date.now() - 60_000),
+			},
+		];
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe('invalid_grant');
+
+		// The atomic construction: one `database.execute` call for the whole
+		// family revocation, not two separate `update()` calls against
+		// `oauthRefreshTokensTable`/`oauthTokensTable`.
+		expect(mockExecuteCalls).toHaveLength(1);
+		expect(mockUpdateCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(false);
+		expect(mockUpdateCalls.some((call) => call.table === oauthTokensTable)).toBe(false);
+	});
+
+	// Round 10 review (P2): the previous code awaited the old-access-token
+	// revoke unguarded, AFTER the replacement pair was already inserted and
+	// AFTER the mutex had already revoked the old refresh token -- both
+	// committed. If this last step then threw, the whole handler threw too,
+	// so the client received a 500 with no tokens at all while its old
+	// refresh token was already dead: no usable retry path. Proves the fix:
+	// a successful rotation still returns 200 with the new credentials even
+	// when this best-effort cleanup step fails.
+	it('still returns the new tokens when revoking the old access token fails after a successful rotation', async () => {
+		mockOldAccessTokenRevokeShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.access_token).toBeTruthy();
+		expect(body.refresh_token).toBeTruthy();
 	});
 });

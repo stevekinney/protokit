@@ -44,3 +44,38 @@ describe('webServerEnvironmentSchema boolean flags', () => {
 		});
 	}
 });
+
+/**
+ * Round 10 review finding: `METRICS_API_KEY` and `HEALTH_READINESS_API_KEY`
+ * previously accepted a one-character value (`z.string().min(1)`) -- both
+ * environment validation and production startup allowed a trivially
+ * guessable bearer credential to gate an internet-facing operational
+ * endpoint. Raised to a minimum comparable to `SESSION_SIGNING_SECRET`'s
+ * entropy-oriented floor. Omission (unset) must remain the way to disable
+ * each route entirely -- these fields stay `.optional()`.
+ */
+const operationalBearerKeyFieldNames = ['METRICS_API_KEY', 'HEALTH_READINESS_API_KEY'] as const;
+
+describe('webServerEnvironmentSchema operational bearer keys', () => {
+	for (const fieldName of operationalBearerKeyFieldNames) {
+		const schema = z.object({ [fieldName]: webServerEnvironmentSchema[fieldName] });
+
+		it(`${fieldName}: a one-character value is rejected`, () => {
+			expect(() => schema.parse({ [fieldName]: 'x' })).toThrow();
+		});
+
+		it(`${fieldName}: a 31-character value is rejected`, () => {
+			expect(() => schema.parse({ [fieldName]: 'a'.repeat(31) })).toThrow();
+		});
+
+		it(`${fieldName}: a 32-character value is accepted`, () => {
+			const parsed = schema.parse({ [fieldName]: 'a'.repeat(32) });
+			expect(parsed[fieldName]).toBe('a'.repeat(32));
+		});
+
+		it(`${fieldName}: omitting the value entirely is still accepted (disables the route)`, () => {
+			const parsed = schema.parse({});
+			expect(parsed[fieldName]).toBeUndefined();
+		});
+	}
+});

@@ -167,6 +167,29 @@ describe('handleMcpRequestWithAuthentication', () => {
 		expect(response.status).toBe(200);
 	});
 
+	// Round 10 review (P2, sibling of `bearer-credential-authentication.ts`'s
+	// case-insensitive-scheme fix): RFC 7235 §2.1 makes the HTTP auth scheme
+	// name case-insensitive -- a standards-compliant client sending `bearer`
+	// (lowercase) must still authenticate.
+	it('delegates to MCP handler when the Authorization scheme is lowercase ("bearer")', async () => {
+		mockTokenResult = [
+			{
+				accessToken: 'hashed:valid-token',
+				clientId: 'client-1',
+				userId: 'user-1',
+				scope: 'mcp:read',
+				resource: 'http://localhost:3000/mcp',
+				revokedAt: null,
+				expiresAt: new Date(Date.now() + 60000),
+			},
+		];
+		const context = createContext({
+			headers: { authorization: 'bearer valid-token' },
+		});
+		const response = await handleMcpRequestWithAuthentication(context);
+		expect(response.status).toBe(200);
+	});
+
 	it('returns 401 when the token was issued for a different resource', async () => {
 		mockTokenResult = [
 			{

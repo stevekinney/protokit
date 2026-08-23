@@ -46,7 +46,20 @@ export const summarizePrompt = definePrompt({
 					{ diagnosticsUntil: environment.LOG_CONTENT_DIAGNOSTICS_UNTIL },
 					'Content diagnostics mode active: logging raw prompt topic',
 				);
-				requestLogger.info({ topic: arguments_.topic }, 'Prompt requested');
+				// Round 10 review finding: `logger.ts`'s `topic`/`*.topic`
+				// redaction paths are unconditional -- correctly so, since
+				// `topic` carries raw user content and must stay redacted
+				// whenever diagnostics are OFF. That means logging under the
+				// key `topic` here, even while diagnostics are deliberately
+				// ON, was silently replaced with `[REDACTED]` before it ever
+				// reached the destination -- diagnostics mode could not
+				// actually diagnose anything. `diagnosticTopic` is a
+				// deliberately different key, reachable ONLY from this one
+				// gated branch (never logged anywhere else in this
+				// codebase), so it is not subject to the always-on `topic`
+				// redaction paths, without weakening them for the default
+				// (diagnostics-off) path at all.
+				requestLogger.info({ diagnosticTopic: arguments_.topic }, 'Prompt requested');
 			} else {
 				requestLogger.info({ topicLength: arguments_.topic.length }, 'Prompt requested');
 			}
