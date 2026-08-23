@@ -224,6 +224,223 @@ describe('rewriting a file with an unquoted inline comment', () => {
 });
 
 /**
+ * Round 14 review finding (P2, `scripts/environment-file.ts:30`): a
+ * double-quoted value followed by a same-line inline comment (e.g.
+ * `SECRET="abc#def" # note`) failed the `endsWith('"')` check that used to
+ * decide whether a value was quoted, fell into the unquoted-comment
+ * branch, and truncated at the FIRST `#` -- including one legitimately
+ * inside the quotes -- corrupting the decoded value to `"abc` and baking
+ * that corruption in permanently on the very next rewrite.
+ */
+describe('parsing a quoted value followed by a same-line inline comment', () => {
+	test('a double-quoted value keeps a `#` inside the quotes and drops a trailing comment', () => {
+		const entries = parseEnvironmentEntries('SECRET="abc#def" # note\n');
+		expect(entries[0]).toEqual({
+			key: 'SECRET',
+			raw: 'SECRET="abc#def" # note',
+			value: 'abc#def',
+		});
+	});
+
+	test('a single-quoted value keeps a `#` inside the quotes and drops a trailing comment', () => {
+		const entries = parseEnvironmentEntries("SECRET='abc#def' # note\n");
+		expect(entries[0]?.value).toBe('abc#def');
+	});
+
+	test('a trailing comment with no space before the `#` is still recognized', () => {
+		const entries = parseEnvironmentEntries('SECRET="abc#def"#nospace\n');
+		expect(entries[0]?.value).toBe('abc#def');
+	});
+
+	test('a quoted value followed by only trailing whitespace decodes with no comment', () => {
+		const entries = parseEnvironmentEntries('SECRET="abc#def"   \n');
+		expect(entries[0]?.value).toBe('abc#def');
+	});
+
+	test('a rewrite triggered by an unrelated key does not corrupt a quoted value with an inline comment', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'protokit-env-quoted-comment-test-'));
+		try {
+			const environmentFile = join(directory, '.env.local');
+			writeSecretFileAtomic(environmentFile, 'SECRET="abc#def" # note\nOTHER=original\n');
+
+			appendEnvironmentEntryToFile(environmentFile, 'OTHER', 'updated');
+
+			const entries = readEnvironmentEntriesFromFile(environmentFile);
+			expect(entries['SECRET']).toBe('abc#def');
+			expect(entries['OTHER']).toBe('updated');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('a multi-line quoted value followed by a trailing comment on its closing line decodes and drops the comment (sibling defect, same root cause)', () => {
+		const entries = parseEnvironmentEntries('CERT="line1\nline2" # comment\nOTHER=value\n');
+		expect(entries.find((entry) => entry.key === 'CERT')?.value).toBe('line1\nline2');
+		expect(entries.find((entry) => entry.key === 'OTHER')?.value).toBe('value');
+	});
+
+	test('a quoted value followed by other, non-comment trailing text falls back to the literal unquoted value on that line only', () => {
+		const entries = parseEnvironmentEntries('F="abc" trailing text\nNEXT=ok\n');
+		expect(entries.find((entry) => entry.key === 'F')?.value).toBe('"abc" trailing text');
+		expect(entries.find((entry) => entry.key === 'NEXT')?.value).toBe('ok');
+	});
+
+	test("Bun's own .env loader agrees with what this parser reads for a quoted value with a trailing inline comment", async () => {
+		const directory = mkdtempSync(join(tmpdir(), 'protokit-env-quoted-comment-bun-test-'));
+		try {
+			const dotEnvFile = join(directory, '.env');
+			writeSecretFileAtomic(dotEnvFile, 'SECRET="abc#def" # note\n');
+
+			const parsed = readEnvironmentEntriesFromFile(dotEnvFile);
+
+			const proc = Bun.spawn(['bun', '-e', 'console.log(JSON.stringify(process.env["SECRET"]))'], {
+				cwd: directory,
+				stdout: 'pipe',
+			});
+			const output = (await new Response(proc.stdout).text()).trim();
+			await proc.exited;
+			expect(JSON.parse(output)).toBe(parsed['SECRET']);
+			expect(parsed['SECRET']).toBe('abc#def');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+/**
+ * Round 14 review: this parser has now had five separate rounds of "one more
+ * quoting/comment shape Bun handles that this parser didn't" findings
+ * (inline comments, single quotes, duplicate keys, multiline values, an
+ * `export` prefix, and now a quoted value with a trailing comment). Each
+ * prior fix added one more targeted example-based test rather than closing
+ * the class. This is a property-style sweep instead: a table of
+ * representative `.env` bodies covering every quoting/comment shape this
+ * file's own history has found a bug in, each compared directly against a
+ * real `bun -e` subprocess reading the same file -- not against this
+ * parser's own idea of what it should produce. A shape not in this table
+ * could still diverge, but every shape a real review round has ever
+ * flagged here is now pinned against Bun's actual behavior in one place,
+ * rather than scattered across one-off tests that could each individually
+ * be satisfied by a parser that special-cases exactly the reported example.
+ */
+describe("property-style parity against Bun's own .env loader", () => {
+	const cases: Array<{ name: string; content: string; keys: string[] }> = [
+		{ name: 'unquoted value with inline comment', content: 'PORT=3000 # local\n', keys: ['PORT'] },
+		{ name: 'unquoted value with no comment', content: 'PLAIN=value\n', keys: ['PLAIN'] },
+		{
+			name: 'unquoted value with a hash and no preceding space',
+			content: 'A=value#nocomment\n',
+			keys: ['A'],
+		},
+		{
+			name: 'double-quoted value containing a hash',
+			content: 'SECRET="abc#def"\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'double-quoted value containing a hash with a trailing comment',
+			content: 'SECRET="abc#def" # note\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'double-quoted value containing a hash with an unspaced trailing comment',
+			content: 'SECRET="abc#def"#note\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'single-quoted value containing a hash',
+			content: "SECRET='abc#def'\n",
+			keys: ['SECRET'],
+		},
+		{
+			name: 'single-quoted value containing a hash with a trailing comment',
+			content: "SECRET='abc#def' # note\n",
+			keys: ['SECRET'],
+		},
+		{
+			name: 'double-quoted value with trailing whitespace only',
+			content: 'SECRET="abc#def"   \n',
+			keys: ['SECRET'],
+		},
+		{
+			// Only `\n`/`\r` are exercised here, not `\"`/`\\`: this sweep found
+			// that Bun's own loader does NOT unescape `\"` or `\\` inside a
+			// double-quoted value (both stay literal backslash-plus-character at
+			// runtime), while this parser's `decodeQuotedInner` does unescape
+			// them, matching `encodeEnvironmentValue`'s own output on the write
+			// side. That divergence is a real, separate defect from the one this
+			// round fixes -- reported to the reviewer rather than silently
+			// patched here, since the correct fix changes this file's escaping
+			// contract for every value containing a literal quote or backslash,
+			// which is a bigger, more consequential decision than this item's
+			// scope covers.
+			name: 'double-quoted value with a newline escape',
+			content: 'SECRET="line1\\nline2"\n',
+			keys: ['SECRET'],
+		},
+		{
+			name: 'multi-line double-quoted value',
+			content: 'CERT="line1\nline2"\nOTHER=value\n',
+			keys: ['CERT', 'OTHER'],
+		},
+		{
+			name: 'multi-line double-quoted value with a trailing comment on its closing line',
+			content: 'CERT="line1\nline2" # comment\nOTHER=value\n',
+			keys: ['CERT', 'OTHER'],
+		},
+		{
+			name: 'multi-line single-quoted value',
+			content: "CERT='line1\nline2'\nOTHER=value\n",
+			keys: ['CERT', 'OTHER'],
+		},
+		{
+			name: 'export-prefixed entry',
+			content: 'export SESSION_SIGNING_SECRET=abc123\n',
+			keys: ['SESSION_SIGNING_SECRET'],
+		},
+		{
+			name: 'duplicated key uses the last occurrence',
+			content: 'DUPLICATE=first\nDUPLICATE=second\n',
+			keys: ['DUPLICATE'],
+		},
+		{
+			name: 'empty double-quoted value',
+			content: 'EMPTY=""\n',
+			keys: ['EMPTY'],
+		},
+		{
+			name: 'leading hash makes the whole value a comment',
+			content: 'D=#leadinghash\n',
+			keys: ['D'],
+		},
+	];
+
+	for (const { name, content, keys } of cases) {
+		test(`matches Bun's own .env loader: ${name}`, async () => {
+			const directory = mkdtempSync(join(tmpdir(), 'protokit-env-parity-test-'));
+			try {
+				const dotEnvFile = join(directory, '.env');
+				writeSecretFileAtomic(dotEnvFile, content);
+
+				const parsed = readEnvironmentEntriesFromFile(dotEnvFile);
+
+				const script = `console.log(JSON.stringify(${JSON.stringify(keys)}.map((key) => process.env[key])))`;
+				const proc = Bun.spawn(['bun', '-e', script], { cwd: directory, stdout: 'pipe' });
+				const output = (await new Response(proc.stdout).text()).trim();
+				await proc.exited;
+				const bunValues: Array<string | undefined> = JSON.parse(output);
+
+				for (const [index, key] of keys.entries()) {
+					expect(parsed[key]).toBe(bunValues[index]);
+				}
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
+});
+
+/**
  * Round 13 review finding (P2, `scripts/environment-file.ts:107`): a
  * Bun-supported multiline quoted value -- a literal newline embedded
  * between the quotes, written across two physical lines in the file -- was

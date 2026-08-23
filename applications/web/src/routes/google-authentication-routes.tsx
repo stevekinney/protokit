@@ -124,15 +124,62 @@ async function upsertGoogleUser(input: {
 	// created rather than leave an orphaned account no Google identity can
 	// ever sign into again — not atomic, but strictly better than a silent
 	// orphan.
+	//
+	// Round-14 review (P2): two concurrent first-time sign-ins for the same
+	// never-seen-before Google account both pass the `existingGoogleAccount`
+	// and `existingUser` lookups above (neither has committed yet when the
+	// other reads), then race this insert on `users.email`'s unique index.
+	// The loser used to hit that violation as a bare, uncaught error --
+	// outside every `isUniqueConstraintViolation` handler in this function
+	// -- and fell through to `handleGoogleSignInCallback`'s generic 500.
+	// `.onConflictDoNothing()` makes that race resolve inside Postgres as a
+	// single atomic statement instead of a throw: the loser gets back no
+	// row rather than an exception, so it can decide what happened next
+	// instead of being handed a 500 for a request that, from the user's
+	// perspective, just signed in from another tab.
 	const userId = randomUUID();
-	await database.insert(schema.users).values({
-		id: userId,
-		email: normalizedEmail,
-		name: input.name,
-		image: input.image,
-		emailVerified: true,
-		role: 'user',
-	});
+	const [insertedUser] = await database
+		.insert(schema.users)
+		.values({
+			id: userId,
+			email: normalizedEmail,
+			name: input.name,
+			image: input.image,
+			emailVerified: true,
+			role: 'user',
+		})
+		.onConflictDoNothing({ target: schema.users.email })
+		.returning({ id: schema.users.id });
+
+	if (!insertedUser) {
+		// Two, and only two, things can make this email already taken here:
+		// a genuinely unrelated pre-existing account already owns it (the
+		// same conflict `existingUser` above already rejects outside the
+		// race window -- SECURITY: this must stay a conflict. Reconciling on
+		// email alone would let any Google account that happens to share an
+		// address with an existing user silently attach to it, which is an
+		// account-takeover primitive, not a race fix), or the concurrent
+		// duplicate request for THIS EXACT, cryptographically-verified
+		// subject won the same race and is mid-flight inserting its own
+		// `userGoogleAccounts` row below. Only the second is safe to
+		// reconcile onto, and the only reliable way to tell them apart is
+		// `userGoogleAccounts.googleSubject` (its primary key) actually
+		// resolving to a row for THIS subject -- an attacker cannot forge
+		// that row into existing; it can only be created by a request that
+		// already held a Google-verified ID token for this exact subject.
+		// That insert is a second, separate round trip after the winner's
+		// `users` insert, so a short bounded retry (capped at 5 attempts,
+		// matching this codebase's standing retry-loop cap) gives it the
+		// small window it needs to land before this request gives up and
+		// reports a genuine conflict instead of a false one.
+		for (let attempt = 0; attempt < 5; attempt++) {
+			const winner = await findUserIdByGoogleSubject(input.subject);
+			if (winner) return winner;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+
+		throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR);
+	}
 
 	try {
 		await database.insert(schema.userGoogleAccounts).values({
@@ -141,6 +188,33 @@ async function upsertGoogleUser(input: {
 			email: normalizedEmail,
 		});
 	} catch (error) {
+		if (isUniqueConstraintViolation(error)) {
+			// This insert's only unique constraint is the `googleSubject`
+			// primary key, so a violation here can only mean one thing: some
+			// other request already fully linked this exact, verified
+			// subject to a `users` row -- there is no "different identity,
+			// same subject" case, Google subjects are unique by
+			// construction. Unlike the email-uniqueness race above, that
+			// makes this always safe to reconcile: whatever `userId` already
+			// owns this subject is, by definition, the account this same
+			// Google identity already established. Reconcile onto it rather
+			// than manufacturing a conflict for a request that is, from the
+			// user's perspective, a legitimate concurrent sign-in.
+			const winner = await findUserIdByGoogleSubject(input.subject);
+
+			try {
+				await database.delete(schema.users).where(eq(schema.users.id, userId));
+			} catch (cleanupError) {
+				logger.error(
+					{ err: cleanupError, userId },
+					'Failed to clean up orphaned user row after a failed Google account insert',
+				);
+			}
+
+			if (winner) return winner;
+			throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR, { cause: error });
+		}
+
 		try {
 			await database.delete(schema.users).where(eq(schema.users.id, userId));
 		} catch (cleanupError) {
@@ -149,14 +223,19 @@ async function upsertGoogleUser(input: {
 				'Failed to clean up orphaned user row after a failed Google account insert',
 			);
 		}
-
-		if (isUniqueConstraintViolation(error)) {
-			throw new Error(GOOGLE_IDENTITY_CONFLICT_ERROR, { cause: error });
-		}
 		throw error;
 	}
 
 	return userId;
+}
+
+async function findUserIdByGoogleSubject(subject: string): Promise<string | null> {
+	const [account] = await database
+		.select({ userId: schema.userGoogleAccounts.userId })
+		.from(schema.userGoogleAccounts)
+		.where(eq(schema.userGoogleAccounts.googleSubject, subject))
+		.limit(1);
+	return account?.userId ?? null;
 }
 
 export async function handleGoogleSignInStart(context: RequestContext): Promise<Response> {

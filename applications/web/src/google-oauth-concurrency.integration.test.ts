@@ -216,4 +216,62 @@ describeWithRedis('Google sign-in concurrency (requires Redis)', () => {
 		const statuses = [first.status, second.status].sort();
 		expect(statuses).toEqual([302, 400]);
 	});
+
+	it('two independently-started tabs completing sign-in for the same never-before-seen Google account both succeed and reconcile to one user (round-14 review)', async () => {
+		// Regression for a round-14 review finding (P2): unlike the "same
+		// callback twice" race above, this races two DIFFERENT `state`
+		// values -- two genuinely separate authorization code exchanges,
+		// each with its own single-use claim -- that both resolve to the
+		// SAME, never-before-seen Google subject and email. The single-use
+		// state store cannot serialize this one; it only ever sees two
+		// distinct, individually-valid states. The race is decided entirely
+		// inside `upsertGoogleUser`'s two-step, non-transactional insert.
+		// Before this fix, the loser's `users.email` unique-constraint
+		// violation was an uncaught error outside every
+		// `isUniqueConstraintViolation` handler in that function, and
+		// `handleGoogleSignInCallback` turned it into a bare 500 -- even
+		// though the winner had, from the user's point of view, just
+		// completed the exact same sign-in successfully.
+		const handle = startServer();
+		const email = `fedauth-concurrency-${testRunId}-same-identity@example.com`;
+		createdUserEmails.push(email);
+		currentIdentity.value = {
+			sub: `concurrency-sub-${testRunId}-same-identity`,
+			email,
+			name: 'Same Identity',
+		};
+
+		const [tabA, tabB] = await Promise.all([startSignIn(handle), startSignIn(handle)]);
+		expect(tabA.state).not.toBe(tabB.state);
+
+		const [responseA, responseB] = await Promise.all([
+			fetchFromTestServer(handle, `/auth/google/callback?code=stub-code&state=${tabA.state}`, {
+				headers: { cookie: tabA.cookie },
+				redirect: 'manual',
+			}),
+			fetchFromTestServer(handle, `/auth/google/callback?code=stub-code&state=${tabB.state}`, {
+				headers: { cookie: tabB.cookie },
+				redirect: 'manual',
+			}),
+		]);
+
+		// The concrete, observable failure mode this fix prevents: neither
+		// tab gets a 500 -- both requests represent the same real user
+		// completing the same real sign-in, just in two tabs.
+		expect(responseA.status).toBe(302);
+		expect(responseB.status).toBe(302);
+
+		const users = await database
+			.select({ id: schema.users.id })
+			.from(schema.users)
+			.where(eq(schema.users.email, email));
+		expect(users.length).toBe(1);
+
+		const googleAccounts = await database
+			.select({ userId: schema.userGoogleAccounts.userId })
+			.from(schema.userGoogleAccounts)
+			.where(eq(schema.userGoogleAccounts.googleSubject, currentIdentity.value.sub));
+		expect(googleAccounts.length).toBe(1);
+		expect(googleAccounts[0]?.userId).toBe(users[0]?.id);
+	});
 });

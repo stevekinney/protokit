@@ -48,13 +48,52 @@ type DependencySnapshot = {
 // would await the same probe that will never resolve or reject.
 const databaseHealthProbeTimeoutMs = 2000;
 
+// Round-14 review (P2): `withDeadline` bounds how long a CALLER waits, but it cannot cancel the
+// `database.execute` promise it raced against -- there is no cancellation to ask for. Checked
+// directly against the installed `@neondatabase/serverless`/`drizzle-orm` versions: the neon-http
+// driver only accepts a `signal` via `fetchOptions` passed to `neon(...)` at CONNECTION
+// construction (a fixed default merged into every query's fetch call), not per query, and
+// `packages/database/src/index.ts` builds one shared, module-level `database` singleton reused by
+// every caller in the process -- there is no per-call hook to attach a fresh `AbortSignal` to just
+// this probe's fetch without either bypassing drizzle's `execute()` for this one call site or
+// restructuring the shared client to thread a signal through every query in the codebase, which a
+// readiness probe does not justify. So the promise `withDeadline` gave up on keeps running for
+// real, and -- before this fix -- every later readiness poll during a prolonged outage launched
+// its OWN fresh `database.execute()` on top of it, so abandoned probes (and the open fetches
+// behind them) accumulated without bound for as long as the outage lasted.
+//
+// The honest fix given that constraint is the one `withDeadline`'s own doc comment already
+// gestures at without providing: bound concurrency instead of pretending to cancel. At most one
+// real `database.execute()` is ever outstanding; a readiness poll that arrives while one is
+// already in flight races the SAME promise (with its own fresh deadline) rather than starting a
+// second one, so the number of abandoned probes never exceeds one no matter how many polls arrive
+// during the outage. The slot only clears once the real promise genuinely settles -- a truly
+// permanent hang keeps reporting degraded from that one still-pending probe rather than
+// manufacturing false recovery; real recovery is observed on the next poll that arrives after it
+// finally settles.
+let outstandingDatabaseProbe: Promise<boolean> | null = null;
+
 async function isDatabaseHealthy(): Promise<boolean> {
+	if (!outstandingDatabaseProbe) {
+		outstandingDatabaseProbe = database
+			.execute(sql`select 1`)
+			.then(() => true)
+			.catch(() => false)
+			.finally(() => {
+				outstandingDatabaseProbe = null;
+			});
+	}
+
 	try {
-		await withDeadline(database.execute(sql`select 1`), databaseHealthProbeTimeoutMs);
-		return true;
+		return await withDeadline(outstandingDatabaseProbe, databaseHealthProbeTimeoutMs);
 	} catch {
 		return false;
 	}
+}
+
+/** Test-only: discards the tracked outstanding database probe between test cases. */
+export function resetOutstandingDatabaseProbeForTests(): void {
+	outstandingDatabaseProbe = null;
 }
 
 async function probeDependencies(): Promise<DependencySnapshot> {
@@ -94,8 +133,14 @@ let getCachedDependencySnapshot = createCoalescedProbe({
 	probe: probeDependencies,
 });
 
-/** Test-only: discards the cached readiness snapshot so each test observes a fresh probe. */
+/**
+ * Test-only: discards the cached readiness snapshot so each test observes a fresh probe. Also
+ * discards the tracked outstanding database probe (see `isDatabaseHealthy` above) -- without
+ * that, a test that leaves a hung mock probe outstanding would otherwise have it reused,
+ * deadline and all, by the very next test that calls this to get a clean slate.
+ */
 export function resetHealthReadinessCacheForTests(): void {
+	resetOutstandingDatabaseProbeForTests();
 	getCachedDependencySnapshot = createCoalescedProbe({
 		ttlMs: (environment.HEALTH_READINESS_CACHE_TTL_SECONDS ?? 2) * 1000,
 		probe: probeDependencies,

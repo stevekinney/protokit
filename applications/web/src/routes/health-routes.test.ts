@@ -239,6 +239,37 @@ describe('handleHealthReadinessGet', () => {
 		expect(recoveredBody.dependencies.database).toBe('ok');
 	}, 10_000);
 
+	it('does not start a second real database probe while the first is still outstanding, even once the cached snapshot expires (round-14 review)', async () => {
+		// Regression for a round-14 review finding (P2): `withDeadline` bounds how long a
+		// CALLER waits for `database.execute`, but it cannot cancel that promise -- the
+		// installed neon-http driver has no per-call cancellation hook through the shared
+		// drizzle client (see the doc comment on `isDatabaseHealthy`). Before this fix, once
+		// the coalesced-probe cache's cached (degraded) snapshot expired, the NEXT readiness
+		// poll launched a brand-new `database.execute()` on top of the still-pending one from
+		// the previous poll -- repeated forever during a prolonged outage, each abandoned
+		// probe never cleaned up. Setting the cache TTL to 0 forces the very next call past
+		// the cached-result branch, straight back into `probeDependencies()`, without waiting
+		// for a real TTL window -- proving the bound holds across cache expiry, not just
+		// within one coalescing window.
+		setEnvironment({ HEALTH_READINESS_CACHE_TTL_SECONDS: 0 });
+		resetHealthReadinessCacheForTests();
+		mockDatabaseCallCount = 0;
+		mockDatabaseHang = true;
+
+		const first = await handleHealthReadinessGet(buildContext());
+		expect(first.status).toBe(503);
+		expect(mockDatabaseCallCount).toBe(1);
+
+		const second = await handleHealthReadinessGet(buildContext());
+		expect(second.status).toBe(503);
+		// The fix under test: still exactly one real database call, not two -- the second
+		// poll reused the same still-outstanding probe instead of starting its own.
+		expect(mockDatabaseCallCount).toBe(1);
+
+		mockDatabaseHang = false;
+		resetHealthReadinessCacheForTests();
+	}, 15_000);
+
 	it('rejects a request over plaintext transport in production', async () => {
 		setEnvironment({ NODE_ENV: 'production' });
 		const response = await handleHealthReadinessGet(

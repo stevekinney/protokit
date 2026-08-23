@@ -94,7 +94,12 @@ mock.module('@template/database', () => ({
 			}),
 		}),
 		insert: () => ({
-			values: async () => {},
+			values: (row: { id?: string }) =>
+				Object.assign(Promise.resolve(undefined), {
+					onConflictDoNothing: () => ({
+						returning: async () => [{ id: row.id }],
+					}),
+				}),
 		}),
 		update: () => ({
 			set: () => ({

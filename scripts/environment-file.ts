@@ -25,34 +25,49 @@ export function encodeEnvironmentValue(value: string): string {
 	return `"${escaped}"`;
 }
 
+/**
+ * Decodes the text strictly between a matched pair of quote characters, given the quote style
+ * that was used. Double quotes support the same backslash escapes `encodeEnvironmentValue`
+ * writes (`\n`, `\r`, `\"`, `\\`); single quotes are entirely literal, matching Bun's own
+ * loader. Factored out of `decodeEnvironmentValue` so `parseEnvironmentEntries` can decode a
+ * quoted span it has already located by character offset (same-line or spanning several
+ * physical lines) without re-deriving the quote boundaries from string content -- which is what
+ * let a same-line trailing comment or a value's own `#` fool the boundary detection. See
+ * `decodeQuotedValueWithBoundaries` below for that failure mode in detail.
+ */
+function decodeQuotedInner(inner: string, quoteChar: '"' | "'"): string {
+	if (quoteChar === "'") return inner;
+
+	let result = '';
+	for (let index = 0; index < inner.length; index++) {
+		const char = inner[index];
+		if (char === '\\' && index + 1 < inner.length) {
+			const next = inner[index + 1];
+			if (next === 'n') {
+				result += '\n';
+				index++;
+				continue;
+			}
+			if (next === 'r') {
+				result += '\r';
+				index++;
+				continue;
+			}
+			if (next === '"' || next === '\\') {
+				result += next;
+				index++;
+				continue;
+			}
+		}
+		result += char;
+	}
+	return result;
+}
+
 export function decodeEnvironmentValue(raw: string): string {
 	const trimmed = raw.trim();
 	if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
-		const inner = trimmed.slice(1, -1);
-		let result = '';
-		for (let index = 0; index < inner.length; index++) {
-			const char = inner[index];
-			if (char === '\\' && index + 1 < inner.length) {
-				const next = inner[index + 1];
-				if (next === 'n') {
-					result += '\n';
-					index++;
-					continue;
-				}
-				if (next === 'r') {
-					result += '\r';
-					index++;
-					continue;
-				}
-				if (next === '"' || next === '\\') {
-					result += next;
-					index++;
-					continue;
-				}
-			}
-			result += char;
-		}
-		return result;
+		return decodeQuotedInner(trimmed.slice(1, -1), '"');
 	}
 
 	// Round 10 review finding: a single-quoted value (`GOOGLE_CLIENT_SECRET='abc#def'`)
@@ -69,7 +84,7 @@ export function decodeEnvironmentValue(raw: string): string {
 	if (trimmed.startsWith("'") && trimmed.length >= 2) {
 		const closingIndex = trimmed.indexOf("'", 1);
 		if (closingIndex !== -1) {
-			return trimmed.slice(1, closingIndex);
+			return decodeQuotedInner(trimmed.slice(1, closingIndex), "'");
 		}
 	}
 
@@ -202,17 +217,41 @@ export function parseEnvironmentEntries(content: string): ParsedEnvironmentEntry
 			}
 
 			const closingQuoteIndex = findClosingQuoteIndex(normalized, openQuoteIndex, quoteChar);
-			if (closingQuoteIndex !== null && closingQuoteIndex >= lineEnd) {
+			if (closingQuoteIndex !== null) {
+				// Round 14 review finding (P2): the closing quote is only the START of
+				// deciding whether this is really a quoted value -- what follows it,
+				// on ITS OWN physical line, decides whether the quote pair is honored
+				// at all. Confirmed directly against Bun's own `.env` loader: nothing
+				// (end of line) or a `#` comment (with or without a preceding space,
+				// e.g. `SECRET="abc#def" # note` or `D="abc"#nospace`) after the
+				// closing quote keeps the quoted value, with the comment discarded;
+				// anything else after it (`F="abc" trailing text`) makes Bun treat the
+				// ENTIRE assignment as an unquoted value, quote characters and all.
+				// The previous version handed the whole raw span -- quotes, inner `#`,
+				// and any trailing comment together -- to `decodeEnvironmentValue`,
+				// which re-derives quote boundaries from `endsWith('"')`. That check
+				// fails the moment a same-line trailing comment follows the closing
+				// quote, so it fell through to the unquoted branch and truncated at
+				// the FIRST `#` -- including one legitimately inside the quotes. This
+				// decodes the already-located span directly instead of re-deriving its
+				// boundaries, and applies the identical rule to a multi-line value's
+				// closing line (a sibling defect this same fix closes: a certificate
+				// spanning two physical lines followed by a trailing comment suffered
+				// the identical truncation, one level up).
 				const closingLineNewline = normalized.indexOf('\n', closingQuoteIndex);
-				const logicalLineEnd = closingLineNewline === -1 ? length : closingLineNewline;
-				const rawValueLogical = normalized.slice(cursor + equalsIndexInRawLine + 1, logicalLineEnd);
-				entries.push({
-					key,
-					raw: normalized.slice(cursor, logicalLineEnd),
-					value: decodeEnvironmentValue(rawValueLogical),
-				});
-				cursor = logicalLineEnd + 1;
-				continue;
+				const closingLineEnd = closingLineNewline === -1 ? length : closingLineNewline;
+				const trailingAfterQuote = normalized.slice(closingQuoteIndex + 1, closingLineEnd).trim();
+
+				if (trailingAfterQuote === '' || trailingAfterQuote.startsWith('#')) {
+					const inner = normalized.slice(openQuoteIndex + 1, closingQuoteIndex);
+					entries.push({
+						key,
+						raw: normalized.slice(cursor, closingLineEnd),
+						value: decodeQuotedInner(inner, quoteChar),
+					});
+					cursor = closingLineEnd + 1;
+					continue;
+				}
 			}
 		}
 
