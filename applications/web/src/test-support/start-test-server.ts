@@ -41,7 +41,13 @@ export interface TestServerHandle {
 	stop(): void;
 }
 
-const TEST_SERVER_INSTANCE_HEADER = 'x-test-server-instance';
+/**
+ * Exported so callers that must drive `fetch` directly instead of through
+ * {@link fetchFromTestServer} -- for example handing a custom `fetch` to an
+ * SDK-owned transport -- can apply the same identity check by hand rather
+ * than re-deriving (or silently skipping) it.
+ */
+export const TEST_SERVER_INSTANCE_HEADER = 'x-test-server-instance';
 
 /**
  * Starts a `Bun.serve` instance on an OS-assigned port, wrapping `handler`

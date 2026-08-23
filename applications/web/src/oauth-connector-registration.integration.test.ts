@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from 'bun:
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -70,23 +72,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 function extractHiddenInputValue(html: string, fieldName: string): string {
@@ -125,10 +124,10 @@ afterAll(async () => {
 	await deleteTestAccounts({ clientIds: insertedClientIds, userIds: [userId] });
 });
 
-async function signIn(port: number): Promise<string> {
+async function signIn(handle: TestServerHandle): Promise<string> {
 	const session = await createSession({
 		userId,
-		request: new Request(`http://127.0.0.1:${port}/`),
+		request: new Request(`http://127.0.0.1:${handle.port}/`),
 	});
 	return session.cookieHeaderValue.split(';')[0]!;
 }
@@ -148,9 +147,9 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 	// against a limit meant for unit tests. A genuine hang still fails, at 30s
 	// instead of 5s.
 	it('OAUTH-002: a DCR public client (auth_method none) gets no secret, completes PKCE, rotates its refresh token exactly once, and cannot replay it', async () => {
-		const port = startServer();
+		const handle = startServer();
 
-		const registerResponse = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+		const registerResponse = await fetchFromTestServer(handle, `/oauth/register`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({
@@ -171,11 +170,12 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 		const publicClientId = registration.client_id;
 		insertedClientIds.push(publicClientId);
 
-		const cookie = await signIn(port);
-		const resource = `http://127.0.0.1:${port}/mcp`;
+		const cookie = await signIn(handle);
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
 
-		const consentResponse = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${publicClientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+		const consentResponse = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${publicClientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
 			{ headers: { cookie } },
 		);
 		expect(consentResponse.status).toBe(200);
@@ -183,7 +183,7 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 		const transactionId = extractHiddenInputValue(html, 'transaction_id');
 		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
 
-		const approveResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const approveResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -200,7 +200,7 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 		const code = new URL(approveResponse.headers.get('location')!).searchParams.get('code')!;
 
 		// Public client: no client_secret on the token request either.
-		const tokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const tokenResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -219,7 +219,7 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 		};
 		expect(firstTokens.refresh_token.length).toBeGreaterThan(0);
 
-		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+		const mcpResponse = await fetchFromTestServer(handle, `/mcp`, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${firstTokens.access_token}`,
@@ -231,7 +231,7 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 		expect(mcpResponse.status).not.toBe(401);
 
 		// Rotate once.
-		const refreshResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const refreshResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -250,7 +250,7 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 		expect(secondTokens.access_token).not.toBe(firstTokens.access_token);
 
 		// Replaying the original (now-rotated) refresh token must fail.
-		const replayResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const replayResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -268,7 +268,7 @@ describeWithRedis('public client registration and refresh rotation (requires Red
 
 describeWithRedis('Client ID Metadata Document registration (requires Redis)', () => {
 	it('OAUTH-002: a valid CIMD document is fetched, validated, and upserted, and the resulting client can complete the full chain', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const clientIdUrl = `https://cimd-interop-test.example.com/client-${testRunId}.json`;
 		mockCimdState.document = {
 			clientId: clientIdUrl,
@@ -280,11 +280,12 @@ describeWithRedis('Client ID Metadata Document registration (requires Redis)', (
 		};
 		insertedClientIds.push(clientIdUrl);
 
-		const cookie = await signIn(port);
-		const resource = `http://127.0.0.1:${port}/mcp`;
+		const cookie = await signIn(handle);
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
 
-		const consentResponse = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${encodeURIComponent(clientIdUrl)}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+		const consentResponse = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${encodeURIComponent(clientIdUrl)}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
 			{ headers: { cookie } },
 		);
 		expect(consentResponse.status).toBe(200);
@@ -304,7 +305,7 @@ describeWithRedis('Client ID Metadata Document registration (requires Redis)', (
 
 		const transactionId = extractHiddenInputValue(html, 'transaction_id');
 		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
-		const approveResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const approveResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -320,7 +321,7 @@ describeWithRedis('Client ID Metadata Document registration (requires Redis)', (
 		expect(approveResponse.status).toBe(302);
 		const code = new URL(approveResponse.headers.get('location')!).searchParams.get('code')!;
 
-		const tokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const tokenResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -335,7 +336,7 @@ describeWithRedis('Client ID Metadata Document registration (requires Redis)', (
 		expect(tokenResponse.status).toBe(200);
 		const tokens = (await tokenResponse.json()) as { access_token: string };
 
-		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+		const mcpResponse = await fetchFromTestServer(handle, `/mcp`, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${tokens.access_token}`,
@@ -348,14 +349,15 @@ describeWithRedis('Client ID Metadata Document registration (requires Redis)', (
 	});
 
 	it('OAUTH-002: an unfetchable/invalid Client ID Metadata Document creates no client row', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const clientIdUrl = `https://cimd-interop-test.example.com/nonexistent-${testRunId}.json`;
 		mockCimdState.document = null;
 
-		const cookie = await signIn(port);
-		const resource = `http://127.0.0.1:${port}/mcp`;
-		const response = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${encodeURIComponent(clientIdUrl)}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+		const cookie = await signIn(handle);
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
+		const response = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${encodeURIComponent(clientIdUrl)}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
 			{ headers: { cookie } },
 		);
 		expect(response.status).toBe(400);

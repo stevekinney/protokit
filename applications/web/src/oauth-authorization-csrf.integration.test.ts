@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -38,23 +40,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 function extractHiddenInputValue(html: string, fieldName: string): string {
@@ -100,20 +99,28 @@ afterAll(async () => {
 });
 
 describeWithRedis('OAuth consent CSRF and transaction binding (requires Redis)', () => {
-	async function signIn(port: number): Promise<string> {
+	async function signIn(handle: TestServerHandle): Promise<string> {
 		const session = await createSession({
 			userId,
-			request: new Request(`http://127.0.0.1:${port}/`),
+			request: new Request(`http://127.0.0.1:${handle.port}/`),
 		});
 		return session.cookieHeaderValue.split(';')[0]!;
 	}
 
+	// The `resource` query parameter is an OAuth RFC 8707 resource
+	// identifier, not a fetch target -- it must literally contain this
+	// server instance's own port (the transaction later validates that the
+	// minted token's audience matches the resource that was authorized), so
+	// it stays a bare `handle.port` interpolation. Only the request itself
+	// goes through `fetchFromTestServer`, which is what applies OPEN-9's
+	// identity check.
 	async function getConsentPage(
-		port: number,
+		handle: TestServerHandle,
 		cookie: string,
 	): Promise<{ transactionId: string; csrfToken: string }> {
-		const response = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://127.0.0.1:${port}/mcp`,
+		const response = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&resource=http://127.0.0.1:${handle.port}/mcp`,
 			{ headers: { cookie } },
 		);
 		expect(response.status).toBe(200);
@@ -125,11 +132,11 @@ describeWithRedis('OAuth consent CSRF and transaction binding (requires Redis)',
 	}
 
 	it('editing the transaction id in the approve form is rejected and issues no code', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const { csrfToken } = await getConsentPage(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { csrfToken } = await getConsentPage(handle, cookie);
 
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const response = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -146,11 +153,11 @@ describeWithRedis('OAuth consent CSRF and transaction binding (requires Redis)',
 	});
 
 	it('editing the csrf token in the approve form is rejected and issues no code', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const { transactionId } = await getConsentPage(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { transactionId } = await getConsentPage(handle, cookie);
 
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const response = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -167,11 +174,11 @@ describeWithRedis('OAuth consent CSRF and transaction binding (requires Redis)',
 	});
 
 	it('a cross-site approve request is rejected even with the correct transaction id and csrf token', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const { transactionId, csrfToken } = await getConsentPage(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { transactionId, csrfToken } = await getConsentPage(handle, cookie);
 
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const response = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -188,11 +195,11 @@ describeWithRedis('OAuth consent CSRF and transaction binding (requires Redis)',
 	});
 
 	it('approving with the exact issued transaction id and csrf token succeeds exactly once', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const { transactionId, csrfToken } = await getConsentPage(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { transactionId, csrfToken } = await getConsentPage(handle, cookie);
 
-		const firstResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const firstResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -210,7 +217,7 @@ describeWithRedis('OAuth consent CSRF and transaction binding (requires Redis)',
 		expect(location.startsWith('https://example.com/callback?code=')).toBe(true);
 
 		// Replaying the identical, already-consumed form is rejected.
-		const secondResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const secondResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {

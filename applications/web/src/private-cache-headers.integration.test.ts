@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -39,23 +41,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 const testRunId = randomUUID();
@@ -79,8 +78,8 @@ afterAll(async () => {
 
 describe('private response caching (real dispatcher)', () => {
 	it('the unauthenticated home page is non-cacheable and varies on Cookie', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('cache-control')).toBe('no-store, private');
 		expect(response.headers.get('pragma')).toBe('no-cache');
@@ -88,13 +87,13 @@ describe('private response caching (real dispatcher)', () => {
 	});
 
 	it('the authenticated home page is non-cacheable, so a proxy cannot key a cached copy by URL alone', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const session = await createSession({
 			userId,
-			request: new Request(`http://127.0.0.1:${port}/`),
+			request: new Request(`http://127.0.0.1:${handle.port}/`),
 		});
 		const rawCookie = session.cookieHeaderValue.split(';')[0];
-		const response = await fetch(`http://127.0.0.1:${port}/`, {
+		const response = await fetchFromTestServer(handle, `/`, {
 			headers: { cookie: rawCookie },
 		});
 		expect(response.status).toBe(200);
@@ -105,9 +104,10 @@ describe('private response caching (real dispatcher)', () => {
 	});
 
 	it('an OAuth authorize error page is non-cacheable', async () => {
-		const port = startServer();
-		const response = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=&redirect_uri=&response_type=code&code_challenge=abc`,
+		const handle = startServer();
+		const response = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=&redirect_uri=&response_type=code&code_challenge=abc`,
 			{ redirect: 'manual' },
 		);
 		// No session cookie -> redirected to sign-in, which is also non-cacheable.
@@ -117,8 +117,8 @@ describe('private response caching (real dispatcher)', () => {
 
 	describeWithRedis('DCR registration response (requires Redis)', () => {
 		it('the client-secret-bearing registration response is explicitly no-store', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, `/oauth/register`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({

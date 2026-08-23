@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, describe, expect, it, mock } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -94,23 +96,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 function parseSetCookiePair(setCookieHeader: string): { name: string; value: string } {
@@ -119,8 +118,8 @@ function parseSetCookiePair(setCookieHeader: string): { name: string; value: str
 	return { name: pair.slice(0, separatorIndex), value: pair.slice(separatorIndex + 1) };
 }
 
-async function startSignIn(port: number): Promise<{ cookie: string; state: string }> {
-	const response = await fetch(`http://127.0.0.1:${port}/auth/google/start`, {
+async function startSignIn(handle: TestServerHandle): Promise<{ cookie: string; state: string }> {
+	const response = await fetchFromTestServer(handle, '/auth/google/start', {
 		redirect: 'manual',
 	});
 	expect(response.status).toBe(302);
@@ -152,8 +151,8 @@ afterAll(async () => {
 
 describeWithRedis('Google sign-in interop (requires Redis)', () => {
 	it('GET /auth/google/start requests PKCE S256 and a nonce, and sets a per-attempt cookie', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/auth/google/start`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/auth/google/start`, {
 			redirect: 'manual',
 		});
 		expect(response.status).toBe(302);
@@ -171,14 +170,15 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 	});
 
 	it('completes a full sign-in round trip and clears the state cookie on success', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const email = `fedauth-interop-${testRunId}-a@example.com`;
 		createdUserEmails.push(email);
 		stubbedIdentity.current = { sub: `interop-sub-${testRunId}-a`, email, name: 'Interop A' };
 
-		const { cookie, state } = await startSignIn(port);
-		const response = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${state}`,
+		const { cookie, state } = await startSignIn(handle);
+		const response = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${state}`,
 			{ headers: { cookie }, redirect: 'manual' },
 		);
 
@@ -196,9 +196,9 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 	});
 
 	it('rejects a missing code and still clears the state cookie', async () => {
-		const port = startServer();
-		const { cookie, state } = await startSignIn(port);
-		const response = await fetch(`http://127.0.0.1:${port}/auth/google/callback?state=${state}`, {
+		const handle = startServer();
+		const { cookie, state } = await startSignIn(handle);
+		const response = await fetchFromTestServer(handle, `/auth/google/callback?state=${state}`, {
 			headers: { cookie },
 		});
 		expect(response.status).toBe(400);
@@ -206,7 +206,7 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 	});
 
 	it('rejects when the userinfo response and the validated ID token identify different subjects', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const email = `fedauth-interop-${testRunId}-mismatch@example.com`;
 		stubbedIdentity.current = {
 			sub: `interop-sub-${testRunId}-mismatch-userinfo`,
@@ -215,9 +215,10 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 		};
 		idTokenSubOverride.value = `interop-sub-${testRunId}-mismatch-idtoken`;
 
-		const { cookie, state } = await startSignIn(port);
-		const response = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${state}`,
+		const { cookie, state } = await startSignIn(handle);
+		const response = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${state}`,
 			{ headers: { cookie }, redirect: 'manual' },
 		);
 		idTokenSubOverride.value = null;
@@ -232,33 +233,40 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 	});
 
 	it('rejects a tampered state cookie', async () => {
-		const port = startServer();
-		const { state } = await startSignIn(port);
-		const response = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${state}`,
+		const handle = startServer();
+		const { state } = await startSignIn(handle);
+		const response = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${state}`,
 			{ headers: { cookie: `google_oauth_state_${state.slice(0, 16)}=tampered` } },
 		);
 		expect(response.status).toBe(400);
 	});
 
 	it('rejects replaying the same successful callback a second time', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const email = `fedauth-interop-${testRunId}-b@example.com`;
 		createdUserEmails.push(email);
 		stubbedIdentity.current = { sub: `interop-sub-${testRunId}-b`, email, name: 'Interop B' };
 
-		const { cookie, state } = await startSignIn(port);
-		const callbackUrl = `http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${state}`;
+		const { cookie, state } = await startSignIn(handle);
+		const callbackPath = `/auth/google/callback?code=stub-code&state=${state}`;
 
-		const first = await fetch(callbackUrl, { headers: { cookie }, redirect: 'manual' });
+		const first = await fetchFromTestServer(handle, callbackPath, {
+			headers: { cookie },
+			redirect: 'manual',
+		});
 		expect(first.status).toBe(302);
 
-		const second = await fetch(callbackUrl, { headers: { cookie }, redirect: 'manual' });
+		const second = await fetchFromTestServer(handle, callbackPath, {
+			headers: { cookie },
+			redirect: 'manual',
+		});
 		expect(second.status).toBe(400);
 	});
 
 	it('rejects a second Google identity claiming an email already tied to another account', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const email = `fedauth-interop-${testRunId}-conflict@example.com`;
 		createdUserEmails.push(email);
 
@@ -267,9 +275,10 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 			email,
 			name: 'Conflict One',
 		};
-		const firstAttempt = await startSignIn(port);
-		const firstResponse = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${firstAttempt.state}`,
+		const firstAttempt = await startSignIn(handle);
+		const firstResponse = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${firstAttempt.state}`,
 			{ headers: { cookie: firstAttempt.cookie }, redirect: 'manual' },
 		);
 		expect(firstResponse.status).toBe(302);
@@ -279,9 +288,10 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 			email,
 			name: 'Conflict Two',
 		};
-		const secondAttempt = await startSignIn(port);
-		const secondResponse = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${secondAttempt.state}`,
+		const secondAttempt = await startSignIn(handle);
+		const secondResponse = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${secondAttempt.state}`,
 			{ headers: { cookie: secondAttempt.cookie }, redirect: 'manual' },
 		);
 		expect(secondResponse.status).toBe(409);
@@ -296,7 +306,7 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 	});
 
 	it('normalizes email case before making a uniqueness decision', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const lowercaseEmail = `fedauth-interop-${testRunId}-case@example.com`;
 		createdUserEmails.push(lowercaseEmail);
 		const uppercaseVariant = lowercaseEmail.toUpperCase();
@@ -306,9 +316,10 @@ describeWithRedis('Google sign-in interop (requires Redis)', () => {
 			email: uppercaseVariant,
 			name: 'Case One',
 		};
-		const firstAttempt = await startSignIn(port);
-		const firstResponse = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${firstAttempt.state}`,
+		const firstAttempt = await startSignIn(handle);
+		const firstResponse = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${firstAttempt.state}`,
 			{ headers: { cookie: firstAttempt.cookie }, redirect: 'manual' },
 		);
 		expect(firstResponse.status).toBe(302);

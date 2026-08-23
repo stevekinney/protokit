@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, describe, expect, it, mock } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -72,23 +74,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 function parseSetCookiePair(setCookieHeader: string): { name: string; value: string } {
@@ -97,8 +96,8 @@ function parseSetCookiePair(setCookieHeader: string): { name: string; value: str
 	return { name: pair.slice(0, separatorIndex), value: pair.slice(separatorIndex + 1) };
 }
 
-async function startSignIn(port: number): Promise<{ cookie: string; state: string }> {
-	const response = await fetch(`http://127.0.0.1:${port}/auth/google/start`, {
+async function startSignIn(handle: TestServerHandle): Promise<{ cookie: string; state: string }> {
+	const response = await fetchFromTestServer(handle, '/auth/google/start', {
 		redirect: 'manual',
 	});
 	const location = new URL(response.headers.get('Location')!);
@@ -129,10 +128,10 @@ afterAll(async () => {
 
 describeWithRedis('Google sign-in concurrency (requires Redis)', () => {
 	it('two concurrent tabs starting sign-in receive distinct, independent state cookies', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const [first, second] = await Promise.all([
-			fetch(`http://127.0.0.1:${port}/auth/google/start`, { redirect: 'manual' }),
-			fetch(`http://127.0.0.1:${port}/auth/google/start`, { redirect: 'manual' }),
+			fetchFromTestServer(handle, '/auth/google/start', { redirect: 'manual' }),
+			fetchFromTestServer(handle, '/auth/google/start', { redirect: 'manual' }),
 		]);
 
 		const firstState = new URL(first.headers.get('Location')!).searchParams.get('state')!;
@@ -145,14 +144,14 @@ describeWithRedis('Google sign-in concurrency (requires Redis)', () => {
 	});
 
 	it('two tabs started concurrently each complete their own sign-in with the cookie that tab actually holds', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const emailA = `fedauth-concurrency-${testRunId}-a@example.com`;
 		const emailB = `fedauth-concurrency-${testRunId}-b@example.com`;
 		createdUserEmails.push(emailA, emailB);
 
 		// Both tabs are opened before either completes, proving the second
 		// `start` cannot have clobbered the first tab's still-pending cookie.
-		const [tabA, tabB] = await Promise.all([startSignIn(port), startSignIn(port)]);
+		const [tabA, tabB] = await Promise.all([startSignIn(handle), startSignIn(handle)]);
 		expect(tabA.state).not.toBe(tabB.state);
 
 		currentIdentity.value = {
@@ -160,8 +159,9 @@ describeWithRedis('Google sign-in concurrency (requires Redis)', () => {
 			email: emailA,
 			name: 'Concurrency A',
 		};
-		const responseA = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${tabA.state}`,
+		const responseA = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${tabA.state}`,
 			{ headers: { cookie: tabA.cookie }, redirect: 'manual' },
 		);
 		expect(responseA.status).toBe(302);
@@ -171,8 +171,9 @@ describeWithRedis('Google sign-in concurrency (requires Redis)', () => {
 			email: emailB,
 			name: 'Concurrency B',
 		};
-		const responseB = await fetch(
-			`http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${tabB.state}`,
+		const responseB = await fetchFromTestServer(
+			handle,
+			`/auth/google/callback?code=stub-code&state=${tabB.state}`,
 			{ headers: { cookie: tabB.cookie }, redirect: 'manual' },
 		);
 		expect(responseB.status).toBe(302);
@@ -190,7 +191,7 @@ describeWithRedis('Google sign-in concurrency (requires Redis)', () => {
 	});
 
 	it('racing the same callback twice at once produces exactly one success', async () => {
-		const port = startServer();
+		const handle = startServer();
 		const email = `fedauth-concurrency-${testRunId}-race@example.com`;
 		createdUserEmails.push(email);
 		currentIdentity.value = {
@@ -199,11 +200,17 @@ describeWithRedis('Google sign-in concurrency (requires Redis)', () => {
 			name: 'Race',
 		};
 
-		const attempt = await startSignIn(port);
-		const callbackUrl = `http://127.0.0.1:${port}/auth/google/callback?code=stub-code&state=${attempt.state}`;
+		const attempt = await startSignIn(handle);
+		const callbackPath = `/auth/google/callback?code=stub-code&state=${attempt.state}`;
 		const [first, second] = await Promise.all([
-			fetch(callbackUrl, { headers: { cookie: attempt.cookie }, redirect: 'manual' }),
-			fetch(callbackUrl, { headers: { cookie: attempt.cookie }, redirect: 'manual' }),
+			fetchFromTestServer(handle, callbackPath, {
+				headers: { cookie: attempt.cookie },
+				redirect: 'manual',
+			}),
+			fetchFromTestServer(handle, callbackPath, {
+				headers: { cookie: attempt.cookie },
+				redirect: 'manual',
+			}),
 		]);
 
 		const statuses = [first.status, second.status].sort();

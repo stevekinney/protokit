@@ -5,6 +5,8 @@ import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
 import { runScheduledCleanup } from '@web/lib/scheduled-cleanup';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -69,23 +71,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 const testRunId = randomUUID();
@@ -132,11 +131,11 @@ afterAll(async () => {
 
 describeWithRedis('client-bound, atomic refresh rotation and revocation (requires Redis)', () => {
 	async function seedTokenPair(
-		port: number,
+		handle: TestServerHandle,
 		clientId: string,
 		scope = '',
 	): Promise<{ accessToken: string; refreshToken: string; resource: string }> {
-		const resource = `http://127.0.0.1:${port}/mcp`;
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
 		const accessToken = randomBytes(48).toString('hex');
 		const refreshToken = randomBytes(48).toString('hex');
 		const oneHourFromNow = new Date(Date.now() + 60 * 60 * 1000);
@@ -164,8 +163,11 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		return { accessToken, refreshToken, resource };
 	}
 
-	async function callMcpToolsList(port: number, accessToken: string): Promise<Response> {
-		return fetch(`http://127.0.0.1:${port}/mcp`, {
+	async function callMcpToolsList(
+		handle: TestServerHandle,
+		accessToken: string,
+	): Promise<Response> {
+		return fetchFromTestServer(handle, '/mcp', {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${accessToken}`,
@@ -177,14 +179,14 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	}
 
 	function refreshRequest(
-		port: number,
+		handle: TestServerHandle,
 		refreshToken: string,
 		clientId: string,
 		clientSecret: string,
 		resource: string,
 		scope?: string,
 	): Promise<Response> {
-		return fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		return fetchFromTestServer(handle, '/oauth/token', {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -199,12 +201,12 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	}
 
 	function revokeRequest(
-		port: number,
+		handle: TestServerHandle,
 		token: string,
 		clientId: string,
 		clientSecret: string,
 	): Promise<Response> {
-		return fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+		return fetchFromTestServer(handle, '/oauth/revoke', {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -216,11 +218,11 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	}
 
 	it('a failed client-authentication attempt does not mutate the refresh token', async () => {
-		const port = startServer();
-		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { refreshToken, resource } = await seedTokenPair(handle, clientAId);
 
 		const wrongSecretResponse = await refreshRequest(
-			port,
+			handle,
 			refreshToken,
 			clientAId,
 			'wrong-secret',
@@ -231,7 +233,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// The refresh token must still be usable: a failed authentication
 		// attempt reaches no token row and performs no write.
 		const legitimateResponse = await refreshRequest(
-			port,
+			handle,
 			refreshToken,
 			clientAId,
 			clientASecret,
@@ -241,13 +243,13 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	});
 
 	it("one client cannot redeem another client's refresh token, and the victim token survives the attempt", async () => {
-		const port = startServer();
-		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { refreshToken, resource } = await seedTokenPair(handle, clientAId);
 
 		// Client B presents client A's real refresh token value, but
 		// authenticates as itself.
 		const crossClientResponse = await refreshRequest(
-			port,
+			handle,
 			refreshToken,
 			clientBId,
 			clientBSecret,
@@ -260,7 +262,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// Client A's own refresh token must not have been burned by client
 		// B's attempt: a legitimate rotation by its real owner still works.
 		const legitimateResponse = await refreshRequest(
-			port,
+			handle,
 			refreshToken,
 			clientAId,
 			clientASecret,
@@ -270,12 +272,12 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	});
 
 	it('at most one of two concurrent refresh attempts for the same token succeeds', async () => {
-		const port = startServer();
-		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { refreshToken, resource } = await seedTokenPair(handle, clientAId);
 
 		const [first, second] = await Promise.all([
-			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
-			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
+			refreshRequest(handle, refreshToken, clientAId, clientASecret, resource),
+			refreshRequest(handle, refreshToken, clientAId, clientASecret, resource),
 		]);
 		const statuses = [first.status, second.status].sort();
 		expect(statuses).toEqual([200, 400]);
@@ -298,8 +300,8 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	// refresh token against the real dispatcher and real database -- not a
 	// sequential replay, which would never exercise this window.
 	it("a concurrent replay of a token mid-rotation does not leave the winner's replacement token alive", async () => {
-		const port = startServer();
-		const { refreshToken, resource } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { refreshToken, resource } = await seedTokenPair(handle, clientAId);
 
 		// Both requests present the *identical* refresh token value
 		// concurrently -- the P1 scenario: a stolen refresh token submitted
@@ -312,8 +314,8 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// is only whether that family revocation also caught the winner's
 		// brand-new replacement.
 		const [first, second] = await Promise.all([
-			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
-			refreshRequest(port, refreshToken, clientAId, clientASecret, resource),
+			refreshRequest(handle, refreshToken, clientAId, clientASecret, resource),
+			refreshRequest(handle, refreshToken, clientAId, clientASecret, resource),
 		]);
 		const statuses = [first.status, second.status].sort();
 		expect(statuses).toEqual([200, 400]);
@@ -324,7 +326,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// produced -- must be dead: the replacement refresh token can no
 		// longer rotate...
 		const replacementRotateResponse = await refreshRequest(
-			port,
+			handle,
 			winnerBody.refresh_token,
 			clientAId,
 			clientASecret,
@@ -335,16 +337,16 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// ...and its access token can no longer authenticate at /mcp. Without
 		// the insert-before-revoke ordering fix, this token could still be
 		// live here even though reuse of the family was detected.
-		const mcpResponse = await callMcpToolsList(port, winnerBody.access_token);
+		const mcpResponse = await callMcpToolsList(handle, winnerBody.access_token);
 		expect(mcpResponse.status).toBe(401);
 	});
 
 	it('reuse of a rotated refresh token revokes its whole token family', async () => {
-		const port = startServer();
-		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(handle, clientAId);
 
 		const rotateResponse = await refreshRequest(
-			port,
+			handle,
 			originalRefreshToken,
 			clientAId,
 			clientASecret,
@@ -358,7 +360,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 
 		// Replay the now-dead original refresh token.
 		const replayResponse = await refreshRequest(
-			port,
+			handle,
 			originalRefreshToken,
 			clientAId,
 			clientASecret,
@@ -370,7 +372,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// produced -- must now be dead too: the live descendant refresh
 		// token can no longer rotate...
 		const descendantRefreshResponse = await refreshRequest(
-			port,
+			handle,
 			rotatedBody.refresh_token,
 			clientAId,
 			clientASecret,
@@ -379,13 +381,13 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		expect(descendantRefreshResponse.status).toBe(400);
 
 		// ...and its access token can no longer authenticate at /mcp.
-		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		const mcpResponse = await callMcpToolsList(handle, rotatedBody.access_token);
 		expect(mcpResponse.status).toBe(401);
 	});
 
 	it('rejecting a refresh-time scope escalation does not consume the refresh token, and a corrected retry still succeeds', async () => {
-		const port = startServer();
-		const { refreshToken, resource } = await seedTokenPair(port, clientAId, 'profile:read');
+		const handle = startServer();
+		const { refreshToken, resource } = await seedTokenPair(handle, clientAId, 'profile:read');
 
 		// Requests a scope this refresh token was never granted. Must be
 		// rejected *without* burning the refresh token: the atomic
@@ -394,7 +396,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// later check in the same request then fails -- so scope validity
 		// must be established before that UPDATE runs, not after.
 		const escalationResponse = await refreshRequest(
-			port,
+			handle,
 			refreshToken,
 			clientAId,
 			clientASecret,
@@ -409,7 +411,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// (omitting the escalated scope) must succeed on the first attempt,
 		// not be rejected as a replay of an already-dead token.
 		const retryResponse = await refreshRequest(
-			port,
+			handle,
 			refreshToken,
 			clientAId,
 			clientASecret,
@@ -429,11 +431,11 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	// the real sweep in between rotation and replay, not merely reading the
 	// cleanup predicate.
 	it('a scheduled cleanup sweep between rotation and replay does not defeat reuse detection', async () => {
-		const port = startServer();
-		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(handle, clientAId);
 
 		const rotateResponse = await refreshRequest(
-			port,
+			handle,
 			originalRefreshToken,
 			clientAId,
 			clientASecret,
@@ -462,7 +464,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 
 		// Replay the now-dead original refresh token, after the sweep.
 		const replayResponse = await refreshRequest(
-			port,
+			handle,
 			originalRefreshToken,
 			clientAId,
 			clientASecret,
@@ -473,7 +475,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// Reuse detection must still have fired: the live descendant refresh
 		// token can no longer rotate...
 		const descendantRefreshResponse = await refreshRequest(
-			port,
+			handle,
 			rotatedBody.refresh_token,
 			clientAId,
 			clientASecret,
@@ -482,18 +484,18 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		expect(descendantRefreshResponse.status).toBe(400);
 
 		// ...and its access token can no longer authenticate at /mcp.
-		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		const mcpResponse = await callMcpToolsList(handle, rotatedBody.access_token);
 		expect(mcpResponse.status).toBe(401);
 	}, 30_000); // a real global cleanup sweep against the shared test database is slower than the 5s default.
 
 	it("a different client presenting client A's already-rotated-away refresh token cannot revoke client A's live token family", async () => {
-		const port = startServer();
-		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { refreshToken: originalRefreshToken, resource } = await seedTokenPair(handle, clientAId);
 
 		// Client A legitimately rotates. The original refresh token is now
 		// revoked (rotated-away) and a live descendant exists.
 		const rotateResponse = await refreshRequest(
-			port,
+			handle,
 			originalRefreshToken,
 			clientAId,
 			clientASecret,
@@ -511,7 +513,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// treated as a replay of client B's own family (there is no such
 		// family): client A's live descendant must be unaffected.
 		const crossClientReplay = await refreshRequest(
-			port,
+			handle,
 			originalRefreshToken,
 			clientBId,
 			clientBSecret,
@@ -524,13 +526,13 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		// family. Checked before rotating the descendant refresh token below,
 		// since a legitimate rotation would itself revoke this access token
 		// as an ordinary side effect and give a false negative.
-		const mcpResponse = await callMcpToolsList(port, rotatedBody.access_token);
+		const mcpResponse = await callMcpToolsList(handle, rotatedBody.access_token);
 		expect(mcpResponse.status).not.toBe(401);
 
 		// ...and the live descendant refresh token must still be able to
 		// rotate.
 		const descendantRefreshResponse = await refreshRequest(
-			port,
+			handle,
 			rotatedBody.refresh_token,
 			clientAId,
 			clientASecret,
@@ -540,38 +542,38 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	});
 
 	it("one client cannot revoke another client's token, and the victim token survives the attempt", async () => {
-		const port = startServer();
-		const { accessToken } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { accessToken } = await seedTokenPair(handle, clientAId);
 
-		const crossClientRevoke = await revokeRequest(port, accessToken, clientBId, clientBSecret);
+		const crossClientRevoke = await revokeRequest(handle, accessToken, clientBId, clientBSecret);
 		// RFC 7009 §2.2: always 200, whether or not the caller actually owned
 		// (or could have revoked) the token -- never a signal a caller can
 		// use to learn anything about a token it doesn't own.
 		expect(crossClientRevoke.status).toBe(200);
 
-		const mcpResponse = await callMcpToolsList(port, accessToken);
+		const mcpResponse = await callMcpToolsList(handle, accessToken);
 		expect(mcpResponse.status).not.toBe(401);
 	});
 
 	it('a client authenticated as its own owner can revoke its own token', async () => {
-		const port = startServer();
-		const { accessToken } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { accessToken } = await seedTokenPair(handle, clientAId);
 
-		const revokeResponse = await revokeRequest(port, accessToken, clientAId, clientASecret);
+		const revokeResponse = await revokeRequest(handle, accessToken, clientAId, clientASecret);
 		expect(revokeResponse.status).toBe(200);
 
-		const mcpResponse = await callMcpToolsList(port, accessToken);
+		const mcpResponse = await callMcpToolsList(handle, accessToken);
 		expect(mcpResponse.status).toBe(401);
 	});
 
 	it('revocation with a wrong client secret is rejected and does not revoke the token', async () => {
-		const port = startServer();
-		const { accessToken } = await seedTokenPair(port, clientAId);
+		const handle = startServer();
+		const { accessToken } = await seedTokenPair(handle, clientAId);
 
-		const revokeResponse = await revokeRequest(port, accessToken, clientAId, 'wrong-secret');
+		const revokeResponse = await revokeRequest(handle, accessToken, clientAId, 'wrong-secret');
 		expect(revokeResponse.status).toBe(401);
 
-		const mcpResponse = await callMcpToolsList(port, accessToken);
+		const mcpResponse = await callMcpToolsList(handle, accessToken);
 		expect(mcpResponse.status).not.toBe(401);
 	});
 });

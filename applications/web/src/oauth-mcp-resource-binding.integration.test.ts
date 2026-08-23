@@ -5,6 +5,13 @@ import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
+import {
+	CrossServerRoutingError,
+	TEST_SERVER_INSTANCE_HEADER,
+	fetchFromTestServer,
+	startTestServer,
+} from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -58,23 +65,20 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 function extractHiddenInputValue(html: string, fieldName: string): string {
@@ -142,20 +146,25 @@ afterAll(async () => {
 });
 
 describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Redis)', () => {
-	async function signIn(port: number): Promise<string> {
+	async function signIn(handle: TestServerHandle): Promise<string> {
 		const session = await createSession({
 			userId,
-			request: new Request(`http://127.0.0.1:${port}/`),
+			request: new Request(`http://127.0.0.1:${handle.port}/`),
 		});
 		return session.cookieHeaderValue.split(';')[0]!;
 	}
 
-	async function obtainAccessToken(port: number, cookie: string, scope?: string): Promise<string> {
-		const resource = `http://127.0.0.1:${port}/mcp`;
+	async function obtainAccessToken(
+		handle: TestServerHandle,
+		cookie: string,
+		scope?: string,
+	): Promise<string> {
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
 		const scopeParameter = scope ? `&scope=${encodeURIComponent(scope)}` : '';
 
-		const consentResponse = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}${scopeParameter}`,
+		const consentResponse = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}${scopeParameter}`,
 			{ headers: { cookie } },
 		);
 		expect(consentResponse.status).toBe(200);
@@ -163,7 +172,7 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		const transactionId = extractHiddenInputValue(html, 'transaction_id');
 		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
 
-		const approveResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const approveResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -181,7 +190,7 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		const code = location.searchParams.get('code')!;
 		expect(code.length).toBeGreaterThan(0);
 
-		const tokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const tokenResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -201,39 +210,42 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	}
 
 	it('rejects an authorization request with no resource parameter', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const response = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}`,
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const response = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}`,
 			{ headers: { cookie } },
 		);
 		expect(response.status).toBe(400);
 	});
 
 	it('rejects an authorization request whose resource does not name this server', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const response = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent('https://not-this-server.example.com/mcp')}`,
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const response = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent('https://not-this-server.example.com/mcp')}`,
 			{ headers: { cookie } },
 		);
 		expect(response.status).toBe(400);
 	});
 
 	it('rejects a token request whose resource does not match the authorization code', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const resource = `http://127.0.0.1:${port}/mcp`;
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
 
-		const consentResponse = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+		const consentResponse = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
 			{ headers: { cookie } },
 		);
 		const html = await consentResponse.text();
 		const transactionId = extractHiddenInputValue(html, 'transaction_id');
 		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
 
-		const approveResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const approveResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -249,7 +261,7 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		const location = new URL(approveResponse.headers.get('location')!);
 		const code = location.searchParams.get('code')!;
 
-		const tokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const tokenResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -259,7 +271,7 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 				client_id: clientId,
 				client_secret: clientSecret,
 				code_verifier: codeVerifier,
-				resource: `http://127.0.0.1:${port}/some-other-resource`,
+				resource: `http://127.0.0.1:${handle.port}/some-other-resource`,
 			}).toString(),
 		});
 		expect(tokenResponse.status).toBe(400);
@@ -268,19 +280,20 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	});
 
 	it('OAUTH-004: rejects a token request presenting a code issued to a different client (client-bound)', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const resource = `http://127.0.0.1:${port}/mcp`;
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
 
-		const consentResponse = await fetch(
-			`http://127.0.0.1:${port}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+		const consentResponse = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
 			{ headers: { cookie } },
 		);
 		const html = await consentResponse.text();
 		const transactionId = extractHiddenInputValue(html, 'transaction_id');
 		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
 
-		const approveResponse = await fetch(`http://127.0.0.1:${port}/oauth/authorize/approve`, {
+		const approveResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
 			method: 'POST',
 			redirect: 'manual',
 			headers: {
@@ -301,7 +314,7 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		// unregistered or malformed one — presenting the same code, redirect
 		// URI, and (unknowable, since PKCE binds the code to whoever
 		// requested it) correct code_verifier for `clientId`'s own flow.
-		const tokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const tokenResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -321,7 +334,7 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		// The code must still be redeemable by its actual, rightful owner —
 		// proving the rejection above was really client-binding and not a
 		// side effect that also burned or corrupted the code.
-		const rightfulTokenResponse = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const rightfulTokenResponse = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -338,11 +351,11 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	});
 
 	it('a token minted through the real authorize/token flow is accepted at /mcp', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const accessToken = await obtainAccessToken(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const accessToken = await obtainAccessToken(handle, cookie);
 
-		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+		const mcpResponse = await fetchFromTestServer(handle, `/mcp`, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${accessToken}`,
@@ -361,11 +374,11 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	// error, not as an authentication or authorization failure, and must
 	// never reach a tool handler.
 	it('rejects a syntactically invalid JSON body from an otherwise fully authenticated request', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const accessToken = await obtainAccessToken(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const accessToken = await obtainAccessToken(handle, cookie);
 
-		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+		const mcpResponse = await fetchFromTestServer(handle, `/mcp`, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${accessToken}`,
@@ -381,11 +394,11 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	});
 
 	it('rejects a well-formed JSON body that is not a valid JSON-RPC envelope', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const accessToken = await obtainAccessToken(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const accessToken = await obtainAccessToken(handle, cookie);
 
-		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+		const mcpResponse = await fetchFromTestServer(handle, `/mcp`, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${accessToken}`,
@@ -401,9 +414,9 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	});
 
 	it('the same token is rejected at /mcp once its stored resource no longer matches (audience binding, not just possession)', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const accessToken = await obtainAccessToken(port, cookie);
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const accessToken = await obtainAccessToken(handle, cookie);
 
 		// A token can only ever be minted for this server's own canonical
 		// resource (proved above and by the unit suite), so the only way to
@@ -416,7 +429,7 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 			.set({ resource: 'https://not-this-server.example.com/mcp' })
 			.where(eq(schema.oauthTokens.accessToken, hashCredential(accessToken)));
 
-		const mcpResponse = await fetch(`http://127.0.0.1:${port}/mcp`, {
+		const mcpResponse = await fetchFromTestServer(handle, `/mcp`, {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${accessToken}`,
@@ -451,22 +464,38 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 	// against a limit meant for unit tests. A genuine hang still fails, at 30s
 	// instead of 5s.
 	it('a real narrowed-scope token authenticates at /mcp but is refused insufficient_scope for a tool outside its grant', async () => {
-		const port = startServer();
-		const cookie = await signIn(port);
-		const accessToken = await obtainAccessToken(port, cookie, 'prompts:read');
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const accessToken = await obtainAccessToken(handle, cookie, 'prompts:read');
 
 		const client = new Client({ name: 'scope-interop-test-client', version: '1.0.0' });
-		const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-			fetch: (input, init) => {
-				// Build from `new Headers(...)` rather than spreading. The SDK passes a
-				// `Headers` instance, and object-spreading one yields `{}` — which
-				// silently dropped `Content-Type` and made the server answer 415 under
-				// SEC-004's exact-content-type check, looking like a scope failure.
-				const headers = new Headers(init?.headers);
-				headers.set('authorization', `Bearer ${accessToken}`);
-				return fetch(input, { ...init, headers });
+		const transport = new StreamableHTTPClientTransport(
+			new URL(`http://127.0.0.1:${handle.port}/mcp`),
+			{
+				fetch: async (input, init) => {
+					// Build from `new Headers(...)` rather than spreading. The SDK passes a
+					// `Headers` instance, and object-spreading one yields `{}` — which
+					// silently dropped `Content-Type` and made the server answer 415 under
+					// SEC-004's exact-content-type check, looking like a scope failure.
+					const headers = new Headers(init?.headers);
+					headers.set('authorization', `Bearer ${accessToken}`);
+					const response = await fetch(input, { ...init, headers });
+					// OPEN-9: the SDK owns this transport's `fetch` entirely, so
+					// `fetchFromTestServer` can't wrap this call site directly. Apply
+					// the same identity check by hand instead of silently trusting
+					// whichever listener answered.
+					const actualInstanceId = response.headers.get(TEST_SERVER_INSTANCE_HEADER);
+					if (actualInstanceId !== handle.instanceId) {
+						throw new CrossServerRoutingError(
+							handle.instanceId,
+							actualInstanceId,
+							typeof input === 'string' ? input : input.toString(),
+						);
+					}
+					return response;
+				},
 			},
-		});
+		);
 
 		await client.connect(transport);
 

@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { database, schema } from '@template/database';
 import { hashCredential } from '@web/lib/hash-credential';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 /**
  * TEST-001: proves the roadmap's "multi-replica tests prove correctness
@@ -68,28 +70,28 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let servers: Bun.Server[] = [];
+let servers: TestServerHandle[] = [];
 
 afterEach(() => {
-	for (const server of servers) server.stop(true);
+	for (const server of servers) server.stop();
 	servers = [];
 });
 
-/** Starts one independent replica. Each call is a fresh `Bun.serve`
- * instance with its own port -- the only thing two replicas share is the
- * real Postgres/Redis backing this process, exactly like two OS processes
- * behind a load balancer. */
-function startReplica(): number {
-	const server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-	servers.push(server);
-	return server.port;
+/** Starts one independent replica. Each call is a fresh, identity-stamped
+ * `startTestServer` instance with its own port -- the only thing two
+ * replicas share is the real Postgres/Redis backing this process, exactly
+ * like two OS processes behind a load balancer. Using the OPEN-9 helper
+ * here does double duty: this file's whole point is proving a request lands
+ * on a specific replica, so `fetchFromTestServer`'s identity check makes
+ * that assertion itself trustworthy, not merely "some server answered". */
+function startReplica(): TestServerHandle {
+	const handle = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	servers.push(handle);
+	return handle;
 }
 
 function extractHiddenInputValue(html: string, fieldName: string): string {
@@ -141,24 +143,28 @@ afterAll(async () => {
 });
 
 describeWithRedis('multi-replica correctness (requires Redis)', () => {
-	async function signIn(port: number): Promise<string> {
+	async function signIn(handle: TestServerHandle): Promise<string> {
 		const session = await createSession({
 			userId,
-			request: new Request(`http://127.0.0.1:${port}/`),
+			request: new Request(`http://127.0.0.1:${handle.port}/`),
 		});
 		return session.cookieHeaderValue.split(';')[0]!;
 	}
 
 	/** Runs the full authorize -> approve -> token chain against
-	 * `authorizePort`, using the shared canonical `BASE_URL` resource -- not
-	 * `authorizePort` itself -- as the RFC 8707 `resource` value, so the
-	 * resulting token is valid at ANY replica, not just the one that minted
-	 * it. */
-	async function obtainAccessToken(authorizePort: number, cookie: string): Promise<string> {
+	 * `authorizeReplica`, using the shared canonical `BASE_URL` resource --
+	 * not `authorizeReplica`'s own port -- as the RFC 8707 `resource` value,
+	 * so the resulting token is valid at ANY replica, not just the one that
+	 * minted it. */
+	async function obtainAccessToken(
+		authorizeReplica: TestServerHandle,
+		cookie: string,
+	): Promise<string> {
 		const resource = 'http://multi-replica-test.local/mcp';
 
-		const consentResponse = await fetch(
-			`http://127.0.0.1:${authorizePort}/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+		const consentResponse = await fetchFromTestServer(
+			authorizeReplica,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
 			{ headers: { cookie } },
 		);
 		expect(consentResponse.status).toBe(200);
@@ -166,8 +172,9 @@ describeWithRedis('multi-replica correctness (requires Redis)', () => {
 		const transactionId = extractHiddenInputValue(html, 'transaction_id');
 		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
 
-		const approveResponse = await fetch(
-			`http://127.0.0.1:${authorizePort}/oauth/authorize/approve`,
+		const approveResponse = await fetchFromTestServer(
+			authorizeReplica,
+			'/oauth/authorize/approve',
 			{
 				method: 'POST',
 				redirect: 'manual',
@@ -187,7 +194,7 @@ describeWithRedis('multi-replica correctness (requires Redis)', () => {
 		const code = location.searchParams.get('code')!;
 		expect(code.length).toBeGreaterThan(0);
 
-		const tokenResponse = await fetch(`http://127.0.0.1:${authorizePort}/oauth/token`, {
+		const tokenResponse = await fetchFromTestServer(authorizeReplica, '/oauth/token', {
 			method: 'POST',
 			headers: { 'content-type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -207,14 +214,14 @@ describeWithRedis('multi-replica correctness (requires Redis)', () => {
 	}
 
 	it('a token minted through replica A authenticates at replica B, with no transport affinity', async () => {
-		const replicaAPort = startReplica();
-		const replicaBPort = startReplica();
-		expect(replicaAPort).not.toBe(replicaBPort);
+		const replicaA = startReplica();
+		const replicaB = startReplica();
+		expect(replicaA.port).not.toBe(replicaB.port);
 
-		const cookie = await signIn(replicaAPort);
-		const accessToken = await obtainAccessToken(replicaAPort, cookie);
+		const cookie = await signIn(replicaA);
+		const accessToken = await obtainAccessToken(replicaA, cookie);
 
-		const mcpResponseFromReplicaB = await fetch(`http://127.0.0.1:${replicaBPort}/mcp`, {
+		const mcpResponseFromReplicaB = await fetchFromTestServer(replicaB, '/mcp', {
 			method: 'POST',
 			headers: {
 				authorization: `Bearer ${accessToken}`,
@@ -229,8 +236,8 @@ describeWithRedis('multi-replica correctness (requires Redis)', () => {
 	});
 
 	it("SEC-003's rate limit budget is shared across replicas, not doubled by running two", async () => {
-		const replicaAPort = startReplica();
-		const replicaBPort = startReplica();
+		const replicaA = startReplica();
+		const replicaB = startReplica();
 
 		// A distinct client identity per test run so this test's own budget
 		// consumption can never collide with another (Redis-backed) test
@@ -252,7 +259,7 @@ describeWithRedis('multi-replica correctness (requires Redis)', () => {
 		// (shared Redis), not by which process answered.
 		let admittedAtReplicaA = 0;
 		for (let attempt = 0; attempt < 200; attempt++) {
-			const response = await fetch(`http://127.0.0.1:${replicaAPort}/oauth/register`, {
+			const response = await fetchFromTestServer(replicaA, '/oauth/register', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: registrationBody(),
@@ -267,7 +274,7 @@ describeWithRedis('multi-replica correctness (requires Redis)', () => {
 		// of sharing Redis, it would admit another full batch here. It must
 		// not: the very next request, now routed to the OTHER replica, is
 		// still governed by the same exhausted shared window.
-		const responseFromReplicaB = await fetch(`http://127.0.0.1:${replicaBPort}/oauth/register`, {
+		const responseFromReplicaB = await fetchFromTestServer(replicaB, '/oauth/register', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: registrationBody(),

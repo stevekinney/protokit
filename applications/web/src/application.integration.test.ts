@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -36,30 +38,26 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 describe('application request routing', () => {
 	it('renders the home page with Google sign-in call-to-action', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		expect(response.status).toBe(200);
 		const body = await response.text();
 		expect(body).toContain('Continue With Google');
@@ -70,9 +68,10 @@ describe('application request routing', () => {
 	// shared Redis-backed limiter.
 	describeWithRedis('with Redis', () => {
 		it('redirects to Google OAuth and sets state cookie', async () => {
-			const port = startServer();
-			const response = await fetch(
-				`http://127.0.0.1:${port}/auth/google/start?callback_path=%2Foauth%2Fauthorize`,
+			const handle = startServer();
+			const response = await fetchFromTestServer(
+				handle,
+				`/auth/google/start?callback_path=%2Foauth%2Fauthorize`,
 				{ redirect: 'manual' },
 			);
 
@@ -89,8 +88,8 @@ describe('application request routing', () => {
 	});
 
 	it('returns OAuth authorization metadata with redesigned endpoint paths', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-authorization-server`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/.well-known/oauth-authorization-server`);
 		expect(response.status).toBe(200);
 		const payload = (await response.json()) as Record<string, string>;
 		expect(payload.authorization_endpoint).toContain('/oauth/authorize');
@@ -99,16 +98,16 @@ describe('application request routing', () => {
 	});
 
 	it('advertises revocation endpoint in authorization metadata', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-authorization-server`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/.well-known/oauth-authorization-server`);
 		expect(response.status).toBe(200);
 		const payload = (await response.json()) as Record<string, string>;
 		expect(payload.revocation_endpoint).toContain('/oauth/revoke');
 	});
 
 	it('responds to OAuth token preflight', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'OPTIONS',
 			headers: {
 				origin: 'http://localhost:3000',
@@ -119,8 +118,8 @@ describe('application request routing', () => {
 	});
 
 	it('responds to OAuth revoke preflight', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/revoke`, {
 			method: 'OPTIONS',
 			headers: {
 				origin: 'http://localhost:3000',
@@ -133,8 +132,8 @@ describe('application request routing', () => {
 
 describe('security headers', () => {
 	it('sets script-src self on the homepage', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		expect(response.status).toBe(200);
 		const csp = response.headers.get('content-security-policy');
 		expect(csp).toContain("default-src 'self'");
@@ -145,9 +144,10 @@ describe('security headers', () => {
 	// shared Redis-backed limiter.
 	describeWithRedis('with Redis', () => {
 		it('sets script-src self on non-oauth HTML pages', async () => {
-			const port = startServer();
-			const response = await fetch(
-				`http://127.0.0.1:${port}/auth/google/callback?error=access_denied`,
+			const handle = startServer();
+			const response = await fetchFromTestServer(
+				handle,
+				`/auth/google/callback?error=access_denied`,
 			);
 			const csp = response.headers.get('content-security-policy');
 			expect(csp).toContain("script-src 'self'");
@@ -155,46 +155,46 @@ describe('security headers', () => {
 	});
 
 	it('does not set Content-Security-Policy on JSON responses', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-authorization-server`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/.well-known/oauth-authorization-server`);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-security-policy')).toBeNull();
 	});
 
 	it('includes X-Request-Id header on every response', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		const requestId = response.headers.get('x-request-id');
 		expect(requestId).not.toBeNull();
 		expect(requestId!.length).toBeGreaterThan(0);
 	});
 
 	it('sets X-Content-Type-Options nosniff on all responses', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		expect(response.headers.get('x-content-type-options')).toBe('nosniff');
 	});
 });
 
 describe('client bundle and hydration', () => {
 	it('homepage HTML contains script tag and client.js reference', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		const body = await response.text();
 		expect(body).toContain('<script');
 		expect(body).toContain('/assets/client.js');
 	});
 
 	it('homepage HTML contains application-root hydration target', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		const body = await response.text();
 		expect(body).toContain('id="application-root"');
 	});
 
 	it('homepage HTML contains __SERVER_DATA__ script', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/`);
 		const body = await response.text();
 		expect(body).toContain('__SERVER_DATA__');
 	});
@@ -202,8 +202,8 @@ describe('client bundle and hydration', () => {
 
 describe('error handling', () => {
 	it('returns JSON 404 for unknown routes', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/nonexistent`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/nonexistent`);
 		expect(response.status).toBe(404);
 		const body = (await response.json()) as Record<string, string>;
 		expect(body.error).toBe('not_found');
@@ -216,8 +216,8 @@ describe('MCP endpoint authentication', () => {
 	// limiter.
 	describeWithRedis('with Redis', () => {
 		it('returns 401 when no authorization header is provided', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, `/mcp`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -240,8 +240,8 @@ describe('MCP endpoint authentication', () => {
 		});
 
 		it('returns 401 for invalid bearer token', async () => {
-			const port = startServer();
-			const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			const handle = startServer();
+			const response = await fetchFromTestServer(handle, `/mcp`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -266,8 +266,8 @@ describe('MCP endpoint authentication', () => {
 
 describeWithRedis('OAuth client registration (requires Redis)', () => {
 	it('rejects registration with invalid JSON', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/register`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: 'not json',
@@ -276,8 +276,8 @@ describeWithRedis('OAuth client registration (requires Redis)', () => {
 	});
 
 	it('rejects registration with missing redirect_uris', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/register`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ client_name: 'test' }),
@@ -290,8 +290,8 @@ describeWithRedis('OAuth client registration (requires Redis)', () => {
 
 describeWithRedis('OAuth token endpoint (requires Redis)', () => {
 	it('rejects unsupported grant type', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: 'grant_type=password&username=test&password=test',
@@ -302,8 +302,8 @@ describeWithRedis('OAuth token endpoint (requires Redis)', () => {
 	});
 
 	it('rejects authorization_code grant with missing parameters', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: 'grant_type=authorization_code',
@@ -323,8 +323,8 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 	// "200 even for an unknown token" contract against an *authenticated*
 	// request -- the only kind `/oauth/revoke` accepts now -- rather than an
 	// unauthenticated one the endpoint no longer allows.
-	async function registerPublicClient(port: number): Promise<string> {
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+	async function registerPublicClient(handle: TestServerHandle): Promise<string> {
+		const response = await fetchFromTestServer(handle, `/oauth/register`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -339,9 +339,9 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 	}
 
 	it('returns 200 for revocation of unknown token per RFC 7009', async () => {
-		const port = startServer();
-		const clientId = await registerPublicClient(port);
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+		const handle = startServer();
+		const clientId = await registerPublicClient(handle);
+		const response = await fetchFromTestServer(handle, `/oauth/revoke`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({ token: 'nonexistent-token', client_id: clientId }).toString(),
@@ -350,8 +350,8 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 	});
 
 	it('rejects revocation with missing token parameter', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/revoke`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: '',
@@ -360,8 +360,8 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 	});
 
 	it('rejects revocation with no client_id (OAUTH-003 / S-02: revocation is now client-bound)', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/revoke`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({ token: 'nonexistent-token' }).toString(),
@@ -370,8 +370,8 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 	});
 
 	it('rejects revocation from an unregistered client', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/revoke`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/revoke`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({

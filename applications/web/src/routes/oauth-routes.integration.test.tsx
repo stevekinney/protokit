@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
+import type { TestServerHandle } from '@web/test-support/start-test-server';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -38,30 +40,26 @@ const describeWithRedis = redisAvailable
 	? describe
 	: (describe as unknown as { skip: typeof describe }).skip;
 
-let server: Bun.Server | null = null;
+let server: TestServerHandle | null = null;
 
 afterEach(() => {
-	server?.stop(true);
+	server?.stop();
 	server = null;
 });
 
-function startServer(): number {
-	server = Bun.serve({
-		port: 0,
-		fetch(request, bunServer) {
-			return handleApplicationRequest(request, {
-				clientAddress: bunServer.requestIP(request)?.address,
-			});
-		},
-	});
-
-	return server.port;
+function startServer(): TestServerHandle {
+	server = startTestServer((request, bunServer) =>
+		handleApplicationRequest(request, {
+			clientAddress: bunServer.requestIP(request)?.address,
+		}),
+	);
+	return server;
 }
 
 describe('authorization server metadata (client_credentials removal)', () => {
 	it('never advertises client_credentials as a supported grant type', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-authorization-server`);
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/.well-known/oauth-authorization-server`);
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as Record<string, unknown>;
 		expect(body.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
@@ -71,8 +69,8 @@ describe('authorization server metadata (client_credentials removal)', () => {
 
 describeWithRedis('client_credentials rejection end-to-end (requires Redis)', () => {
 	it('rejects dynamic client registration that requests client_credentials', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/register`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/register`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -89,8 +87,8 @@ describeWithRedis('client_credentials rejection end-to-end (requires Redis)', ()
 	});
 
 	it('rejects a client_credentials token request outright', async () => {
-		const port = startServer();
-		const response = await fetch(`http://127.0.0.1:${port}/oauth/token`, {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/token`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({
@@ -116,9 +114,10 @@ describe('interactive authorization_code connector flow stays intact', () => {
 	// shared Redis-backed limiter.
 	describeWithRedis('with Redis', () => {
 		it('still requires user authentication before issuing an authorization code', async () => {
-			const port = startServer();
-			const response = await fetch(
-				`http://127.0.0.1:${port}/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc`,
+			const handle = startServer();
+			const response = await fetchFromTestServer(
+				handle,
+				`/oauth/authorize?client_id=unknown&redirect_uri=https://example.com/cb&response_type=code&code_challenge=abc`,
 				{ redirect: 'manual' },
 			);
 			expect(response.status).toBe(302);
