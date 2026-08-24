@@ -120,24 +120,31 @@ export async function obtainRealAccessToken(
 	const codeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 	const codeChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 
-	await database.insert(schema.users).values({
-		id: userId,
-		email,
-		name: 'Inspector Smoke Test User',
-		image: null,
-		emailVerified: true,
-		role: 'user',
-	});
-	await database.insert(schema.oauthClients).values({
-		clientId,
-		clientSecret: hashCredential(clientSecret),
-		clientName: 'Inspector Smoke Test Client',
-		clientType: 'confidential',
-		tokenEndpointAuthMethod: 'client_secret_post',
-		redirectUris: ['https://example.com/callback'],
-		grantTypes: ['authorization_code', 'refresh_token'],
-		responseTypes: ['code'],
-	});
+	// OPEN-12: `users` and `oauth_clients` are independent parents here --
+	// neither references the other -- and every statement is a separate HTTP
+	// round trip through the Neon driver. Issued together rather than
+	// sequentially, which halves the seeding cost of a harness that already
+	// pays for a full OAuth round trip afterwards.
+	await Promise.all([
+		database.insert(schema.users).values({
+			id: userId,
+			email,
+			name: 'Inspector Smoke Test User',
+			image: null,
+			emailVerified: true,
+			role: 'user',
+		}),
+		database.insert(schema.oauthClients).values({
+			clientId,
+			clientSecret: hashCredential(clientSecret),
+			clientName: 'Inspector Smoke Test Client',
+			clientType: 'confidential',
+			tokenEndpointAuthMethod: 'client_secret_post',
+			redirectUris: ['https://example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+		}),
+	]);
 
 	try {
 		const session = await createSession({ userId, request: new Request(`${baseUrl}/`) });
@@ -199,19 +206,24 @@ export async function obtainRealAccessToken(
 			// (DATA-001), which would invalidate the token before it was ever
 			// used if this ran eagerly in a `finally` here.
 			cleanup: async () => {
-				await database
-					.delete(schema.oauthClients)
-					.where(eq(schema.oauthClients.clientId, clientId));
-				await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-				await database.delete(schema.users).where(eq(schema.users.id, userId));
+				// Deleting `users` cascades to `user_sessions`, so ordering is
+				// not load-bearing between these three; issued together for
+				// the same round-trip reason as the seeding above.
+				await Promise.all([
+					database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId)),
+					database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId)),
+					database.delete(schema.users).where(eq(schema.users.id, userId)),
+				]);
 			},
 		};
 	} catch (error) {
 		// The token was never issued -- nothing to leave behind but the seeded
 		// user/client rows, which normal cleanup would never otherwise reach.
-		await database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId));
-		await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-		await database.delete(schema.users).where(eq(schema.users.id, userId));
+		await Promise.all([
+			database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId)),
+			database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId)),
+			database.delete(schema.users).where(eq(schema.users.id, userId)),
+		]);
 		throw error;
 	}
 }

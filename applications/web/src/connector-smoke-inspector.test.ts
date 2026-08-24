@@ -39,6 +39,30 @@ async function countInspectorSmokeClients(): Promise<number> {
 	return row?.value ?? 0;
 }
 
+/**
+ * Every test in this file drives a complete OAuth authorization-code flow --
+ * seed, consent, approve, token exchange -- against a self-hosted server and
+ * a real Postgres, then makes real MCP calls and cleans up. That is on the
+ * order of twenty sequential round trips, and OPEN-12 measured each one at
+ * 125-250ms through the local Neon HTTP proxy the test stack puts in front of
+ * Postgres (a bare `SELECT 1` costs the same, so it is fixed per-round-trip
+ * overhead, not query cost). The inherent floor is therefore several seconds,
+ * and bun's 5000ms default sits underneath it: this file timed out in CI
+ * while passing locally, purely because the runner is slower.
+ *
+ * The reducible half of that cost was removed first rather than papered over
+ * -- `/oauth/token` now issues both token rows in one CTE instead of two
+ * sequential inserts (which also makes it atomic, something `neon-http` gives
+ * no other way to get), and this file's own seeding and cleanup now issue
+ * their independent statements together. That took the file from 10.3s to
+ * 7.3s locally.
+ *
+ * What remains is the flow's real cost, so these carry the same explicit
+ * 30s budget the other real-database integration suites here already use. It
+ * is a budget for a slow runner, not cover for a hang: a genuine deadlock
+ * still fails, just later.
+ */
+
 describe('runAuthenticatedInspectorCheck', () => {
 	it('cleans up the seeded user/client rows on the real, successful path', async () => {
 		const before = await countInspectorSmokeClients();
@@ -54,7 +78,7 @@ describe('runAuthenticatedInspectorCheck', () => {
 		expect(problems).toEqual([]);
 		const after = await countInspectorSmokeClients();
 		expect(after).toBe(before);
-	});
+	}, 30_000);
 });
 
 describe('obtainRealAccessToken', () => {
@@ -69,7 +93,7 @@ describe('obtainRealAccessToken', () => {
 		} finally {
 			stop();
 		}
-	});
+	}, 30_000);
 });
 
 /**
@@ -107,5 +131,5 @@ describe('runAuthenticatedInspectorCheck (MCP client throws after token issuance
 
 		const after = await countInspectorSmokeClients();
 		expect(after).toBe(before);
-	});
+	}, 30_000);
 });

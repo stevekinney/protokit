@@ -158,6 +158,15 @@ mock.module('@template/database', () => ({
 		// needing to parse the raw SQL string.
 		execute: async (query: unknown) => {
 			mockExecuteCalls.push(query);
+			// OPEN-12: token issuance for a refresh-token-capable client is now
+			// a single CTE through `execute` rather than two sequential
+			// `insert` calls, so the "issuance failed after the code was
+			// consumed" tests have to be able to fail it here too. Same flag,
+			// because the scenario under test is unchanged -- what varies is
+			// only which database call performs the write.
+			if (mockInsertShouldThrow) {
+				throw new Error('simulated insert failure');
+			}
 			return { rows: [] };
 		},
 	},
@@ -2034,6 +2043,7 @@ describe('authorization code token exchange', () => {
 		mockOauthTokens = [];
 		mockOauthRefreshTokens = [];
 		mockInsertedValues = [];
+		mockExecuteCalls = [];
 		mockInsertShouldThrow = false;
 		mockUpdateCalls = [];
 		mockDeleteCalls = [];
@@ -2152,7 +2162,16 @@ describe('authorization code token exchange', () => {
 		const body = await response.json();
 		expect(body.access_token).toBeTruthy();
 		expect(body.refresh_token).toBeTruthy();
-		expect(mockInsertedValues).toHaveLength(2);
+		// OPEN-12: both rows are now written by ONE statement rather than two
+		// sequential inserts -- `neon-http` has no transactions, so the old
+		// shape could leave an access token stored with no refresh token
+		// beside it. Assert the single `execute` happened and that it carries
+		// both tables, rather than counting inserts.
+		expect(mockInsertedValues).toHaveLength(0);
+		expect(mockExecuteCalls).toHaveLength(1);
+		const issuedQuery = JSON.stringify(mockExecuteCalls[0]);
+		expect(issuedQuery).toContain('oauth_tokens');
+		expect(issuedQuery).toContain('oauth_refresh_tokens');
 	});
 
 	it('omits refresh_token when the client is not registered for the refresh_token grant', async () => {
