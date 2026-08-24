@@ -439,3 +439,73 @@ describe('printManualCompletionSteps', () => {
 		expect(lines.some((line) => line.includes('claude mcp remove test-server'))).toBe(true);
 	});
 });
+
+/**
+ * `runHarnessMain` ends in `process.exit(1)`, so it cannot be exercised
+ * in-process without either stubbing `process.exit` (which proves the stub
+ * works, not the harness) or tearing down the test runner. A real subprocess
+ * is the only way to assert what an operator actually sees, which is the
+ * entire point of this function: pointing a deployed harness at a host that
+ * does not resolve used to print a raw Bun stack trace through
+ * `node_modules`. Same approach as `env-skip-validation-guard.test.ts`.
+ */
+describe('runHarnessMain', () => {
+	async function runInSubprocess(body: string): Promise<{
+		exitCode: number;
+		stdout: string;
+		stderr: string;
+	}> {
+		const modulePath = new URL('./connector-smoke-support.ts', import.meta.url).pathname;
+		const script = `import { runHarnessMain } from ${JSON.stringify(modulePath)};\n${body}`;
+		const subprocess = Bun.spawn(['bun', '-e', script], {
+			stdout: 'pipe',
+			stderr: 'pipe',
+			env: { ...process.env, NODE_ENV: 'test' },
+		});
+		const [stdout, stderr] = await Promise.all([
+			new Response(subprocess.stdout).text(),
+			new Response(subprocess.stderr).text(),
+		]);
+		return { exitCode: await subprocess.exited, stdout, stderr };
+	}
+
+	it('exits 0 and prints nothing extra when main succeeds', async () => {
+		const result = await runInSubprocess(
+			`await runHarnessMain('probe', async () => { console.log('ran'); });`,
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain('ran');
+		expect(result.stderr).not.toContain('failed:');
+	});
+
+	it("reports a thrown Error's message and exits 1, with no stack trace", async () => {
+		const result = await runInSubprocess(
+			`await runHarnessMain('probe', async () => { throw new Error('Unable to connect'); });`,
+		);
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain('[probe] failed: Unable to connect');
+		expect(result.stderr).toContain('the host is unreachable');
+		// The defect this exists to prevent: a raw trace through node_modules.
+		expect(result.stderr).not.toContain('node_modules');
+		expect(result.stderr).not.toContain('    at ');
+	});
+
+	it('describes a non-Error throw instead of printing [object Object]', async () => {
+		const result = await runInSubprocess(
+			`await runHarnessMain('probe', async () => { throw 'plain string failure'; });`,
+		);
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain('[probe] failed: plain string failure');
+	});
+
+	it('labels the failure with the harness name it was given', async () => {
+		const result = await runInSubprocess(
+			`await runHarnessMain('deployed-oauth', async () => { throw new Error('boom'); });`,
+		);
+
+		expect(result.stderr).toContain('[deployed-oauth] failed: boom');
+	});
+});

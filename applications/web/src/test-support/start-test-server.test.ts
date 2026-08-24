@@ -65,6 +65,50 @@ describe('startTestServer / fetchFromTestServer', () => {
 		}
 	});
 
+	/**
+	 * OPEN-11: `scheduleOauthClientCleanupIfRegistered`'s own `try`/`catch`
+	 * around `response.clone().json()` -- a `201 /oauth/register` response
+	 * whose body is not valid JSON. The real registration endpoint never
+	 * actually produces this shape (a successful registration always returns
+	 * a well-formed JSON body), so this constructs a listener that stamps
+	 * the instance header itself (mirroring what `startTestServer`'s wrapper
+	 * does) but deliberately answers with a malformed body on a `201`, to
+	 * prove the catch path doesn't propagate a `SyntaxError` out of
+	 * `fetchFromTestServer` and doesn't schedule a bogus cleanup for a
+	 * `client_id` it could never have parsed.
+	 */
+	it('does not throw when a 201 /oauth/register-shaped response carries a malformed JSON body', async () => {
+		const instanceId = 'malformed-body-instance';
+		const rawServer = Bun.serve({
+			port: 0,
+			fetch(request) {
+				const url = new URL(request.url);
+				if (url.pathname === '/oauth/register' && request.method === 'POST') {
+					return new Response('not valid json{{{', {
+						status: 201,
+						headers: { [TEST_SERVER_INSTANCE_HEADER]: instanceId },
+					});
+				}
+				return new Response('not found', {
+					status: 404,
+					headers: { [TEST_SERVER_INSTANCE_HEADER]: instanceId },
+				});
+			},
+		});
+		try {
+			const handle = { port: rawServer.port, instanceId, stop() {} };
+			// The discriminating assertion: this must resolve normally. If the
+			// catch block were ever deleted or narrowed, a malformed body here
+			// would throw an unhandled `SyntaxError` out of
+			// `fetchFromTestServer` instead.
+			const response = await fetchFromTestServer(handle, '/oauth/register', { method: 'POST' });
+			expect(response.status).toBe(201);
+			expect(await response.text()).toBe('not valid json{{{');
+		} finally {
+			rawServer.stop(true);
+		}
+	});
+
 	it('CrossServerRoutingError reports "(missing header)" when the response carries no instance header at all', async () => {
 		// A response from something other than `startTestServer` (or a
 		// misconfigured handler) never sets `TEST_SERVER_INSTANCE_HEADER` --

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'bun:test';
 import {
 	assertExclusionsExist,
+	findStaleWaivedLines,
 	LINE_COVERAGE_WAIVED_FILES,
 	mergeLcovRecordsByFile,
 	NEVER_IMPORTABLE_FILES,
 	parseLcov,
+	unwaivedUncoveredLines,
 	WORKSPACES,
 } from './assert-coverage-complete.ts';
 
@@ -243,5 +245,36 @@ describe('NEVER_IMPORTABLE_FILES / LINE_COVERAGE_WAIVED_FILES', () => {
 		expect(LINE_COVERAGE_WAIVED_FILES.has('applications/web/src/env.ts')).toBe(true);
 		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/database/src/env.ts')).toBe(true);
 		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/mcp/src/env.ts')).toBe(true);
+	});
+});
+
+describe('line-specific coverage waivers', () => {
+	const waived = new Map([['workspace/src/example.ts', new Set([10, 20])]]);
+
+	it('excuses exactly the waived lines and nothing else', () => {
+		expect(unwaivedUncoveredLines('workspace/src/example.ts', [10, 20], waived)).toEqual([]);
+	});
+
+	it('still fails on an uncovered line the waiver does not name', () => {
+		// The point of a line-specific waiver: excusing one unreachable brace
+		// must not stop the gate noticing the next real gap in the same file.
+		expect(unwaivedUncoveredLines('workspace/src/example.ts', [10, 20, 31], waived)).toEqual([31]);
+	});
+
+	it('leaves a file with no waiver entry completely unexcused', () => {
+		expect(unwaivedUncoveredLines('workspace/src/other.ts', [5, 6], waived)).toEqual([5, 6]);
+	});
+
+	it('reports a waived line that is now covered as stale', () => {
+		// Line 10 no longer appears as uncovered, so its waiver is obsolete.
+		expect(findStaleWaivedLines('workspace/src/example.ts', [20], waived)).toEqual([10]);
+	});
+
+	it('reports nothing stale while every waived line is still uncovered', () => {
+		expect(findStaleWaivedLines('workspace/src/example.ts', [10, 20], waived)).toEqual([]);
+	});
+
+	it('reports nothing stale for a file that has no waiver', () => {
+		expect(findStaleWaivedLines('workspace/src/other.ts', [], waived)).toEqual([]);
 	});
 });

@@ -44,8 +44,12 @@ mock.module('drizzle-orm', () => ({
 	eq: (column: unknown, value: unknown) => ({ column, value }),
 }));
 
-const { handleMcpRequest, shouldEnableConformanceMode, publishUserResourceUpdate } =
-	await import('@web/lib/mcp-handler');
+const {
+	handleMcpRequest,
+	shouldEnableConformanceMode,
+	publishUserResourceUpdate,
+	shutdownMcpTransports,
+} = await import('@web/lib/mcp-handler');
 
 /**
  * OBS-001 acceptance criterion 2: "a trace follows one connector action
@@ -396,6 +400,35 @@ describe('handleMcpRequest', () => {
 		expect(body.jsonrpc).toBe('2.0');
 		expect(typeof body.error).toBe('object');
 	});
+
+	// Defense in depth: `mcp-routes.ts`'s `authenticateMcpUser` always
+	// verifies the bearer token and builds a well-formed `extra` before ever
+	// calling this function, so a caller reaching here with an `AuthInfo`
+	// that fails `readMcpRequestAuthExtra`'s shape check means the HTTP
+	// boundary was bypassed. This exercises that boundary condition directly
+	// rather than through the two-hop `mcp-routes.ts` -> `mcp-handler.ts`
+	// integration path, since `mcp-routes.ts`'s own suite already covers
+	// what happens when ITS token lookup produces malformed `extra`.
+	it('throws when authInfo carries no verified auth extra (missing userProfile.id)', async () => {
+		const malformedAuthInfo = buildAuthInfo();
+		// @ts-expect-error -- deliberately malformed to simulate a caller
+		// bypassing the HTTP boundary's own shape guarantees.
+		malformedAuthInfo.extra.userProfile = undefined;
+
+		await expect(
+			handleMcpRequest(
+				new Request('http://localhost:3000/mcp', {
+					method: 'POST',
+					headers: {
+						accept: 'application/json, text/event-stream',
+						'content-type': 'application/json',
+					},
+					body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+				}),
+				malformedAuthInfo,
+			),
+		).rejects.toThrow('MCP request reached the handler without verified auth context.');
+	});
 });
 
 /**
@@ -652,5 +685,73 @@ describe('subscriptions/listen scope enforcement (round 17)', () => {
 		});
 
 		expect(response.status).not.toBe(403);
+	});
+});
+
+/**
+ * `shutdownMcpTransports` (`server.ts`'s `gracefulShutdown()` calls this
+ * directly) is already proven end-to-end by
+ * `graceful-shutdown.integration.test.ts`, which spawns the real server as
+ * a subprocess and sends it `SIGTERM` -- but that proof runs in a separate
+ * OS process, so this process's own `bun test --coverage` run never sees
+ * those lines execute. This unit slice exercises the same function
+ * in-process purely to prove its own two real side effects rather than
+ * just "resolves without throwing": it must be safe to call more than once
+ * (the real shutdown path can retry), and afterward the per-user handler
+ * cache it clears must be usable again by a fresh request for a user who
+ * had a live handler before shutdown -- not left in a broken state that
+ * only a process restart could recover from.
+ *
+ * IMPORTANT: this test is deliberately the LAST test in this file.
+ * `shutdownMcpTransports` mutates this module's shared, process-wide
+ * `userHandlers` cache and its sweep timer, so running it earlier would
+ * affect every later test's handler/bus state.
+ */
+describe('shutdownMcpTransports (OPS-001 unit slice)', () => {
+	it('is safe to call more than once, and a user whose handler existed before shutdown can still connect and receive updates afterward', async () => {
+		const userId = 'user-shutdown-unit-slice';
+		const clientBeforeShutdown = await connectModernClient('shutdown-before', userId);
+		const subscriptionBeforeShutdown = await clientBeforeShutdown.listen({
+			resourceSubscriptions: ['user://profile'],
+		});
+
+		await shutdownMcpTransports();
+		// Idempotent: a second call must not throw (the real shutdown path
+		// can call this more than once under retry/timeout conditions).
+		expect(await shutdownMcpTransports()).toBeUndefined();
+
+		// The client's own `.close()` after its handler was already closed
+		// server-side must not throw either.
+		expect(await subscriptionBeforeShutdown.close()).toBeUndefined();
+		await clientBeforeShutdown.close();
+
+		// A fresh connection for the SAME user id, after shutdown, must get a
+		// working handler -- not reuse (and fail against) a closed one.
+		const clientAfterShutdown = await connectModernClient('shutdown-after', userId);
+		const received: string[] = [];
+		clientAfterShutdown.setNotificationHandler(
+			'notifications/resources/updated',
+			async (notification) => {
+				received.push(notification.params.uri);
+			},
+		);
+		const subscriptionAfterShutdown = await clientAfterShutdown.listen({
+			resourceSubscriptions: ['user://profile'],
+		});
+
+		await clientAfterShutdown.callTool({
+			name: 'test_watched_resource_update',
+			arguments: { uri: 'user://profile' },
+		});
+
+		const deadline = Date.now() + 2000;
+		while (received.length === 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		expect(received).toEqual(['user://profile']);
+
+		await subscriptionAfterShutdown.close();
+		await clientAfterShutdown.close();
 	});
 });

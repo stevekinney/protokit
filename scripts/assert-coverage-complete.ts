@@ -192,6 +192,88 @@ export const LINE_COVERAGE_WAIVED_FILES: ReadonlySet<string> = new Set([
 	'packages/mcp/src/server.ts', // Line 248, the MCP-Apps experimental-capability branch -- unreachable because `hasRegisteredUiExtensionResource()` always returns `false` today; no MCP App is registered anywhere in this codebase yet. NOTE: this is `createMcpServer`, a different file from `applications/web/src/server.ts` (see `NEVER_IMPORTABLE_FILES`'s header comment) -- every other line here is required and covered.
 ]);
 
+/**
+ * TIER B-narrow -- "these exact lines, and nothing else."
+ *
+ * `LINE_COVERAGE_WAIVED_FILES` above exempts a whole file, which is the right
+ * shape for a file whose `main()` only runs against a live deployment. It is
+ * the WRONG shape for an otherwise fully covered file that has one
+ * genuinely-unreachable line: waiving the file to excuse one brace also stops
+ * the gate ever noticing the next real gap in it, silently, forever. That is
+ * the "green for the wrong reason" failure this gate exists to prevent,
+ * arriving through the exclusion list instead of through the metric.
+ *
+ * An entry here waives the named lines only. Any OTHER uncovered line in the
+ * same file still fails the gate, and a waived line that becomes covered is
+ * reported as stale so the waiver gets removed rather than accumulating.
+ */
+export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>> = new Map([
+	[
+		// Two defense-in-depth guards inside the SDK server factory, both
+		// unreachable through the only entry point that reaches them.
+		// `handleMcpRequest` calls `readMcpRequestAuthExtra(authInfo)` and
+		// returns before dispatch if it fails, then looks the handler up by
+		// `requestAuthExtra.userId` -- so by the time the SDK invokes the
+		// factory with that same `authInfo`, the extra is necessarily present
+		// (line 88) and its `userId` is necessarily the one the closure was
+		// built for (line 96). Deliberately kept as code rather than deleted:
+		// silently serving either case would be the cross-user delivery bug
+		// (S-11) the per-user handler cache exists to prevent.
+		//
+		// Line 293 is the closing brace of the `PayloadTooLargeError` branch,
+		// immediately after its `return`. Every line of that return body
+		// registers real hits from the oversized-body test; only the brace
+		// never does -- the same Bun/SWC instrumentation artifact already
+		// documented for `trusted-proxy.ts` line 180.
+		'applications/web/src/lib/mcp-handler.ts',
+		new Set([88, 96, 293]),
+	],
+	[
+		// `runHarnessMain`'s body. It ends in `process.exit(1)`, so it cannot
+		// run in-process without either stubbing `process.exit` (which would
+		// prove the stub works, not the harness) or tearing down the test
+		// runner. `connector-smoke-support.test.ts` drives it through four real
+		// `Bun.spawn` subprocesses instead, asserting the exit code, the
+		// operator-facing message, and specifically the ABSENCE of a
+		// `node_modules` stack trace -- the defect it was written to fix.
+		// Coverage instrumentation does not follow a subprocess, so the lines
+		// stay at zero however thoroughly they are exercised. Same reason as
+		// the `SKIP_ENV_VALIDATION` guards in Tier B above.
+		'applications/web/src/connector-smoke-support.ts',
+		new Set([279, 280, 281, 282, 283, 284, 285, 286, 287, 288]),
+	],
+]);
+
+/**
+ * Reports waived lines that are now covered. A stale waiver is not harmless:
+ * it is a standing exemption nobody re-examines, and the line it names may
+ * have moved to cover something that genuinely is not tested.
+ */
+export function findStaleWaivedLines(
+	workspaceQualifiedPath: string,
+	uncoveredLineNumbers: readonly number[],
+	waivedLines: ReadonlyMap<string, ReadonlySet<number>> = LINE_COVERAGE_WAIVED_LINES,
+): number[] {
+	const waived = waivedLines.get(workspaceQualifiedPath);
+	if (!waived) return [];
+	const uncovered = new Set(uncoveredLineNumbers);
+	return [...waived].filter((lineNumber) => !uncovered.has(lineNumber)).sort((a, b) => a - b);
+}
+
+/**
+ * The uncovered lines in this file that no waiver excuses. An empty result
+ * means the file passes, whether that is because it is fully covered or
+ * because every gap is individually accounted for.
+ */
+export function unwaivedUncoveredLines(
+	workspaceQualifiedPath: string,
+	uncoveredLineNumbers: readonly number[],
+	waivedLines: ReadonlyMap<string, ReadonlySet<number>> = LINE_COVERAGE_WAIVED_LINES,
+): number[] {
+	const waived = waivedLines.get(workspaceQualifiedPath) ?? new Set<number>();
+	return uncoveredLineNumbers.filter((lineNumber) => !waived.has(lineNumber));
+}
+
 export function assertExclusionsExist(
 	// Defaults to the real Tier A/B sets; overridable so this stale-entry
 	// check is directly unit-testable against synthetic entries, rather than
@@ -328,6 +410,12 @@ export interface MergedFileCoverage {
 	readonly linesHit: number;
 	readonly functionsFound: number;
 	readonly functionsHit: number;
+	/**
+	 * The specific line numbers with zero hits after merging, so a waiver can
+	 * name the lines it excuses instead of exempting a whole file. See
+	 * `LINE_COVERAGE_WAIVED_LINES`.
+	 */
+	readonly uncoveredLineNumbers: readonly number[];
 }
 
 /**
@@ -397,6 +485,10 @@ export function mergeLcovRecordsByFile(
 		result.set(key, {
 			linesFound,
 			linesHit,
+			uncoveredLineNumbers: [...value.lineHits.entries()]
+				.filter(([, hitCount]) => hitCount === 0)
+				.map(([lineNumber]) => lineNumber)
+				.sort((left, right) => left - right),
 			functionsFound: value.functionsFound,
 			functionsHit: value.functionsHit,
 		});
@@ -484,8 +576,24 @@ async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<bool
 				record.linesHit < record.linesFound &&
 				!LINE_COVERAGE_WAIVED_FILES.has(workspaceQualifiedPath)
 			) {
+				const unwaived = unwaivedUncoveredLines(
+					workspaceQualifiedPath,
+					record.uncoveredLineNumbers,
+				);
+				if (unwaived.length > 0) {
+					console.error(
+						`[test:coverage] ${workspace.name}: ${sourceFile} has ${unwaived.length} uncovered line(s) (${record.linesHit}/${record.linesFound}); lines ${unwaived.join(', ')}`,
+					);
+					workspaceFailed = true;
+				}
+			}
+			const staleWaivedLines = findStaleWaivedLines(
+				workspaceQualifiedPath,
+				record.uncoveredLineNumbers,
+			);
+			if (staleWaivedLines.length > 0) {
 				console.error(
-					`[test:coverage] ${workspace.name}: ${sourceFile} has ${record.linesFound - record.linesHit} uncovered line(s) (${record.linesHit}/${record.linesFound})`,
+					`[test:coverage] ${workspace.name}: ${sourceFile} waives line(s) ${staleWaivedLines.join(', ')} that are now covered. Remove them from LINE_COVERAGE_WAIVED_LINES -- a waiver nobody re-examines is how a real gap hides.`,
 				);
 				workspaceFailed = true;
 			}
