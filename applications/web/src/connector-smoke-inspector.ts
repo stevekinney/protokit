@@ -57,7 +57,7 @@
 import { randomUUID } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { eq } from 'drizzle-orm';
-import { commandIsAvailable, runCli } from './connector-smoke-support';
+import { commandIsAvailable, runCli, runHarnessMain } from './connector-smoke-support';
 
 function parseHostArgument(argv: readonly string[]): string | undefined {
 	const flagIndex = argv.indexOf('--host');
@@ -408,5 +408,5 @@ async function main(): Promise<void> {
 // `main()` against `process.argv`, including a real network `bunx` install
 // and a real `process.exit()` that tears down the importing process.
 if (import.meta.main) {
-	await main();
+	await runHarnessMain('connector-smoke-inspector', main);
 }

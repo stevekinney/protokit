@@ -41,6 +41,7 @@ import { join } from 'node:path';
 import {
 	checkDiscoveryDocumentsForConnectorCompatibility,
 	fetchDiscoveryDocuments,
+	runHarnessMain,
 } from '@web/connector-smoke-support';
 
 /**
@@ -413,5 +414,5 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-	await main();
+	await runHarnessMain('deployed-oauth', main);
 }

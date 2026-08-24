@@ -42,6 +42,7 @@ import {
 	fetchDiscoveryDocuments,
 	printManualCompletionSteps,
 	runCli,
+	runHarnessMain,
 } from './connector-smoke-support';
 
 function parseHostArgument(argv: readonly string[]): string | undefined {
@@ -209,4 +210,13 @@ async function main(): Promise<void> {
 	process.exit(0);
 }
 
-await main();
+// Round-16 review (thread 8) added this guard to four sibling harnesses but
+// missed these two: without it, merely `import`-ing this module -- which is
+// the only way to unit test any pure helper in it -- runs the real `main()`
+// against `process.argv`, including a real network install and a
+// `process.exit()` that tears down the importing process. That is precisely
+// why these two files were invisible to the coverage gate: nothing could
+// safely import them.
+if (import.meta.main) {
+	await runHarnessMain('connector-smoke-codex', main);
+}
