@@ -13,11 +13,13 @@ mock.module('@template/database', () => ({
 	database: {
 		select: () => ({
 			from: () => ({
-				where: () => ({
-					limit: (n: number) => {
-						void n;
-						return Promise.resolve(mockTokenResult);
-					},
+				innerJoin: () => ({
+					where: () => ({
+						limit: (n: number) => {
+							void n;
+							return Promise.resolve(mockTokenResult);
+						},
+					}),
 				}),
 			}),
 		}),
@@ -27,6 +29,10 @@ mock.module('@template/database', () => ({
 			accessToken: 'accessToken',
 			revokedAt: 'revokedAt',
 			expiresAt: 'expiresAt',
+			userId: 'userId',
+		},
+		users: {
+			id: 'id',
 		},
 	},
 }));
@@ -160,8 +166,11 @@ describe('handleMcpRequestWithAuthentication', () => {
 				userId: 'user-1',
 				scope: 'mcp:read',
 				resource: 'http://localhost:3000/mcp',
-				revokedAt: null,
 				expiresAt: new Date(Date.now() + 60000),
+				userEmail: 'user-1@example.com',
+				userName: 'Test User',
+				userImage: null,
+				userRole: 'user',
 			},
 		];
 		const context = createContext({
@@ -183,8 +192,11 @@ describe('handleMcpRequestWithAuthentication', () => {
 				userId: 'user-1',
 				scope: 'mcp:read',
 				resource: 'http://localhost:3000/mcp',
-				revokedAt: null,
 				expiresAt: new Date(Date.now() + 60000),
+				userEmail: 'user-1@example.com',
+				userName: 'Test User',
+				userImage: null,
+				userRole: 'user',
 			},
 		];
 		const context = createContext({
@@ -207,8 +219,11 @@ describe('handleMcpRequestWithAuthentication', () => {
 				userId: 'user-1',
 				scope: 'mcp:read',
 				resource: 'http://localhost:3000/mcp',
-				revokedAt: null,
 				expiresAt: new Date(Date.now() + 60000),
+				userEmail: 'user-1@example.com',
+				userName: 'Test User',
+				userImage: null,
+				userRole: 'user',
 			},
 		];
 		hashCredentialCalls.length = 0;
@@ -233,8 +248,11 @@ describe('handleMcpRequestWithAuthentication', () => {
 				userId: 'user-1',
 				scope: 'mcp:read',
 				resource: 'http://attacker.example.com/mcp',
-				revokedAt: null,
 				expiresAt: new Date(Date.now() + 60000),
+				userEmail: 'user-1@example.com',
+				userName: 'Test User',
+				userImage: null,
+				userRole: 'user',
 			},
 		];
 		const context = createContext({

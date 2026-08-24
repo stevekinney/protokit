@@ -12,6 +12,11 @@ mock.module('@web/env', () => ({
 	},
 }));
 
+// Mutable so individual tests can force the Google profile's `sub` to
+// diverge from the ID token's `sub` (line 329's cross-check) without a
+// second mock.module registration.
+export let googleUserProfileSubOverride: string | null = null;
+
 mock.module('@web/lib/google-authentication', () => ({
 	createGoogleSignInRedirectResponse: () =>
 		new Response(null, {
@@ -23,7 +28,7 @@ mock.module('@web/lib/google-authentication', () => ({
 		idToken: 'mock-id-token',
 	}),
 	getGoogleUserProfile: async () => ({
-		sub: 'google-sub-123',
+		sub: googleUserProfileSubOverride ?? 'google-sub-123',
 		email: 'alice@example.com',
 		email_verified: true,
 		name: 'Alice',
@@ -61,16 +66,21 @@ mock.module('@web/lib/google-id-token', () => ({
 
 export const recordFailedAuthenticationSpy = mock(async () => {});
 
+// Mutable so individual tests can force either rate limiter to reject a
+// request without a second mock.module registration.
+export let googleAuthRateLimitAllowed = true;
+export let sessionCreationRateLimitAllowed = true;
+
 mock.module('@web/lib/request-rate-limiter', () => ({
 	enforceGoogleAuthRateLimit: async () => ({
-		allowed: true,
-		retryAfterSeconds: 0,
-		remainingRequests: 10,
+		allowed: googleAuthRateLimitAllowed,
+		retryAfterSeconds: googleAuthRateLimitAllowed ? 0 : 30,
+		remainingRequests: googleAuthRateLimitAllowed ? 10 : 0,
 	}),
 	enforceSessionCreationRateLimit: async () => ({
-		allowed: true,
-		retryAfterSeconds: 0,
-		remainingRequests: 10,
+		allowed: sessionCreationRateLimitAllowed,
+		retryAfterSeconds: sessionCreationRateLimitAllowed ? 0 : 15,
+		remainingRequests: sessionCreationRateLimitAllowed ? 10 : 0,
 	}),
 	recordFailedAuthentication: recordFailedAuthenticationSpy,
 }));
@@ -152,16 +162,59 @@ function createContext(
 }
 
 describe('handleGoogleSignInStart', () => {
+	beforeEach(() => {
+		googleAuthRateLimitAllowed = true;
+	});
+
 	it('returns a 302 redirect', async () => {
 		const context = createContext();
 		const response = await handleGoogleSignInStart(context);
 		expect(response.status).toBe(302);
+	});
+
+	it('returns a rate-limited response when the Google auth rate limit is exceeded', async () => {
+		googleAuthRateLimitAllowed = false;
+		const context = createContext();
+		const response = await handleGoogleSignInStart(context);
+		expect(response.status).toBe(429);
 	});
 });
 
 describe('handleGoogleSignInCallback', () => {
 	beforeEach(() => {
 		recordFailedAuthenticationSpy.mockClear();
+		googleAuthRateLimitAllowed = true;
+		sessionCreationRateLimitAllowed = true;
+		googleUserProfileSubOverride = null;
+	});
+
+	it('returns a rate-limited response when the Google auth rate limit is exceeded', async () => {
+		googleAuthRateLimitAllowed = false;
+		const context = createContext({
+			url: 'http://localhost:3000/auth/google/callback?code=test-code&state=valid-state',
+		});
+		const response = await handleGoogleSignInCallback(context);
+		expect(response.status).toBe(429);
+	});
+
+	it('returns a rate-limited response when the session creation rate limit is exceeded', async () => {
+		sessionCreationRateLimitAllowed = false;
+		const context = createContext({
+			url: 'http://localhost:3000/auth/google/callback?code=test-code&state=valid-state',
+		});
+		const response = await handleGoogleSignInCallback(context);
+		expect(response.status).toBe(429);
+	});
+
+	it('returns 500 when the access token and ID token identify different subjects', async () => {
+		googleUserProfileSubOverride = 'a-completely-different-subject';
+		const context = createContext({
+			url: 'http://localhost:3000/auth/google/callback?code=test-code&state=valid-state',
+		});
+		const response = await handleGoogleSignInCallback(context);
+		expect(response.status).toBe(500);
+		const body = await response.text();
+		expect(body).toContain('Google sign-in failed');
 	});
 
 	it('returns 400 when code is missing', async () => {
@@ -270,5 +323,66 @@ describe('handleSignOut', () => {
 		});
 		const response = await handleSignOut(context);
 		expect(response.status).toBe(303);
+	});
+
+	it('rejects a request whose content type is not application/x-www-form-urlencoded', async () => {
+		const context = createContext({
+			url: 'http://localhost:3000/auth/sign-out',
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				'sec-fetch-site': 'same-origin',
+			},
+			body: JSON.stringify({ csrf_token: 'irrelevant' }),
+			sessionToken: 'mock-token',
+		});
+		const response = await handleSignOut(context);
+		expect(response.status).toBe(400);
+		const payload = await response.json();
+		expect(payload.error).toBe('unsupported_content_type');
+	});
+
+	it('rejects a request body larger than the sign-out body limit', async () => {
+		const oversizedBody = `csrf_token=${'a'.repeat(2048)}`;
+		const context = createContext({
+			url: 'http://localhost:3000/auth/sign-out',
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'same-origin',
+				'content-length': String(Buffer.byteLength(oversizedBody)),
+			},
+			body: oversizedBody,
+			sessionToken: 'mock-token',
+		});
+		const response = await handleSignOut(context);
+		expect(response.status).toBe(413);
+		const payload = await response.json();
+		expect(payload.error).toBe('invalid_request');
+	});
+
+	it('rejects a request body that is not valid UTF-8', async () => {
+		const invalidUtf8Body = new Uint8Array([0x63, 0x73, 0x72, 0x66, 0x3d, 0xff, 0xfe]);
+		const request = new Request('http://localhost:3000/auth/sign-out', {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'same-origin',
+			},
+			body: invalidUtf8Body,
+		});
+		const context: RequestContext = {
+			request,
+			requestUrl: new URL(request.url),
+			requestId: 'req-1',
+			networkIdentity: '203.0.113.1',
+			user: null,
+			sessionToken: 'mock-token',
+		};
+		const response = await handleSignOut(context);
+		expect(response.status).toBe(400);
+		const payload = await response.json();
+		expect(payload.error).toBe('invalid_request');
+		expect(payload.message).toContain('UTF-8');
 	});
 });

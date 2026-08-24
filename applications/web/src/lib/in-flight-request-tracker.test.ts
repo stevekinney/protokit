@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { createInFlightRequestTracker } from '@web/lib/in-flight-request-tracker';
+import {
+	createInFlightRequestTracker,
+	markAsServerOnlyCloseableStream,
+} from '@web/lib/in-flight-request-tracker';
 
 describe('createInFlightRequestTracker', () => {
 	it('drains immediately when nothing is in flight', async () => {
@@ -132,5 +135,90 @@ describe('createInFlightRequestTracker', () => {
 
 		const result = await drainPromise;
 		expect(result).toEqual({ drained: true, remaining: 0 });
+	});
+
+	it('decrements immediately for a Response marked as a server-only-closeable stream, and strips the marker header before it reaches the caller', async () => {
+		const tracker = createInFlightRequestTracker();
+		const body = new ReadableStream<Uint8Array>({
+			start() {
+				// Never closes on its own -- only `shutdownMcpTransports()`
+				// closes this kind of stream, which is exactly why it must
+				// not block `drain()`.
+			},
+		});
+		const response = markAsServerOnlyCloseableStream(new Response(body));
+		expect(response.headers.has('x-protokit-internal-server-only-closeable-stream')).toBe(true);
+
+		const trackedResponse = await tracker.track(async () => response);
+
+		// Counted as done immediately, even though the underlying stream is
+		// still open -- draining must not wait on it.
+		expect(tracker.activeCount).toBe(0);
+		// The internal marker header must never leak to the actual HTTP
+		// output.
+		expect(trackedResponse.headers.has('x-protokit-internal-server-only-closeable-stream')).toBe(
+			false,
+		);
+	});
+
+	it('decrements immediately for a Response with a null body (e.g. 204/304)', async () => {
+		const tracker = createInFlightRequestTracker();
+		const trackedResponse = await tracker.track(async () => new Response(null, { status: 204 }));
+		expect(trackedResponse.body).toBeNull();
+		expect(tracker.activeCount).toBe(0);
+	});
+
+	it('decrements immediately for a Response whose body was already consumed', async () => {
+		const tracker = createInFlightRequestTracker();
+		const original = new Response('hello');
+		await original.text();
+		expect(original.bodyUsed).toBe(true);
+
+		const trackedResponse = await tracker.track(async () => original);
+		expect(trackedResponse).toBe(original);
+		expect(tracker.activeCount).toBe(0);
+	});
+
+	it('settles a streamed Response as done when the underlying source errors instead of closing cleanly', async () => {
+		const tracker = createInFlightRequestTracker();
+		let failSource!: (error: unknown) => void;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				failSource = (error) => controller.error(error);
+			},
+		});
+
+		const trackedResponse = await tracker.track(async () => new Response(body));
+		expect(tracker.activeCount).toBe(1);
+
+		const reader = trackedResponse.body!.getReader();
+		const readPromise = reader.read();
+		failSource(new Error('source exploded'));
+
+		await expect(readPromise).rejects.toThrow('source exploded');
+		expect(tracker.activeCount).toBe(0);
+	});
+
+	it('does not double-decrement when a body-tracked Response later finishes draining', async () => {
+		// Regression guard for the `finally` branch: once body tracking has
+		// started (`bodyTrackingStarted = true`), the `finally` block must
+		// not also decrement when `track()` returns.
+		const tracker = createInFlightRequestTracker();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.close();
+			},
+		});
+
+		const trackedResponse = await tracker.track(async () => new Response(body));
+		// The Response was returned, but the empty stream hasn't been
+		// drained by a reader yet -- only body tracking's own `finally`
+		// governs `activeCount` here, not `track()`'s.
+		expect(tracker.activeCount).toBe(1);
+
+		const reader = trackedResponse.body!.getReader();
+		expect((await reader.read()).done).toBe(true);
+
+		expect(tracker.activeCount).toBe(0);
 	});
 });

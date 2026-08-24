@@ -139,6 +139,18 @@ function buildAuthInfo(overrides?: Partial<AuthInfo['extra']>): AuthInfo {
 		resource: new URL('http://localhost:3000/mcp'),
 		extra: {
 			userId,
+			// OPEN-12: the HTTP boundary now fetches the profile once, in the
+			// same round trip as the token lookup, and carries it here rather
+			// than `mcp-handler.ts` fetching it again per request -- this
+			// fixture stands in for that boundary, matching the shape
+			// `mcp-routes.ts`'s `authenticateMcpUser` actually produces.
+			userProfile: {
+				id: userId,
+				email: 'user@example.com',
+				name: 'Test User',
+				image: null,
+				role: 'user',
+			},
 			oauthClientId: 'client-1',
 			scopes: grantedScopes,
 			resource: 'http://localhost:3000/mcp',

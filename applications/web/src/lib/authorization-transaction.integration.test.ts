@@ -5,6 +5,7 @@ import { database, schema } from '@template/database';
 import {
 	consumeAuthorizationTransaction,
 	createAuthorizationTransaction,
+	unconsumeAuthorizationTransaction,
 } from '@web/lib/authorization-transaction';
 import { hashCredential } from '@web/lib/hash-credential';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
@@ -216,5 +217,49 @@ describe('createAuthorizationTransaction / consumeAuthorizationTransaction (real
 		expect(row!.transactionId).toBe(hashCredential(created.transactionId));
 		expect(row!.csrfTokenHash).not.toBe(created.csrfToken);
 		expect(row!.csrfTokenHash).toBe(hashCredential(created.csrfToken));
+	});
+});
+
+describe('unconsumeAuthorizationTransaction (real Postgres)', () => {
+	it('clears consumedAt, letting a transaction be consumed again after a downstream failure', async () => {
+		const created = await createAuthorizationTransaction(baseTransactionInput());
+
+		const firstConsume = await consumeAuthorizationTransaction({
+			transactionId: created.transactionId,
+			csrfToken: created.csrfToken,
+			userId,
+			sessionToken: 'session-token-abc',
+		});
+		expect(firstConsume).not.toBeNull();
+
+		// Simulates the caller's own catch block reopening the transaction
+		// after the second, separate insert (the authorization code) failed.
+		await unconsumeAuthorizationTransaction(created.transactionId);
+
+		const [row] = await database
+			.select()
+			.from(schema.oauthAuthorizationTransactions)
+			.where(
+				eq(
+					schema.oauthAuthorizationTransactions.transactionId,
+					hashCredential(created.transactionId),
+				),
+			)
+			.limit(1);
+		expect(row?.consumedAt).toBeNull();
+
+		const secondConsume = await consumeAuthorizationTransaction({
+			transactionId: created.transactionId,
+			csrfToken: created.csrfToken,
+			userId,
+			sessionToken: 'session-token-abc',
+		});
+		expect(secondConsume).not.toBeNull();
+	});
+
+	it('is a safe no-op for a transaction id that does not exist', async () => {
+		expect(
+			await unconsumeAuthorizationTransaction('does-not-exist-transaction-id'),
+		).toBeUndefined();
 	});
 });

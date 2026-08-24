@@ -35,16 +35,184 @@ import { join, relative } from 'node:path';
  * step the same way `assert-no-unexpected-skips.ts` already is for skips.
  */
 
-interface WorkspaceTarget {
+export interface WorkspaceTarget {
 	readonly name: string;
 	readonly directory: string;
 }
 
-const WORKSPACES: readonly WorkspaceTarget[] = [
+export const WORKSPACES: readonly WorkspaceTarget[] = [
 	{ name: '@template/database', directory: 'packages/database' },
 	{ name: '@template/mcp', directory: 'packages/mcp' },
 	{ name: '@template/web', directory: 'applications/web' },
 ];
+
+/**
+ * TEST-001 (post-merge coverage-gate round): two explicit, reasoned tiers
+ * of exception to "every `src` file must appear in the coverage report
+ * with every line hit" -- never a silent glob, and never a bare filename
+ * with no reason attached.
+ *
+ * Every entry is `<workspace.directory>/<path-under-src>`, e.g.
+ * `applications/web/src/server.ts` -- WORKSPACE-QUALIFIED, not merely
+ * workspace-relative. This is load-bearing, not stylistic: `src/server.ts`
+ * and `src/env.ts` each name a REAL, DIFFERENT file in more than one
+ * workspace (`applications/web`'s real process entry point vs.
+ * `packages/mcp`'s real, normally-testable server factory; three
+ * independent `SKIP_ENV_VALIDATION` guards, one per workspace). An earlier
+ * version of this file kept a single flat, workspace-agnostic set and
+ * checked it with `.has(sourceFile)` inside the per-workspace loop below --
+ * which meant listing `applications/web/server.ts` as never-importable
+ * ALSO silently exempted `packages/mcp/server.ts` (a real, normal,
+ * fully-testable module) from ever being checked at all, in every
+ * workspace, by simple string collision. Qualifying every key by its
+ * workspace directory makes that collision structurally impossible: two
+ * files that happen to share a `src`-relative path are two different Map
+ * keys here, exactly as they are two different files on disk.
+ *
+ * `assertExclusionsExist` below fails the run if a listed path no longer
+ * exists on disk -- an exclusion for a file that was since deleted or
+ * renamed is a stale entry silently hiding nothing, which is exactly the
+ * "gate concealing what it was built to catch" failure mode this script
+ * exists to prevent.
+ *
+ * TIER A -- "never importable": these files run real, unconditional,
+ * top-level side effects at module load (binding a real port, calling
+ * `Bun.build`, mutating the DOM) or are driven by a runner other than
+ * `bun test` entirely (Playwright's `.e2e.ts` scripts, run by `bunx
+ * playwright test`), or are erased entirely at compile time (a type-only
+ * module -- there is no runtime module left for the coverage instrumenter
+ * to attach to, confirmed empirically: even a real test importing one
+ * produces no `SF:` record at all). Importing any of the side-effecting
+ * ones from a test file would not exercise their logic under test -- it
+ * would run the real program. Exempt from the "must appear in the coverage
+ * report at all" check.
+ */
+export const NEVER_IMPORTABLE_FILES: ReadonlySet<string> = new Set([
+	// applications/web -- real process entry points and build tooling.
+	'applications/web/src/server.ts', // Binds a real port and installs real SIGTERM/SIGINT/uncaughtException handlers at module load; no `import.meta.main` guard, by design (this *is* the process entry point).
+	'applications/web/src/build.ts', // Runs the real production `Bun.build` pipeline (writes to `dist/`) unconditionally at module load; no `export` worth importing for.
+	'applications/web/src/client/entry.tsx', // Browser-runtime entry: reads `document.getElementById` at module load. Bun's `bun test` environment has no DOM; this file is never evaluated there, by construction (see `applications/web/CLAUDE.md`'s client/server boundary).
+	'applications/web/src/end-to-end-tests/hydration.e2e.ts', // Playwright spec, run by `bunx playwright test` (`test:end-to-end`), never by `bun test` -- has its own runner and its own gate.
+	'applications/web/src/end-to-end-tests/interactive-components.e2e.ts',
+	'applications/web/src/end-to-end-tests/streaming.e2e.ts',
+	// applications/web -- BLOCKED, not exempt by design: both connector-smoke
+	// harnesses call `await main()` unconditionally at module load, with no
+	// `import.meta.main` guard (unlike their four siblings -- `deployed-oauth.ts`,
+	// `deployed-smoke.ts`, `deployed-streaming.ts`, `connector-smoke-inspector.ts`
+	// -- which all have one specifically so a test file CAN import their pure
+	// helpers without triggering a real run). Importing either file from a test
+	// would self-host a real server and shell out to a real `codex`/`claude` CLI.
+	// This is a source defect, not a genuinely unmeasurable file: the fix is a
+	// one-line `if (import.meta.main) { await main(); }` guard around the
+	// existing `await main();` call, mirroring the four siblings exactly. Not
+	// applied here -- `applications/web/src/{connector-smoke-claude-code,connector-smoke-codex}.ts`
+	// are outside this script's file lane (test files and this script only).
+	// Listed here, with this reason, so the exclusion is explicit rather than
+	// this file silently vanishing from the report.
+	'applications/web/src/connector-smoke-claude-code.ts',
+	'applications/web/src/connector-smoke-codex.ts',
+	// applications/web -- real, unconditional side effects at module load:
+	// `await buildStyles()`/`buildClientBundle()`/`writeStableManifest()`, a
+	// real `fs.watch`, and a real `Bun.spawn(['bun', '--watch', ...])` that
+	// starts a real dev server -- with no `import.meta.main` guard anywhere
+	// in the file (confirmed by direct read). The `bun run dev` entry point
+	// analog to `server.ts`/`build.ts`; same reasoning as those two.
+	'applications/web/src/development.ts',
+	// applications/web -- type-only modules. Confirmed empirically: even a
+	// test file that imports one of these produces NO `SF:` record at all in
+	// Bun's lcov output, because a type-only import is fully erased at
+	// compile time -- there is no module evaluation for the coverage
+	// instrumenter to attach to. This is a different failure shape than
+	// "never imported by any test" (the file IS imported, repeatedly, by
+	// several real test files) but produces the identical symptom this gate
+	// exists to catch (invisible to the report), so it gets the same
+	// treatment: an explicit, reasoned exclusion, not a silent gap.
+	'applications/web/src/lib/request-context.ts', // `RequestContext` -- `export type` only, no runtime code.
+	'applications/web/src/types/user.ts', // `ApplicationUser` -- `export type` only, no runtime code.
+	// packages/mcp -- a real standalone conformance server. NOTE: this is a
+	// DIFFERENT file from `applications/web/src/server.ts` above, and this
+	// key correctly does not collide with it (see this block's header
+	// comment) -- `packages/mcp/src/server.ts` (the server FACTORY,
+	// `createMcpServer`) remains fully required to appear and be covered.
+	'packages/mcp/src/conformance-server.ts', // Calls `server.listen(...)` unconditionally at module load (binds a real port); a standalone process for local/CI protocol conformance runs, not a module with logic to unit test.
+]);
+
+/**
+ * TIER B -- "import required, full-line coverage waived": every file here
+ * DOES appear in the coverage report (a real test imports it -- going
+ * invisible again would be the exact regression this gate exists to catch)
+ * but is not held to 100% of its lines, for one of three distinct, disclosed
+ * reasons named per entry below. Function-count is still reported for these
+ * files too (see the end-of-run NOTE for why function coverage is advisory
+ * only everywhere). Keys are workspace-qualified for the same reason
+ * `NEVER_IMPORTABLE_FILES` above is -- `env.ts` in particular names a real,
+ * different file with the identical guard pattern in all three workspaces.
+ *
+ *  1. Live-deployment-only orchestration: a `main()` function, guarded by
+ *     `if (import.meta.main)` specifically so it CAN be imported without
+ *     running, whose own body drives a real deployed host, a real OAuth
+ *     browser consent flow, or a real MCP Inspector CLI install -- none of
+ *     which `bun test` can honestly exercise.
+ *  2. A `SKIP_ENV_VALIDATION` fail-closed guard (CONFIG-001/BUG-001) that
+ *     throws before any other code runs, and is therefore only reachable by
+ *     evaluating the module fresh -- which a real subprocess (`Bun.spawn`)
+ *     is the only safe way to do without corrupting the parent process's own
+ *     coverage instrumentation for that file. Confirmed empirically, twice
+ *     independently (`packages/mcp/src/env.test.ts`'s original author, and
+ *     `applications/web/src/env-skip-validation-guard.test.ts`'s): re-importing
+ *     the same source file in-process (via a cache-busting query string) to
+ *     re-trigger the top-level throw does not UNION with the already-recorded
+ *     happy-path coverage for that file -- it RESETS the file's line-hit
+ *     counters, wiping out legitimate coverage of the success path. A real
+ *     subprocess test proves the guard's behavior correctly but is invisible
+ *     to the parent process's `--coverage` collector by construction.
+ *  3. A line proven unreachable by direct evidence -- reading the pinned
+ *     dependency's own installed source, or reading this codebase's own
+ *     control flow -- not merely "I couldn't find a test for it."
+ */
+export const LINE_COVERAGE_WAIVED_FILES: ReadonlySet<string> = new Set([
+	// Reason 1: live-deployment-only orchestration.
+	'applications/web/src/deployed-oauth.ts', // `main()`: real DCR against a real host, a real loopback OAuth round trip. Pure helpers (`generatePkcePair`, `startLoopbackCallbackListener`, `checkAuthorizeRedirectsToSignIn`) are covered by `deployed-oauth.test.ts`.
+	'applications/web/src/deployed-smoke.ts', // `main()`: real HTTP probes against a real deployed host.
+	'applications/web/src/deployed-streaming.ts', // `main()`: opens a real SSE stream against a real deployed host and measures real wall-clock chunk timing. Pure helpers (`parseArguments`, `detectStreamBuffering`) are covered by `deployed-streaming.test.ts`.
+	'applications/web/src/connector-smoke-inspector.ts', // `main()`: self-hosts a real server and shells out to the real `@modelcontextprotocol/inspector` CLI via `bunx`. `runAuthenticatedInspectorCheck`/`obtainRealAccessToken` are covered by `connector-smoke-inspector.test.ts` against real Postgres.
+
+	// Reason 2: `SKIP_ENV_VALIDATION` fail-closed guard, subprocess-only
+	// reachable. Three independent files, one per workspace, each with its
+	// own copy of the identical guard (CONFIG-001/BUG-001 -- deliberately
+	// duplicated per-package rather than shared, so each package's `env.ts`
+	// stays independently readable).
+	'applications/web/src/env.ts', // Lines 10-13, `if (process.env.SKIP_ENV_VALIDATION) throw ...`. Real behavior proven by `src/env-skip-validation-guard.test.ts` (a real `Bun.spawn` subprocess).
+	'packages/database/src/env.ts', // Lines 9-11, identical guard and identical subprocess-only-reachable reason.
+	'packages/mcp/src/env.ts', // Lines 9-11 (guard) and 39-41 (production-only companion check), identical reason.
+
+	// Reason 3: proven-unreachable lines, cited with the specific evidence.
+	'applications/web/src/lib/trusted-proxy.ts', // Line 180, the closing brace of `extractForwardedAddress`'s `'forwarded'`-header branch. Every statement inside that branch (the lines immediately above) is fully hit, 51-68 times each in a real full-suite run; only this specific closing brace never registers, while the structurally identical closing braces of the other two branches in the same function do. Reproduces in complete isolation (this file's own test file run alone, no other test file involved) -- a Bun/SWC coverage-instrumentation artifact on this exact brace, not a real code gap.
+	'packages/mcp/src/conformance-fixture-registration.ts', // Lines 21-22 (`delay()`'s already-aborted branch -- `runWithStandardizedTimeout` always hands `delay` a freshly-constructed, unaborted signal) and lines 255-263, 315-320, 372-377, 430-435 (the `!sendRequest` branches in `test_sampling`/`test_elicitation*` -- every real per-request `ctx.mcpReq` the installed `@modelcontextprotocol/server@2.0.0` SDK builds always attaches a `send` function unconditionally, confirmed by reading that SDK's source directly and by testing against legacy HTTP, modern-era HTTP, and `InMemoryTransport` transports alike).
+	'packages/mcp/src/server.ts', // Line 248, the MCP-Apps experimental-capability branch -- unreachable because `hasRegisteredUiExtensionResource()` always returns `false` today; no MCP App is registered anywhere in this codebase yet. NOTE: this is `createMcpServer`, a different file from `applications/web/src/server.ts` (see `NEVER_IMPORTABLE_FILES`'s header comment) -- every other line here is required and covered.
+]);
+
+export function assertExclusionsExist(
+	// Defaults to the real Tier A/B sets; overridable so this stale-entry
+	// check is directly unit-testable against synthetic entries, rather than
+	// only indirectly through the real, current exclusion lists. Keys are
+	// workspace-qualified (`<workspace.directory>/<path>`), so this check no
+	// longer needs a `WorkspaceTarget` argument or a per-workspace loop --
+	// each key states its own workspace up front.
+	exclusions: Iterable<string> = [...NEVER_IMPORTABLE_FILES, ...LINE_COVERAGE_WAIVED_FILES],
+): void {
+	for (const workspaceQualifiedPath of exclusions) {
+		try {
+			statSync(workspaceQualifiedPath);
+		} catch {
+			throw new Error(
+				`[test:coverage] stale exclusion: "${workspaceQualifiedPath}" is listed in this script's ` +
+					'Tier A/B exclusion set but does not exist on disk. Remove it -- an exclusion for a file ' +
+					'that no longer exists hides nothing and is dead weight.',
+			);
+		}
+	}
+}
 
 /** Every source file this coverage run is responsible for -- excludes test
  * files, type-only declaration files, and generated build output. */
@@ -285,6 +453,14 @@ async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<bool
 		);
 
 		for (const sourceFile of sourceFiles) {
+			// Workspace-qualified key -- see `NEVER_IMPORTABLE_FILES`'s header
+			// comment for why this must never be a bare, workspace-agnostic
+			// `sourceFile` lookup (a real collision: `src/server.ts` and
+			// `src/env.ts` each name a different, real file in more than one
+			// workspace).
+			const workspaceQualifiedPath = join(workspace.directory, sourceFile);
+			if (NEVER_IMPORTABLE_FILES.has(workspaceQualifiedPath)) continue;
+
 			const record = coveredFiles.get(sourceFile);
 			if (!record) {
 				console.error(
@@ -294,17 +470,29 @@ async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<bool
 				workspaceFailed = true;
 				continue;
 			}
-			if (record.linesFound > 0 && record.linesHit < record.linesFound) {
+			// The task decision this gate implements: enforce line coverage and
+			// file-level completeness -- what Bun's `--isolate` lcov output can
+			// honestly measure as a real union (see `mergeLcovRecordsByFile`'s
+			// doc comment). Function coverage is reported below but no longer a
+			// hard failure: Bun never emits per-function `FN:`/`FNDA:` identity
+			// (see `parseLcov`'s doc comment), so a file's function count across
+			// several `--isolate` subprocess records is a MAXIMUM, not a true
+			// union -- not an honest metric to gate a release on. Line coverage
+			// keeps its real per-line union and stays enforced.
+			if (
+				record.linesFound > 0 &&
+				record.linesHit < record.linesFound &&
+				!LINE_COVERAGE_WAIVED_FILES.has(workspaceQualifiedPath)
+			) {
 				console.error(
 					`[test:coverage] ${workspace.name}: ${sourceFile} has ${record.linesFound - record.linesHit} uncovered line(s) (${record.linesHit}/${record.linesFound})`,
 				);
 				workspaceFailed = true;
 			}
 			if (record.functionsFound > 0 && record.functionsHit < record.functionsFound) {
-				console.error(
-					`[test:coverage] ${workspace.name}: ${sourceFile} has ${record.functionsFound - record.functionsHit} uncovered function(s) (${record.functionsHit}/${record.functionsFound})`,
+				console.log(
+					`[test:coverage] ${workspace.name}: NOTE (not gated) ${sourceFile} has ${record.functionsFound - record.functionsHit} uncovered function(s) per Bun's max-across-records approximation (${record.functionsHit}/${record.functionsFound})`,
 				);
-				workspaceFailed = true;
 			}
 		}
 	} finally {
@@ -315,6 +503,8 @@ async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<bool
 }
 
 async function main(): Promise<void> {
+	assertExclusionsExist();
+
 	let allPassed = true;
 
 	for (const workspace of WORKSPACES) {
@@ -324,18 +514,26 @@ async function main(): Promise<void> {
 	}
 
 	console.log(
-		'\n[test:coverage] NOTE: this gate enforces line and function coverage, and file-level ' +
-			"completeness (every src file must appear in the report). Bun's coverage instrumentation " +
-			'has no branch-coverage metric on the installed toolchain, so branch coverage cannot be ' +
-			'mechanically enforced here -- see TEST-001 in PROGRESS.local.md for the measurability gap ' +
-			'this leaves in the roadmap\'s "line, function, statement, and branch coverage" criterion. ' +
-			'Line coverage across `--isolate` subprocess records is a real union (per-line identity, ' +
-			"via each record's `DA:` entries). Function coverage is NOT a real union -- Bun's lcov " +
-			'output never emits per-function `FN:`/`FNDA:` identity, only an aggregate `FNF`/`FNH` ' +
-			'count per file per record, so this gate falls back to the maximum count seen across ' +
-			'records for a file. That can still under-report true combined function coverage across ' +
-			'several test files touching disjoint functions in the same file, the same class of gap ' +
-			'this fix closes for lines -- disclosed here rather than silently left looking closed.',
+		'\n[test:coverage] NOTE: this gate is deliberately retargeted to what Bun 1.3.14 can measure ' +
+			'honestly on the installed toolchain -- line coverage (a real per-line union across ' +
+			"`--isolate` subprocess records, via each record's `DA:` entries) and file-level " +
+			'completeness (every `src` file must appear in the report, except the explicit, reasoned ' +
+			'Tier A/B exclusions in this script -- see `NEVER_IMPORTABLE_FILES`/`LINE_COVERAGE_WAIVED_FILES`). ' +
+			'Two metrics the roadmap\'s "line, function, statement, and branch coverage" criterion names ' +
+			'are NOT enforced here, each for a distinct, disclosed reason (see TEST-001 in ' +
+			'PROGRESS.local.md and the same criterion in ROADMAP.local.md for the full record): ' +
+			'branch coverage has no metric at all on this toolchain -- `bun test --coverage` never ' +
+			'emits a branch column, in any workspace, full stop, so there is nothing to gate. Function ' +
+			'coverage IS emitted, but only as an aggregate `FNF`/`FNH` count per file per record -- ' +
+			'Bun never emits per-function `FN:`/`FNDA:` identity, so combining several `--isolate` ' +
+			'subprocess records can only take the MAXIMUM count seen, not a true union; two records ' +
+			"that each exercise a different half of a file's functions both under-report, and the max " +
+			'of two under-reports is still an under-report. Gating a release on a number that can ' +
+			'under-report its own truth is the "green for the wrong reason" failure this whole gate ' +
+			'exists to prevent, so function coverage is now printed as an advisory NOTE per file above, ' +
+			'never a hard failure. "Statement coverage" is not a metric Bun\'s coverage reporter ' +
+			'produces under any name (only line and function counts) and was never separately ' +
+			'enforceable by this script in the first place.',
 	);
 
 	if (!allPassed) {
@@ -343,7 +541,9 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	console.log('\n[test:coverage] All workspaces report complete line and function coverage.');
+	console.log(
+		'\n[test:coverage] All workspaces report complete line coverage and file-level completeness.',
+	);
 }
 
 // Sibling defect found while adding a regression test for this item: `parseLcov` and

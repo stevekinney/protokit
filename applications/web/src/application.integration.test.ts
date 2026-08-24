@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { randomUUID } from 'node:crypto';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
+import { database, schema } from '@template/database';
+import { hashCredential } from '@web/lib/hash-credential';
+import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
 import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
 import type { TestServerHandle } from '@web/test-support/start-test-server';
 
@@ -380,5 +384,269 @@ describeWithRedis('OAuth token revocation (requires Redis)', () => {
 			}).toString(),
 		});
 		expect(response.status).toBe(401);
+	});
+});
+
+describe('dispatch: remaining routed pathnames', () => {
+	it('routes /auth/dev/login GET through handleDevelopmentLogin (404 outside NODE_ENV=development)', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/auth/dev/login`);
+		// This test process runs with NODE_ENV=test, so the handler's own
+		// production-shaped guard refuses -- this proves the dispatcher
+		// actually routes here, not that the login itself succeeds (that
+		// belongs to `development-authentication-routes.test.ts`).
+		expect(response.status).toBe(404);
+	});
+
+	it('routes /auth/sign-out POST through handleSignOut, redirecting when there is no session to protect', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/auth/sign-out`, {
+			method: 'POST',
+			redirect: 'manual',
+		});
+		expect(response.status).toBe(303);
+		expect(response.headers.get('location')).toBe('/');
+	});
+
+	it('routes /account/connections/revoke POST through handleAccountConnectionRevokePost', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/account/connections/revoke`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: 'client_id=whatever',
+		});
+		// No session cookie -- routed to the handler's own auth guard.
+		expect(response.status).toBe(401);
+	});
+
+	it('routes /account/connections/revoke-all POST through handleAccountConnectionsRevokeAllPost', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/account/connections/revoke-all`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: '',
+		});
+		expect(response.status).toBe(401);
+	});
+
+	it('routes /oauth/authorize/deny POST through handleOauthAuthorizeDeny', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/authorize/deny`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: '',
+		});
+		// No session cookie -- routed to the handler's own auth guard.
+		expect(response.status).toBe(401);
+	});
+
+	it('routes /oauth/authorize/approve POST through handleOauthAuthorizeApprove', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: '',
+		});
+		// No session cookie -- routed to the handler's own auth guard.
+		expect(response.status).toBe(401);
+	});
+
+	// Rate-limited (calls enforceOauthAuthorizeRateLimit), which requires the
+	// shared Redis-backed limiter.
+	describeWithRedis('with Redis', () => {
+		it('routes /oauth/authorize GET through handleOauthAuthorizeGet, redirecting to sign-in when there is no session', async () => {
+			const handle = startServer();
+			const response = await fetchFromTestServer(
+				handle,
+				`/oauth/authorize?client_id=x&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&response_type=code`,
+				{ redirect: 'manual' },
+			);
+			expect(response.status).toBe(302);
+			expect(response.headers.get('location')).toContain('/auth/google/start');
+		});
+	});
+
+	it('routes /health/ready GET through handleHealthReadinessGet', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/health/ready`);
+		const body = (await response.json()) as Record<string, unknown>;
+		// HEALTH_READINESS_API_KEY is unset in this test environment, so the
+		// real handler's own "not configured" guard returns 404 -- distinct
+		// from the dispatcher's own not_found fallback, which never reaches
+		// the handler's readiness logic at all and would carry no
+		// Cache-Control header.
+		expect(response.status).toBe(404);
+		expect(body.error).toBe('not_found');
+		expect(response.headers.get('cache-control')).toBe('no-store');
+	});
+
+	it('routes /privacy GET through handlePrivacyPolicyGet', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/privacy`);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain('Privacy Policy');
+	});
+
+	it('routes /terms GET through handleTermsOfServiceGet', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/terms`);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain('Terms of Service');
+	});
+
+	it('routes /support GET through handleSupportGet', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/support`);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain('Support');
+	});
+
+	it('responds to OAuth register preflight', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/oauth/register`, {
+			method: 'OPTIONS',
+			headers: { origin: 'http://localhost:3000' },
+		});
+		expect(response.status).toBe(204);
+		expect(response.headers.get('access-control-allow-methods')).toContain('POST');
+	});
+});
+
+describe('dispatchWithoutSession: pre-flight branches on .well-known metadata routes', () => {
+	it('responds to OPTIONS on /.well-known/oauth-authorization-server', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/.well-known/oauth-authorization-server`, {
+			method: 'OPTIONS',
+			headers: { origin: 'http://localhost:3000' },
+		});
+		expect(response.status).toBe(204);
+	});
+
+	it('responds to OPTIONS on /.well-known/oauth-protected-resource', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/.well-known/oauth-protected-resource`, {
+			method: 'OPTIONS',
+			headers: { origin: 'http://localhost:3000' },
+		});
+		expect(response.status).toBe(204);
+	});
+
+	it('responds to OPTIONS on /.well-known/oauth-protected-resource/mcp', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(
+			handle,
+			`/.well-known/oauth-protected-resource/mcp`,
+			{ method: 'OPTIONS', headers: { origin: 'http://localhost:3000' } },
+		);
+		expect(response.status).toBe(204);
+	});
+});
+
+describe('serveStaticFile', () => {
+	it('serves an existing asset with a long-lived, immutable Cache-Control header', async () => {
+		// `handleApplicationRequest` reads `getAssetManifest()`'s CACHED value
+		// (populated only by `server.ts`'s own startup call to
+		// `loadAssetManifest()`, which this test file never runs), so it does
+		// not know about this application's real content-hashed bundle path
+		// on its own. Loading the manifest directly against the real
+		// `public/assets/manifest.json` this repository's build produced
+		// gives a stable, non-hardcoded asset path to request instead.
+		const { loadAssetManifest } = await import('@web/lib/asset-manifest');
+		const manifest = await loadAssetManifest();
+
+		const handle = startServer();
+		const assetResponse = await fetchFromTestServer(handle, manifest.clientBundlePath);
+		expect(assetResponse.status).toBe(200);
+		expect(assetResponse.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+		// serveStaticFile's response still goes through withSecurityHeaders.
+		expect(assetResponse.headers.get('x-content-type-options')).toBe('nosniff');
+	});
+
+	it('serves the favicon without the long-lived asset Cache-Control header', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/favicon.png`);
+		expect(response.status).toBe(200);
+		expect(response.headers.get('cache-control')).not.toBe('public, max-age=31536000, immutable');
+	});
+
+	it('falls through to the ordinary 404 dispatch for a nonexistent asset path', async () => {
+		const handle = startServer();
+		const response = await fetchFromTestServer(handle, `/assets/does-not-exist.js`);
+		expect(response.status).toBe(404);
+	});
+});
+
+describe('renderHomePage: connected applications list', () => {
+	const testRunId = randomUUID();
+	const userId = randomUUID();
+	const clientId = `application-integration-connections-test-${testRunId}`;
+
+	afterAll(async () => {
+		await deleteTestAccounts({ clientIds: [clientId], userIds: [userId] });
+	});
+
+	it("renders a signed-in user's connected application in both the HTML body and __SERVER_DATA__", async () => {
+		await database.insert(schema.users).values({
+			id: userId,
+			email: `application-integration-connections-${testRunId}@example.com`,
+			name: 'Connections Test User',
+			image: null,
+			emailVerified: true,
+			role: 'user',
+		});
+		await database.insert(schema.oauthClients).values({
+			clientId,
+			clientSecret: hashCredential('test-client-secret'),
+			clientName: 'Connected Application Fixture',
+			clientType: 'confidential',
+			tokenEndpointAuthMethod: 'client_secret_post',
+			redirectUris: ['https://example.com/callback'],
+			grantTypes: ['authorization_code'],
+			responseTypes: ['code'],
+		});
+		await database.insert(schema.oauthTokens).values({
+			accessToken: hashCredential(`connections-test-access-token-${testRunId}`),
+			clientId,
+			userId,
+			scope: 'profile:read',
+			resource: 'http://localhost:3000/mcp',
+			expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+		});
+
+		const handle = startServer();
+		// Dynamically imported (rather than a static top-of-file import):
+		// `session-authentication.ts` transitively imports `@web/env`, and a
+		// static import is hoisted ahead of this file's own top-of-file
+		// `process.env.GOOGLE_CLIENT_ID`/etc. assignments -- which would
+		// cache `environment` with the wrong values before those assignments
+		// ever run, breaking every other test in this file that depends on
+		// Google auth being configured.
+		const { createSession } = await import('@web/lib/session-authentication');
+		const session = await createSession({
+			userId,
+			request: new Request(`http://127.0.0.1:${handle.port}/`),
+		});
+		const sessionCookie = session.cookieHeaderValue.split(';')[0]!;
+
+		const response = await fetchFromTestServer(handle, `/`, {
+			headers: { Cookie: sessionCookie },
+		});
+		expect(response.status).toBe(200);
+		const body = await response.text();
+
+		// Rendered into the HomePage component markup.
+		expect(body).toContain('Connected Application Fixture');
+		// And into the __SERVER_DATA__ payload the client hydrates from.
+		const serverDataMatch = body.match(/<script id="__SERVER_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+		expect(serverDataMatch).not.toBeNull();
+		const serverData = JSON.parse(serverDataMatch![1]!) as {
+			connections: Array<{ clientId: string; clientName: string; earliestExpiresAt: string }>;
+		};
+		expect(serverData.connections).toHaveLength(1);
+		expect(serverData.connections[0]).toMatchObject({
+			clientId,
+			clientName: 'Connected Application Fixture',
+		});
+		expect(typeof serverData.connections[0]?.earliestExpiresAt).toBe('string');
 	});
 });

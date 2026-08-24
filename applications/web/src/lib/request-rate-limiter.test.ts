@@ -21,6 +21,8 @@ mock.module('@web/env', () => ({
 		RATE_LIMIT_SESSION_WINDOW_SECONDS: 60,
 		RATE_LIMIT_FAILED_AUTH_MAX: 3,
 		RATE_LIMIT_FAILED_AUTH_WINDOW_SECONDS: 300,
+		RATE_LIMIT_METRICS_MAX: 4,
+		RATE_LIMIT_METRICS_WINDOW_SECONDS: 60,
 	},
 }));
 
@@ -39,8 +41,10 @@ const {
 	enforceOauthRevokeRateLimit,
 	enforceOauthAuthorizeRateLimit,
 	enforceGoogleAuthRateLimit,
+	enforceMcpNetworkRateLimit,
 	enforceMcpRateLimit,
 	enforceHealthProbeRateLimit,
+	enforceMetricsRateLimit,
 	enforceSessionCreationRateLimit,
 	isAuthenticationLockedOut,
 	recordFailedAuthentication,
@@ -196,6 +200,52 @@ describe('enforceMcpRateLimit', () => {
 			await enforceMcpRateLimit({ userId: 'user-1' });
 		}
 		const result = await enforceMcpRateLimit({ userId: 'user-1' });
+		expect(result.allowed).toBe(false);
+	});
+});
+
+describe('enforceMcpNetworkRateLimit', () => {
+	beforeEach(() => {
+		resetInMemorySlidingWindowStore();
+	});
+
+	it('allows requests under the limit', async () => {
+		const result = await enforceMcpNetworkRateLimit({ networkIdentity: '6.6.6.6' });
+		expect(result.allowed).toBe(true);
+	});
+
+	it('denies requests over the limit', async () => {
+		for (let i = 0; i < 10; i++) {
+			await enforceMcpNetworkRateLimit({ networkIdentity: '6.6.6.6' });
+		}
+		const result = await enforceMcpNetworkRateLimit({ networkIdentity: '6.6.6.6' });
+		expect(result.allowed).toBe(false);
+	});
+
+	it('is a separate bucket from the post-auth, user-scoped MCP limit', async () => {
+		for (let i = 0; i < 10; i++) {
+			await enforceMcpNetworkRateLimit({ networkIdentity: '7.7.7.7' });
+		}
+		const result = await enforceMcpRateLimit({ userId: '7.7.7.7' });
+		expect(result.allowed).toBe(true);
+	});
+});
+
+describe('enforceMetricsRateLimit', () => {
+	beforeEach(() => {
+		resetInMemorySlidingWindowStore();
+	});
+
+	it('allows requests under the limit', async () => {
+		const result = await enforceMetricsRateLimit({ networkIdentity: '8.8.8.8' });
+		expect(result.allowed).toBe(true);
+	});
+
+	it('denies requests over the limit', async () => {
+		for (let i = 0; i < 4; i++) {
+			await enforceMetricsRateLimit({ networkIdentity: '8.8.8.8' });
+		}
+		const result = await enforceMetricsRateLimit({ networkIdentity: '8.8.8.8' });
 		expect(result.allowed).toBe(false);
 	});
 });
