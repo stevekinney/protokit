@@ -3,6 +3,7 @@ import {
 	assertExclusionsExist,
 	findStaleWaivedLines,
 	LINE_COVERAGE_WAIVED_FILES,
+	LINE_COVERAGE_WAIVED_LINES,
 	mergeLcovRecordsByFile,
 	NEVER_IMPORTABLE_FILES,
 	parseLcov,
@@ -238,13 +239,22 @@ describe('NEVER_IMPORTABLE_FILES / LINE_COVERAGE_WAIVED_FILES', () => {
 	it('never lets a same-named file in one workspace exempt a different file of the same name in another workspace', () => {
 		expect(NEVER_IMPORTABLE_FILES.has('applications/web/src/server.ts')).toBe(true);
 		expect(NEVER_IMPORTABLE_FILES.has('packages/mcp/src/server.ts')).toBe(false);
-		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/mcp/src/server.ts')).toBe(true);
+		// Narrowed to a Tier B-narrow line waiver (review finding: a whole-file
+		// waiver here would have hidden any OTHER uncovered line in this file) --
+		// still exempt, just via the narrow map rather than the whole-file one.
+		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/mcp/src/server.ts')).toBe(false);
+		expect(LINE_COVERAGE_WAIVED_LINES.has('packages/mcp/src/server.ts')).toBe(true);
 		// And the reverse never-importable path must not leak into the OTHER
 		// workspace's env.ts, in case a future edit tried the same shortcut.
 		expect(NEVER_IMPORTABLE_FILES.has('applications/web/src/env.ts')).toBe(false);
-		expect(LINE_COVERAGE_WAIVED_FILES.has('applications/web/src/env.ts')).toBe(true);
-		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/database/src/env.ts')).toBe(true);
-		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/mcp/src/env.ts')).toBe(true);
+		// Same narrowing as `server.ts` above -- these three `env.ts` files are
+		// each fully covered except their `SKIP_ENV_VALIDATION` guard body.
+		expect(LINE_COVERAGE_WAIVED_FILES.has('applications/web/src/env.ts')).toBe(false);
+		expect(LINE_COVERAGE_WAIVED_LINES.has('applications/web/src/env.ts')).toBe(true);
+		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/database/src/env.ts')).toBe(false);
+		expect(LINE_COVERAGE_WAIVED_LINES.has('packages/database/src/env.ts')).toBe(true);
+		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/mcp/src/env.ts')).toBe(false);
+		expect(LINE_COVERAGE_WAIVED_LINES.has('packages/mcp/src/env.ts')).toBe(true);
 	});
 });
 
