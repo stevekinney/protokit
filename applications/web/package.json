@@ -35,7 +35,7 @@
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {
-		"@lostgradient/bun-plugin-svelte": "^0.0.1",
+		"@lostgradient/bun-plugin-svelte": "^0.1.0",
 		"@modelcontextprotocol/client": "^2.0.0",
 		"@playwright/test": "^1.62.1",
 		"@types/node": "^26.2.0",
