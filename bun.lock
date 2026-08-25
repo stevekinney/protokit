@@ -46,7 +46,7 @@
         "zod": "^4.4.3",
       },
       "devDependencies": {
-        "@lostgradient/bun-plugin-svelte": "^0.0.1",
+        "@lostgradient/bun-plugin-svelte": "^0.1.0",
         "@modelcontextprotocol/client": "^2.0.0",
         "@playwright/test": "^1.62.1",
         "@types/node": "^26.2.0",
@@ -101,7 +101,7 @@
         "svelte": "^5.56.4",
       },
       "devDependencies": {
-        "@lostgradient/bun-plugin-svelte": "^0.0.1",
+        "@lostgradient/bun-plugin-svelte": "^0.1.0",
         "@types/node": "^26.2.0",
         "svelte-check": "^4.7.6",
         "typescript": "6.0.3",
@@ -227,7 +227,7 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@lostgradient/bun-plugin-svelte": ["@lostgradient/bun-plugin-svelte@0.0.1", "", { "dependencies": { "@types/bun": "^1.3.14" }, "peerDependencies": { "svelte": ">=5.0.0 <6" } }, "sha512-3c5yF964NURB8Za79gjaTZxYN1ZqRX9K2IdOtiqohk8mVo/iMOIUBXQTwIdb/+dMpwsewG3WKJjGV7E29Stb5g=="],
+    "@lostgradient/bun-plugin-svelte": ["@lostgradient/bun-plugin-svelte@0.1.0", "", { "peerDependencies": { "@types/bun": "*", "svelte": ">=5.0.0 <6" }, "optionalPeers": ["@types/bun"] }, "sha512-Ywi2CQ5DyhpwGLeeFDkTH0661hko8VQgC0NwAQui/IKBiwFWTasfZp7pgTzNoHkxp84E2vNxmBQFoBa1EX0FgQ=="],
 
     "@lostgradient/cinder": ["@lostgradient/cinder@0.24.8", "", { "dependencies": { "@floating-ui/dom": "1.7.6", "@lostgradient/markdown": "^0.3.1", "@shikijs/engine-oniguruma": "^3.21.0", "@shikijs/types": "^3.21.0", "@tanstack/virtual-core": "^3.17.1", "ajv": "^8", "ajv-formats": "^3.0.1", "esm-env": "^1.2.0", "libphonenumber-js": "^1.13.3", "lucide-svelte": "0.503.0", "qrcode": "^1.5.4", "shiki": "^3.21.0" }, "peerDependencies": { "svelte": ">=5.56.0 <6" }, "bin": { "cinder": "dist/cli/index.js" } }, "sha512-ncLJKZv4Rr4orzh1y8dGcJebYKDqCg4wrw9Dxn4A9n9NDgH1M7aKt3acefLu4Zbn5ANq7S7kKcvgLq7ZHVSMvQ=="],
 

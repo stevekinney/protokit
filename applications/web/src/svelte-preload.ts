@@ -28,7 +28,7 @@ import { plugin } from 'bun';
 
 /**
  * `dev` tracks `NODE_ENV === 'development'` exactly, and must not be widened
- * to the plugin's own default of `NODE_ENV !== 'production'`.
+ * to `NODE_ENV !== 'production'`.
  *
  * A dev-compiled component emits `push_element()` calls that read
  * `ssr_context.function`. That field is only populated when the Svelte
@@ -36,11 +36,15 @@ import { plugin } from 'bun';
  * export condition via `esm-env`. Bun applies that condition only when
  * `NODE_ENV === 'development'` -- there is no `bunfig.toml` key for it.
  *
- * So under `NODE_ENV=test` the plugin's default would compile components for
- * dev while resolving the production runtime, and every server render would
- * die with `undefined is not an object (evaluating 'context.function[FILENAME]')`.
- * Pinning `dev` to the one value of NODE_ENV that Bun treats as development
- * keeps compiler and runtime in agreement in every mode.
+ * So under `NODE_ENV=test`, a `dev` value of anything but this exact check
+ * would compile components for dev while resolving the production runtime,
+ * and every server render would die with `undefined is not an object
+ * (evaluating 'context.function[FILENAME]')`. `@lostgradient/bun-plugin-svelte`
+ * 0.1.0 fixed its OWN default to match this exact check (it used to default to
+ * `NODE_ENV !== 'production'`, which crashed the same way under `test`;
+ * upstream issue #4) -- this explicit pin is now redundant with the library's
+ * default but kept anyway: a future upstream default change should not be
+ * able to silently reintroduce this crash here.
  *
  * Read via the bracket form so the bundler cannot constant-fold it; see the
  * NODE_ENV assertion in `src/build.ts`.

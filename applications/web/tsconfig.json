@@ -20,13 +20,21 @@
 	// scripts rather than part of the application's type-checked surface. They
 	// are also the only files that import `@lostgradient/bun-plugin-svelte`,
 	// whose types reference `@types/bun` -- ambient Bun globals that would
-	// collide with the hand-written ones in `src/bun-runtime.d.ts`. Excluding a
-	// file only keeps it from being a compilation ROOT, though -- a typechecked
-	// file that imports one of these three still pulls its types in and hits
-	// the same collision, which is why `svelte-preload.test.ts` (imports
-	// `registerSveltePlugin` from `svelte-preload.ts` to test its
-	// compiler-missing branch directly) is excluded alongside it, run only
-	// through `bun test`'s own untyped execution like its sibling.
+	// collide with the hand-written ones in `src/bun-runtime.d.ts`. `@types/bun`
+	// moved to an optional peer dependency in `@lostgradient/bun-plugin-svelte`
+	// 0.1.0 (upstream issue #6), but that doesn't remove this exclusion's need:
+	// something else in this monorepo's own dependency graph (confirmed:
+	// `drizzle-orm` ships its own nested `bun-types`) already satisfies that
+	// optional peer, so it still resolves and still collides -- verified
+	// empirically by temporarily removing this exclusion after the 0.1.0 bump
+	// and re-running `tsc --noEmit`, which still failed with the same
+	// `preconnect` collision. Excluding a file only keeps it from being a
+	// compilation ROOT, though -- a typechecked file that imports one of these
+	// three still pulls its types in and hits the same collision, which is why
+	// `svelte-preload.test.ts` (imports `registerSveltePlugin` from
+	// `svelte-preload.ts` to test its compiler-missing branch directly) is
+	// excluded alongside it, run only through `bun test`'s own untyped
+	// execution like its sibling.
 	"exclude": [
 		"node_modules",
 		"dist",
