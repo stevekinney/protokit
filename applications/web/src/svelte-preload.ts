@@ -20,8 +20,8 @@
  * blocks. `renderDocument` asserts `render().head` is empty, which catches
  * both a stray `<svelte:head>` and any accidental style injection.
  */
+import { createRequire } from 'node:module';
 import { plugin } from 'bun';
-import { sveltePlugin } from '@lostgradient/bun-plugin-svelte';
 
 /**
  * `dev` tracks `NODE_ENV === 'development'` exactly, and must not be widened
@@ -44,4 +44,31 @@ import { sveltePlugin } from '@lostgradient/bun-plugin-svelte';
  */
 const isDevelopment = process.env['NODE_ENV'] === 'development';
 
-plugin(sveltePlugin({ generate: 'server', css: 'none', dev: isDevelopment }));
+/**
+ * The plugin is a devDependency, so a production install (`bun install
+ * --production`) does not have it. That is fine and expected: the only thing
+ * run in production is the bundled `dist/server.js`, which already has every
+ * component compiled into it and never asks the runtime to load a `.svelte`
+ * file. Registering nothing there is correct.
+ *
+ * Outside production a missing plugin is a broken install, and swallowing it
+ * would surface much later as the genuinely baffling "component is not a
+ * function" — the `.svelte` import silently resolving to its own file path.
+ * So the failure is only tolerated for the one case where it means something.
+ */
+// Loaded synchronously. A preload's top-level `await` does not block the
+// module resolution that follows it, so an async import here would register
+// the loader *after* the first `.svelte` import had already been resolved.
+const require = createRequire(import.meta.url);
+
+let sveltePlugin: typeof import('@lostgradient/bun-plugin-svelte').sveltePlugin | undefined;
+
+try {
+	({ sveltePlugin } = require('@lostgradient/bun-plugin-svelte'));
+} catch (error) {
+	if (process.env['NODE_ENV'] !== 'production') throw error;
+}
+
+if (sveltePlugin) {
+	plugin(sveltePlugin({ generate: 'server', css: 'none', dev: isDevelopment }));
+}

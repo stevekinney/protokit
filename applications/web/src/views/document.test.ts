@@ -149,28 +149,57 @@ describe('metadata rendering', () => {
 });
 
 describe('escapeHtmlInJson', () => {
-	it('escapes </script> sequences in serialized JSON', () => {
+	it('leaves no tag-opening character in the embedded payload', () => {
 		const result = escapeHtmlInJson('{"html":"</script><script>alert(1)</script>"}');
-		expect(result.includes('</script>')).toBe(false);
-		expect(result).toContain('<\\/script>');
+		expect(result.includes('<')).toBe(false);
+		expect(result.includes('>')).toBe(false);
+		expect(result).toContain('\\u003c/script\\u003e');
 	});
 
 	// A review finding (P2) claimed `escapeHtmlInJson` only matches lowercase
 	// `</script` and is therefore bypassable with a mixed-case terminator
 	// such as `</ScRiPt>` (HTML raw-text end-tag matching is
-	// case-insensitive). That is not what the implementation does: it
-	// escapes every literal `</` sequence regardless of what characters
-	// follow, so it never looks at "script" -- lowercase, mixed-case, or
-	// otherwise -- at all. Proven directly against the exact mixed-case
-	// payload the finding described, including a DCR/CIMD-style malicious
-	// client name.
-	it('escapes mixed-case </ terminators, not just lowercase </script>', () => {
+	// case-insensitive). It never looked at "script" at all -- it escaped
+	// `</` regardless of what followed -- and now escapes every `<` outright,
+	// so case cannot matter. Kept as a regression test against the exact
+	// payload that finding described.
+	it('escapes mixed-case terminators, not just lowercase </script>', () => {
 		const result = escapeHtmlInJson(
 			'{"name":"</ScRiPt><script>alert(1)</SCRIPT><ScRiPt>alert(2)</script>"}',
 		);
 		expect(result).not.toMatch(/<\/[a-zA-Z]/);
-		expect(result).toContain('<\\/ScRiPt>');
-		expect(result).toContain('<\\/SCRIPT>');
-		expect(result).toContain('<\\/script>');
+		expect(result.includes('<')).toBe(false);
+	});
+
+	/**
+	 * A second review finding (P2), and the reason `</` alone was not enough:
+	 * `<!--<script>` drives the tokenizer into script-data-double-escaped
+	 * state, where the element's own `</script>` stops terminating it and the
+	 * client bundle tag that follows is swallowed as script text. The value is
+	 * reachable through an OAuth client's registered display name, which is
+	 * serialized here as a connection's `clientName`.
+	 */
+	it('neutralizes a payload that would open script-data-double-escaped state', () => {
+		const result = escapeHtmlInJson(JSON.stringify({ clientName: '<!--<script>' }));
+		expect(result.includes('<!--')).toBe(false);
+		expect(result.includes('<script')).toBe(false);
+		expect(result).toBe('{"clientName":"\\u003c!--\\u003cscript\\u003e"}');
+	});
+
+	it('round-trips the original value through JSON.parse', () => {
+		const payload = { clientName: '<!--<script>', note: 'a > b && c < d' };
+		expect(JSON.parse(escapeHtmlInJson(JSON.stringify(payload)))).toEqual(payload);
+	});
+
+	it('is applied to the server data the document actually emits', () => {
+		const html = renderDocumentTail({
+			clientBundlePath: '/assets/client.js',
+			includeClientBundle: true,
+			serverData: { clientName: '<!--<script>' },
+		});
+		// Exactly one `</script>` closes the payload, and one more the bundle
+		// tag -- nothing from the payload can add or disable either.
+		expect(html.split('</script>').length - 1).toBe(2);
+		expect(html).toContain('\\u003c!--\\u003cscript\\u003e');
 	});
 });

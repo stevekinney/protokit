@@ -30,12 +30,25 @@ export function escapeHtml(value: string): string {
 }
 
 /**
- * `__SERVER_DATA__` is JSON inside a `<script>` element, where the only
- * sequence that can end the element early is `</`. JSON escaping handles the
- * rest, so this is the one substitution needed.
+ * `__SERVER_DATA__` is JSON inside a `<script>` element, whose content is
+ * parsed as raw text. Escaping only `</` is not enough.
+ *
+ * A value containing `<!--<script>` puts the tokenizer into its
+ * script-data-double-escaped state, where the element's own closing
+ * `</script>` is no longer recognized as a terminator — so the rest of the
+ * document, including the client bundle's `<script>` tag, is swallowed as
+ * script text and hydration never runs. That value is reachable: an OAuth
+ * client's registered display name permits angle brackets (see
+ * `client-name-validation.ts`, which guards against confusables rather than
+ * markup) and is serialized into this payload as a connection's `clientName`.
+ *
+ * Escaping every `<` and `>` as their JSON `\uXXXX` escapes makes it
+ * impossible to open any tag-like construct, so no tokenizer state can be
+ * entered in the first place. `JSON.parse` decodes them back to the original
+ * characters, so the data the client receives is unchanged.
  */
 export function escapeHtmlInJson(json: string): string {
-	return json.replace(/<\//g, '<\\/');
+	return json.replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
 }
 
 function renderMetaTag(property: string, content: string | undefined): string {
