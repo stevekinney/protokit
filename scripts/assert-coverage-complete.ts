@@ -61,8 +61,12 @@ function collectSourceFiles(workspaceDirectory: string): string[] {
 				walk(fullPath);
 				continue;
 			}
-			if (!/\.(ts|tsx)$/.test(entry)) continue;
-			if (/\.test\.(ts|tsx)$/.test(entry)) continue;
+			// `.svelte` is included deliberately: Bun's coverage instrumentation
+			// does emit `SF:` records for compiled components, so leaving them out
+			// let a page render with no test at all still report the workspace as
+			// complete. `.tsx` is gone from this repository entirely.
+			if (!/\.(ts|svelte)$/.test(entry)) continue;
+			if (/\.test\.ts$/.test(entry)) continue;
 			if (entry.endsWith('.d.ts')) continue;
 			results.push(fullPath);
 		}
@@ -294,6 +298,22 @@ async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<bool
 				workspaceFailed = true;
 				continue;
 			}
+			// Svelte components get the file-completeness check above but not the
+			// line and function thresholds below.
+			//
+			// Bun instruments the *compiled* component, and the same `.svelte`
+			// source compiled in two `--isolate` processes with different import
+			// graphs produces different instrumented output — so its `DA:` line
+			// numbers are not comparable across records and unioning them is
+			// meaningless. Measured directly: `privacy-policy-page.svelte` reports
+			// LF:14/LH:14 (fully covered) when its own test file runs alone, and
+			// 4/43 in the combined run, purely from merging incompatible records.
+			//
+			// Enforcing those numbers would therefore fail a fully covered
+			// component. The completeness check is what actually catches the risk
+			// worth catching here: a page that no test imports at all.
+			if (sourceFile.endsWith('.svelte')) continue;
+
 			if (record.linesFound > 0 && record.linesHit < record.linesFound) {
 				console.error(
 					`[test:coverage] ${workspace.name}: ${sourceFile} has ${record.linesFound - record.linesHit} uncovered line(s) (${record.linesHit}/${record.linesFound})`,

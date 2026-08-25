@@ -102,7 +102,7 @@ async function scheduledBuild() {
 
 const watcher = watch('src', { recursive: true }, (_event, filename) => {
 	if (!filename) return;
-	if (filename.endsWith('.css') || filename.endsWith('.tsx') || filename.endsWith('.ts')) {
+	if (filename.endsWith('.css') || filename.endsWith('.svelte') || filename.endsWith('.ts')) {
 		clearTimeout(rebuildTimer);
 		rebuildTimer = setTimeout(scheduledBuild, 100);
 	}

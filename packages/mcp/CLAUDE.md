@@ -67,7 +67,16 @@ No per-tool database queries needed for user data — it comes from context.
 
 MCP Apps are interactive HTML interfaces rendered in sandboxed iframes inside host applications. App source lives in `packages/mcp-apps`, which builds self-contained HTML strings importable by this package.
 
-1. Create `packages/mcp-apps/src/applications/{app-name}/{app-name}.tsx`
+1. Create the component and its mount entry:
+   - `packages/mcp-apps/src/applications/{app-name}/{app-name}.svelte` — the component
+   - `packages/mcp-apps/src/applications/{app-name}/{app-name}.ts` — the entry the build compiles, which mounts it:
+     ```ts
+     import { mount } from 'svelte';
+     import Application from './{app-name}.svelte';
+
+     mount(Application, { target: document.getElementById('root')! });
+     ```
+   - `mount`, not `hydrate`: an MCP App is client-rendered into an empty `<div id="root">` with no server render to attach to
 2. Add the app entry to `packages/mcp-apps/package.json` exports: `"./{app-name}": "./dist/{app-name}.js"`
 3. Create a resource in `src/resources/` that imports the built HTML: `import html from '@template/mcp-apps/{app-name}'`
    - Use `RESOURCE_MIME_TYPE` from `@modelcontextprotocol/ext-apps/server` for the mimeType
