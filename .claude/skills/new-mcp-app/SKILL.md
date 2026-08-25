@@ -9,6 +9,15 @@ Step-by-step guide for adding a new MCP App (interactive HTML interface rendered
    - Create `packages/mcp-apps/src/applications/{app-name}/{app-name}.ts` as the entry the build compiles:
 
      ```ts
+     // Must come first, and must be imported even if the component only uses
+     // Cinder tokens: this side-effect import supplies the `@layer` order,
+     // design tokens, foundation, and utilities that every Cinder component's
+     // own CSS depends on. Each component entry pulls in its own stylesheet,
+     // but none of them pull in the base -- so without this line the built app
+     // ships component rules referencing variables that were never defined,
+     // and renders unstyled.
+     import '@lostgradient/cinder/styles';
+
      import { mount } from 'svelte';
      import Application from './{app-name}.svelte';
 

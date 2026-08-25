@@ -124,7 +124,15 @@ export async function obtainRealAccessToken(
 	// reference each other through neither a foreign key nor a generated value,
 	// so ordering them buys nothing and costs a full round-trip -- which is not
 	// free here, since every statement crosses the Neon HTTP proxy.
-	await Promise.all([
+	//
+	// `allSettled` rather than `all`, because `all` rejects as soon as either
+	// insert fails while the other may still commit. Sequential ordering could
+	// not strand a row that way; running them together can, and this helper is
+	// also the standalone Inspector command, which has no test teardown to sweep
+	// up after it. So whatever did commit is removed before rethrowing, and a
+	// failed run leaves nothing behind -- least of all a live confidential OAuth
+	// client with no owning account.
+	const seedResults = await Promise.allSettled([
 		database.insert(schema.users).values({
 			id: userId,
 			email,
@@ -144,6 +152,20 @@ export async function obtainRealAccessToken(
 			responseTypes: ['code'],
 		}),
 	]);
+
+	const seedFailure = seedResults.find((result) => result.status === 'rejected');
+	if (seedFailure) {
+		const [userResult, clientResult] = seedResults;
+		await Promise.allSettled([
+			userResult?.status === 'fulfilled'
+				? database.delete(schema.users).where(eq(schema.users.id, userId))
+				: Promise.resolve(),
+			clientResult?.status === 'fulfilled'
+				? database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId))
+				: Promise.resolve(),
+		]);
+		throw seedFailure.reason;
+	}
 
 	try {
 		const session = await createSession({ userId, request: new Request(`${baseUrl}/`) });

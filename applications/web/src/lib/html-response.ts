@@ -1,3 +1,4 @@
+import { logger } from '@template/mcp/logger';
 import type { Component } from 'svelte';
 import { render } from 'svelte/server';
 import { getAssetManifest } from '@web/lib/asset-manifest';
@@ -100,6 +101,17 @@ export async function createStreamingHtmlResponse<Props extends Record<string, u
 				// are committed and there is no way to turn this into a 500. Abort
 				// the stream instead: the client sees a truncated response rather
 				// than a silently half-rendered page that looks successful.
+				//
+				// Log it here, though. Erroring the stream happens after the
+				// request handler has already returned, so the dispatch layer's
+				// own error handling never sees this and the request was already
+				// recorded with the status the head was flushed with. Without
+				// this, a failed page query or render is invisible in operational
+				// logs -- it looks like a successful 200.
+				logger.error(
+					{ err: error, event: 'page_render', outcome: 'failed_after_flush' },
+					'Page render failed after the document head was flushed',
+				);
 				controller.error(error);
 			}
 		},
