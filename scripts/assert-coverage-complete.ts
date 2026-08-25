@@ -171,7 +171,7 @@ export interface MergedFileCoverage {
  * not this script's own cwd, so it must be used as-is (when relative)
  * rather than passed through `relative()` a second time -- doing so
  * previously produced the wrong key for every file and made this gate
- * report already well-tested files (`env.ts`, `oauth-routes.tsx`,
+ * report already well-tested files (`env.ts`, `oauth-routes.ts`,
  * `mcp-handler.ts`) as never covered at all.
  *
  * Review finding (P2): duplicate records for the same file used to be

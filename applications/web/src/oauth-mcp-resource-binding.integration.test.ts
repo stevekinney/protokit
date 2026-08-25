@@ -31,7 +31,7 @@ const { createSession } = await import('@web/lib/session-authentication');
  * at `/mcp` regardless of how otherwise valid it is. This is the scenario
  * `bun run test:oauth:interop` names in the roadmap's verification block.
  *
- * `oauth-routes.test.tsx` and `mcp-routes.test.ts` prove each accept/reject
+ * `oauth-routes.test.ts` and `mcp-routes.test.ts` prove each accept/reject
  * branch individually against a mocked database; this file proves the
  * pieces are wired together correctly end to end, the same relationship
  * `oauth-authorization-csrf.integration.test.ts` has to its mocked sibling.
@@ -53,7 +53,7 @@ try {
 // state persists in Redis across every other file in the same test run —
 // this file alone drives several real authorize/approve/token round trips.
 // Flush every `rate_limit:*` key before this file's Redis-backed tests run,
-// exactly like `oauth-routes.integration.test.tsx` does, so a fuller suite
+// exactly like `oauth-routes.integration.test.ts` does, so a fuller suite
 // run that already spent part of another file's budget on the same
 // network identity can't leave this file too little headroom.
 if (redisAvailable) {
@@ -90,7 +90,7 @@ function extractHiddenInputValue(html: string, fieldName: string): string {
 }
 
 // RFC 7636 Appendix B's worked example pair — used identically elsewhere in
-// this test suite (`oauth-routes.test.tsx`).
+// this test suite (`oauth-routes.test.ts`).
 const codeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 const codeChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 

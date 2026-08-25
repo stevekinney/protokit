@@ -21,7 +21,7 @@ import type { RequestContext } from '@web/lib/request-context';
  * MCP access, not merely hide a record."
  *
  * Every route here requires an active session (checked by the caller in
- * `application.tsx` before dispatch, the same convention `handleSignOut`
+ * `application.ts` before dispatch, the same convention `handleSignOut`
  * follows) and the same CSRF defenses `handleSignOut` already established
  * for a cookie-authenticated, state-changing POST: `Sec-Fetch-Site`/`Origin`
  * checked before any database work, then a session-bound CSRF token,

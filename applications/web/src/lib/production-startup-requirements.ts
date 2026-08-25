@@ -453,8 +453,8 @@ export function collectProductionStartupFailures(
 	// 'development'` (`development-authentication-routes.ts`), and an
 	// unauthenticated `/oauth/authorize` request unconditionally redirects to
 	// `/auth/google/start` (`buildOauthSignInRedirectPath`,
-	// `oauth-routes.tsx`). If Google credentials are both absent, that route
-	// 404s or 503s (`isGoogleConfigured` in `google-authentication-routes.tsx`)
+	// `oauth-routes.ts`). If Google credentials are both absent, that route
+	// 404s or 503s (`isGoogleConfigured` in `google-authentication-routes.ts`)
 	// for every user, every time — a deployment can pass every other startup
 	// check while nobody can sign in or approve an OAuth request. Both
 	// credentials are therefore required outright in production, not merely

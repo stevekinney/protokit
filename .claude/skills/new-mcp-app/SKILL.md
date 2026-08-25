@@ -4,10 +4,20 @@ Step-by-step guide for adding a new MCP App (interactive HTML interface rendered
 
 ## Steps
 
-1. **Create the app component**
-   - Create `packages/mcp-apps/src/applications/{app-name}/{app-name}.tsx`
-   - Use React + Tailwind for styling
-   - The component will be compiled to a self-contained HTML string by the build pipeline
+1. **Create the app component and its mount entry**
+   - Create `packages/mcp-apps/src/applications/{app-name}/{app-name}.svelte` for the component
+   - Create `packages/mcp-apps/src/applications/{app-name}/{app-name}.ts` as the entry the build compiles:
+
+     ```ts
+     import { mount } from 'svelte';
+     import Application from './{app-name}.svelte';
+
+     mount(Application, { target: document.getElementById('root')! });
+     ```
+
+   - `mount` rather than `hydrate`: an MCP App is client-rendered into an empty `<div id="root">`, with no server render to attach to. This is the opposite of `applications/web`, which server-renders and hydrates.
+   - Style with `@lostgradient/cinder` components and tokens, or with a `<style>` block in the component. Unlike `applications/web`, `<style>` blocks are fine here: this build uses `css: 'external'` and inlines the resulting CSS into the single self-contained HTML document.
+   - The entry is compiled to a self-contained HTML string by the build pipeline
 
 2. **Add the package.json export**
    - In `packages/mcp-apps/package.json`, add: `"./{app-name}": "./dist/{app-name}.js"`

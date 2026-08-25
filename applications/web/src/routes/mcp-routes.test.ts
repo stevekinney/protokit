@@ -87,7 +87,7 @@ mock.module('@template/mcp', () => ({
 	isLoopbackHostname: () => false,
 	hasValidLocalhostRebindingHeaders: () => true,
 	// AUTHZ-001: real value, not a stub — this is the same production-derived
-	// scope list `oauth-routes.tsx`'s metadata endpoints publish, and this
+	// scope list `oauth-routes.ts`'s metadata endpoints publish, and this
 	// suite's `WWW-Authenticate` assertions check against it by name.
 	getSupportedScopes: () => ['profile:read', 'prompts:read'],
 }));

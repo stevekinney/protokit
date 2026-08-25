@@ -32,7 +32,7 @@ import {
 	createSession,
 	revokeSession,
 } from '@web/lib/session-authentication';
-import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
+import OauthAuthorizePage from '@web/views/oauth-authorize-page.svelte';
 
 function isGoogleAuthConfigured(): boolean {
 	return Boolean(environment.GOOGLE_CLIENT_ID && environment.GOOGLE_CLIENT_SECRET);
@@ -42,12 +42,12 @@ function googleAuthNotConfiguredResponse(): Response {
 	return createStaticHtmlResponse({
 		metadata: { title: 'Google Sign-In Not Configured' },
 		status: 503,
-		body: (
-			<OauthAuthorizePage
-				mode="error"
-				error="Google sign-in is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, or use /auth/dev/login in development."
-			/>
-		),
+		component: OauthAuthorizePage,
+		props: {
+			mode: 'error',
+			error:
+				'Google sign-in is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, or use /auth/dev/login in development.',
+		},
 	});
 }
 
@@ -118,7 +118,7 @@ async function upsertGoogleUser(input: {
 
 	// FEDAUTH-001: `database.transaction()` throws "No transactions support
 	// in neon-http driver" against the installed driver (confirmed directly;
-	// `oauth-routes.tsx`'s OAUTH-003 hit and documented the same constraint),
+	// `oauth-routes.ts`'s OAUTH-003 hit and documented the same constraint),
 	// so these two inserts cannot be wrapped in a real transaction. If the
 	// second insert fails, best-effort delete the user row this request just
 	// created rather than leave an orphaned account no Google identity can
@@ -283,7 +283,8 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 			createStaticHtmlResponse({
 				metadata: { title: 'Google Sign-In Error' },
 				status: 400,
-				body: <OauthAuthorizePage mode="error" error="Missing OAuth code." />,
+				component: OauthAuthorizePage,
+				props: { mode: 'error', error: 'Missing OAuth code.' },
 			}),
 		);
 	}
@@ -304,7 +305,8 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 			createStaticHtmlResponse({
 				metadata: { title: 'Google Sign-In Error' },
 				status: 400,
-				body: <OauthAuthorizePage mode="error" error={stateValidation.error} />,
+				component: OauthAuthorizePage,
+				props: { mode: 'error', error: stateValidation.error },
 			}),
 		);
 	}
@@ -355,12 +357,12 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 				createStaticHtmlResponse({
 					metadata: { title: 'Google Sign-In Error' },
 					status: 409,
-					body: (
-						<OauthAuthorizePage
-							mode="error"
-							error="This email is already associated with another account. Contact support to link identities."
-						/>
-					),
+					component: OauthAuthorizePage,
+					props: {
+						mode: 'error',
+						error:
+							'This email is already associated with another account. Contact support to link identities.',
+					},
 				}),
 			);
 		}
@@ -370,7 +372,8 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 			createStaticHtmlResponse({
 				metadata: { title: 'Google Sign-In Error' },
 				status: 500,
-				body: <OauthAuthorizePage mode="error" error="Google sign-in failed. Please try again." />,
+				component: OauthAuthorizePage,
+				props: { mode: 'error', error: 'Google sign-in failed. Please try again.' },
 			}),
 		);
 	}

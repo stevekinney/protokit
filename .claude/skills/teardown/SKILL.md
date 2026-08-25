@@ -1,6 +1,6 @@
 # Skill: Teardown
 
-Remove configured services and clean up the Bun + React MCP template environment. Every destructive action requires explicit user confirmation before proceeding.
+Remove configured services and clean up the Bun + Svelte MCP template environment. Every destructive action requires explicit user confirmation before proceeding.
 
 The standalone script at `scripts/teardown.ts` remains available for terminal use. This skill replaces the thin command wrapper with Claude-driven orchestration and MCP fallback.
 

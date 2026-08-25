@@ -43,7 +43,7 @@ import { mcpMaxBearerTokenLength } from '@web/lib/request-limits';
  * produced the `401`. Built once, here, rather than at each of this file's
  * four challenge call sites, so they cannot drift out of sync with each
  * other or with the identical list the OAuth metadata endpoints publish
- * (`getSupportedScopes()`, shared with `oauth-routes.tsx`).
+ * (`getSupportedScopes()`, shared with `oauth-routes.ts`).
  */
 function bearerChallenge(resourceMetadataUrl: string, errorCode?: string): string {
 	const parts = [

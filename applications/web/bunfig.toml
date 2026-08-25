@@ -1,0 +1,8 @@
+# See the root `bunfig.toml` for why this file is duplicated: Bun resolves
+# `bunfig.toml` from the current working directory, and this application is
+# run both from here and from the repository root.
+preload = ["./src/svelte-preload.ts"]
+
+# See the root `bunfig.toml`: `bun test` needs its own preload registration.
+[test]
+preload = ["./src/svelte-preload.ts"]

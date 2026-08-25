@@ -31,7 +31,7 @@ export function parseTunnelUrl(text: string): string | null {
 /**
  * Every route the tunnel makes publicly reachable, printed so an operator
  * knows exactly what they are exposing before the tunnel URL is live. Kept
- * as a flat, explicit list rather than derived from `application.tsx` at
+ * as a flat, explicit list rather than derived from `application.ts` at
  * runtime — a tunnel exposes the whole app, and this is meant to be read by
  * a human, not machine-verified against the router.
  */

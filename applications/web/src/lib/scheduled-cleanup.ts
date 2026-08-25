@@ -147,7 +147,7 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 	const now = options.now ?? new Date();
 
 	// Review finding (P2): `handleOauthTokenAuthorizationCodeGrant`
-	// (`oauth-routes.tsx`) marks a code `usedAt` BEFORE minting its tokens,
+	// (`oauth-routes.ts`) marks a code `usedAt` BEFORE minting its tokens,
 	// then compensates a failed mint by setting `usedAt` back to null so the
 	// client's retry can redeem the same code -- the identical
 	// mark-then-maybe-reopen shape `OAUTH-003` already established for
@@ -208,7 +208,7 @@ export async function runScheduledCleanup(options: CleanupOptions = {}): Promise
 		label: 'oauth_refresh_tokens',
 		batchSize,
 		maxIterations: maxIterationsPerTable,
-		// OAUTH-003's rotation-reuse detection (oauth-routes.tsx,
+		// OAUTH-003's rotation-reuse detection (oauth-routes.ts,
 		// `handleOauthTokenRefreshGrant`) reads a revoked refresh-token row
 		// back BY HASH to tell "this exact token was already rotated" (a
 		// replay -- revoke the whole family) apart from "never existed". A

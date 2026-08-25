@@ -1,6 +1,6 @@
-# Bun + React MCP Template
+# Bun + Svelte MCP Template
 
-A template for building [Model Context Protocol](https://modelcontextprotocol.io) servers with Bun and React: dual-era protocol support, OAuth 2.1 + PKCE with RFC 8707 resource indicators and least-privilege scopes, Google sign-in, and Railway deployment.
+A template for building [Model Context Protocol](https://modelcontextprotocol.io) servers with Bun and Svelte 5: dual-era protocol support, OAuth 2.1 + PKCE with RFC 8707 resource indicators and least-privilege scopes, Google sign-in, and Railway deployment.
 
 This repository tracks its own hardening work in `ROADMAP.local.md` and `PROGRESS.local.md` — read those for the reasoning behind a given control if this document's summary isn't enough. `THREAT-MODEL.md`, `RUNBOOK.md`, and `SECRETS-ROTATION.md` are the deeper operator references this README links out to rather than duplicates.
 
@@ -11,14 +11,14 @@ This repository tracks its own hardening work in `ROADMAP.local.md` and `PROGRES
 - Google OAuth sign-in for the web UI (`/auth/google/start`, `/auth/google/callback`), independent of the OAuth authorization server above.
 - Postgres via Neon (HTTP driver) + Drizzle ORM.
 - Redis-backed atomic rate limiting, concurrency limits, and failed-authentication lockouts — required in production, with a single-process in-memory fallback for local development only.
-- Tailwind v4 styling for server-rendered React pages; the OAuth consent screen ships no client-side JavaScript at all, by design.
+- [Cinder](https://www.npmjs.com/package/@lostgradient/cinder) components and design tokens for server-rendered Svelte pages, with the stylesheet collected from the pages themselves so each build ships only the component CSS it uses; the OAuth consent screen ships no client-side JavaScript at all, by design.
 - A `doctor` command that derives every check from the same Zod schemas the server validates its own configuration against, so a new required variable is caught automatically rather than needing a second, hand-maintained list.
 - Monorepo with Bun + Turborepo.
 
 ## Project Structure
 
 ```text
-applications/web/          Bun + React SSR app (UI + OAuth + MCP transport)
+applications/web/          Bun + Svelte SSR app (UI + OAuth + MCP transport)
 packages/database/         Drizzle schema, migrations, shared database client
 packages/mcp/              MCP server factory, tool/resource/prompt definitions, shared logger
 packages/mcp-apps/         MCP Apps (interactive UI) build pipeline — no application ships in this template yet

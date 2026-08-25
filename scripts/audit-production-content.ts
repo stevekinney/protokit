@@ -88,7 +88,7 @@ const TEXT_FILE_EXTENSIONS = new Set([
 
 /**
  * Every production artifact this scan reads. Deliberately excludes
- * `*.test.ts`/`*.test.tsx` (test fixtures legitimately use synthetic data
+ * `*.test.ts`/`*.test.ts` (test fixtures legitimately use synthetic data
  * and are never shipped) and `*.example` files (`.env.example`,
  * `server.json.example`) — those are meant to carry placeholder values for
  * a consumer to replace, and are never served or shipped as-is.
