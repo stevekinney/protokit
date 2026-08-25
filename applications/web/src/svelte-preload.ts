@@ -69,29 +69,52 @@ const isDevelopment = process.env['NODE_ENV'] === 'development';
  */
 const require = createRequire(import.meta.url);
 
-let sveltePlugin: typeof import('@lostgradient/bun-plugin-svelte').sveltePlugin | undefined;
+/**
+ * Split out of this file's top-level side effect, and parameterized over
+ * both the compiler lookup and the plugin registration, specifically so the
+ * "compiler devDependency is missing" branch is directly unit-testable
+ * (`svelte-preload.test.ts`). That branch is real production behavior --
+ * reachable under `bun install --production`, where this devDependency is
+ * legitimately absent -- not dead code, but it never runs in this repository's
+ * own dev/test environment, where the compiler is always installed. Injecting
+ * fake `loadCompiler`/`registerPlugin` implementations exercises the branch
+ * for real without needing to actually uninstall the package or re-import
+ * this module (which would reset, not union, this file's already-recorded
+ * coverage -- the same finding documented for the `SKIP_ENV_VALIDATION`
+ * guards in `scripts/assert-coverage-complete.ts`).
+ */
+export function registerSveltePlugin(
+	loadCompiler: () => {
+		sveltePlugin: typeof import('@lostgradient/bun-plugin-svelte').sveltePlugin;
+	} = () => require('@lostgradient/bun-plugin-svelte'),
+	registerPlugin: (bunPlugin: Parameters<typeof plugin>[0]) => void = plugin,
+): void {
+	let sveltePlugin: typeof import('@lostgradient/bun-plugin-svelte').sveltePlugin | undefined;
 
-try {
-	({ sveltePlugin } = require('@lostgradient/bun-plugin-svelte'));
-} catch {
-	sveltePlugin = undefined;
+	try {
+		({ sveltePlugin } = loadCompiler());
+	} catch {
+		sveltePlugin = undefined;
+	}
+
+	if (sveltePlugin) {
+		registerPlugin(sveltePlugin({ generate: 'server', css: 'none', dev: isDevelopment }));
+	} else {
+		registerPlugin({
+			name: 'svelte-compiler-unavailable',
+			setup(build) {
+				build.onLoad({ filter: /\.svelte$/ }, (args) => {
+					throw new Error(
+						`Cannot load ${args.path}: @lostgradient/bun-plugin-svelte is not installed, ` +
+							`so there is no Svelte compiler registered. It is a devDependency, so this is ` +
+							`expected under \`bun install --production\` — but nothing in a production ` +
+							`install should be importing a component. Run \`bun install\` to get the ` +
+							`compiler back.`,
+					);
+				});
+			},
+		});
+	}
 }
 
-if (sveltePlugin) {
-	plugin(sveltePlugin({ generate: 'server', css: 'none', dev: isDevelopment }));
-} else {
-	plugin({
-		name: 'svelte-compiler-unavailable',
-		setup(build) {
-			build.onLoad({ filter: /\.svelte$/ }, (args) => {
-				throw new Error(
-					`Cannot load ${args.path}: @lostgradient/bun-plugin-svelte is not installed, ` +
-						`so there is no Svelte compiler registered. It is a devDependency, so this is ` +
-						`expected under \`bun install --production\` — but nothing in a production ` +
-						`install should be importing a component. Run \`bun install\` to get the ` +
-						`compiler back.`,
-				);
-			});
-		},
-	});
-}
+registerSveltePlugin();

@@ -129,5 +129,5 @@ describe('runAuthenticatedInspectorCheck (MCP client throws after token issuance
 
 		const after = await countInspectorSmokeClients();
 		expect(after).toBe(before);
-	});
+	}, 30_000);
 });

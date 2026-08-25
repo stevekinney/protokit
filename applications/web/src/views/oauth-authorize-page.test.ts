@@ -106,6 +106,11 @@ describe('OauthAuthorizePage', () => {
 			expect(markup).toContain('Use this server’s prompt templates.');
 		});
 
+		it('falls back to the raw redirect_uri string when it is not a valid URL', () => {
+			const markup = renderPage({ ...formInput, redirectUri: 'not-a-valid-url' });
+			expect(markup).toContain('not-a-valid-url');
+		});
+
 		it('never displays a scope that was not passed in', () => {
 			const markup = renderPage({
 				...formInput,

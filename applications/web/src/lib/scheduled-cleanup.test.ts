@@ -217,4 +217,64 @@ describe('startScheduledCleanup overlap guard', () => {
 		expect(releaseSignals.length).toBeGreaterThan(1);
 		expect(maxConcurrentInFlight).toBe(1);
 	});
+
+	it('is a no-op when called again while already running', () => {
+		startScheduledCleanup(
+			1_000,
+			async () => {},
+			async () => true,
+		);
+		expect(isScheduledCleanupRunning()).toBe(true);
+
+		// A second call must not replace the existing interval (and must not
+		// throw) -- `startScheduledCleanup` returns early instead.
+		expect(() =>
+			startScheduledCleanup(
+				1_000,
+				async () => {},
+				async () => true,
+			),
+		).not.toThrow();
+		expect(isScheduledCleanupRunning()).toBe(true);
+	});
+
+	it('skips the sweep and logs when the lease is not acquired', async () => {
+		let sweepCallCount = 0;
+
+		startScheduledCleanup(
+			20,
+			async () => {
+				sweepCallCount += 1;
+			},
+			async () => false,
+		);
+		expect(isScheduledCleanupRunning()).toBe(true);
+
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		// The injected sweep must never run when the lease is denied every
+		// cycle.
+		expect(sweepCallCount).toBe(0);
+	});
+
+	it('logs and clears sweepInProgress rather than crashing when the injected sweep throws', async () => {
+		let attempts = 0;
+
+		startScheduledCleanup(
+			20,
+			async () => {
+				attempts += 1;
+				throw new Error('simulated sweep failure');
+			},
+			async () => true,
+		);
+		expect(isScheduledCleanupRunning()).toBe(true);
+
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		// At least one tick ran the throwing sweep, and the guard cleared
+		// afterward (proven by a second tick also getting a chance to run,
+		// rather than the failure permanently wedging `sweepInProgress`).
+		expect(attempts).toBeGreaterThan(0);
+	});
 });

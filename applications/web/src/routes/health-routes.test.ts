@@ -7,6 +7,9 @@ let mockDatabaseCallCount = 0;
 // Round-3 review (OPS-002): a dependency that accepts the probe but never answers must not hang
 // `probeDependencies` -- and therefore the coalesced-probe cache's `inFlight` slot -- forever.
 let mockDatabaseHang = false;
+let mockRedisConfigured = true;
+let mockRateLimitAllowed = true;
+let mockRateLimitRetryAfterSeconds = 0;
 
 mock.module('@web/env', () => ({
 	environment: mockEnvironment,
@@ -30,7 +33,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@web/lib/redis-client', () => ({
-	isRedisConfigured: () => true,
+	isRedisConfigured: () => mockRedisConfigured,
 	isRedisHealthy: async () => mockRedisHealthy,
 }));
 
@@ -44,9 +47,9 @@ mock.module('@web/lib/mcp-protocol-constants', () => ({
 
 mock.module('@web/lib/request-rate-limiter', () => ({
 	enforceHealthProbeRateLimit: async () => ({
-		allowed: true,
-		retryAfterSeconds: 0,
-		remainingRequests: 10,
+		allowed: mockRateLimitAllowed,
+		retryAfterSeconds: mockRateLimitRetryAfterSeconds,
+		remainingRequests: mockRateLimitAllowed ? 10 : 0,
 	}),
 }));
 
@@ -109,6 +112,9 @@ describe('handleHealthReadinessGet', () => {
 		mockDatabaseHealthy = true;
 		mockRedisHealthy = true;
 		mockDatabaseHang = false;
+		mockRedisConfigured = true;
+		mockRateLimitAllowed = true;
+		mockRateLimitRetryAfterSeconds = 0;
 		setEnvironment({});
 		resetHealthReadinessCacheForTests();
 	});
@@ -139,9 +145,9 @@ describe('handleHealthReadinessGet', () => {
 
 		mock.module('@web/lib/request-rate-limiter', () => ({
 			enforceHealthProbeRateLimit: async () => ({
-				allowed: true,
-				retryAfterSeconds: 0,
-				remainingRequests: 10,
+				allowed: mockRateLimitAllowed,
+				retryAfterSeconds: mockRateLimitRetryAfterSeconds,
+				remainingRequests: mockRateLimitAllowed ? 10 : 0,
 			}),
 		}));
 	});
@@ -296,6 +302,26 @@ describe('handleHealthReadinessGet', () => {
 		mockDatabaseHang = false;
 		resetHealthReadinessCacheForTests();
 	}, 15_000);
+
+	it('reports redis as not_configured when Redis is not configured at all', async () => {
+		mockRedisConfigured = false;
+		const response = await handleHealthReadinessGet(buildContext());
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.dependencies.redis).toBe('not_configured');
+		expect(body.status).toBe('ok');
+	});
+
+	it('returns 429 with Retry-After when the readiness rate limit is exceeded', async () => {
+		mockRateLimitAllowed = false;
+		mockRateLimitRetryAfterSeconds = 42;
+		const response = await handleHealthReadinessGet(buildContext());
+		expect(response.status).toBe(429);
+		expect(response.headers.get('Retry-After')).toBe('42');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+		const body = await response.json();
+		expect(body.error).toBe('rate_limited');
+	});
 
 	it('rejects a request over plaintext transport in production', async () => {
 		setEnvironment({ NODE_ENV: 'production' });

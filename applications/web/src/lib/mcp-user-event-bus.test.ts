@@ -231,6 +231,26 @@ describeWithRedis(
 	},
 );
 
+describeWithRedis('RedisUserServerEventBus#publish error handling (requires Redis)', () => {
+	it('swallows a publish-time failure (e.g. an unserializable event) instead of throwing or crashing the process', async () => {
+		const bus = new RedisUserServerEventBus(`user-bus-publish-error-${busRunId}`);
+
+		// `JSON.stringify` throws on a circular structure -- that throw
+		// happens inside the `.then` of `publish()`'s promise chain, so this
+		// exercises the same `.catch` branch a real Redis command failure
+		// would, without needing to sever the connection to a shared Redis
+		// instance other tests still depend on.
+		const circular: Record<string, unknown> = { kind: 'resources_list_changed' };
+		circular['self'] = circular;
+
+		expect(() => bus.publish(circular as unknown as ServerEvent)).not.toThrow();
+
+		// Give the rejected promise's `.catch` a tick to run so an unhandled
+		// rejection would surface here rather than being silently missed.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	});
+});
+
 describe('createUserServerEventBus', () => {
 	it('exposes listenerCount whether backed by Redis or the in-memory fallback', () => {
 		const bus = createUserServerEventBus(`user-factory-test-${busRunId}`);

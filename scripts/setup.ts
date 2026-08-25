@@ -819,6 +819,24 @@ async function setupGithubSecrets(neonProjectId?: string) {
 		setGithubSecret('DATABASE_URL', connectionString);
 		setGithubSecret('DATABASE_URL_UNPOOLED', directConnectionString);
 
+		// Review finding (P2): `MANAGED_GITHUB_SECRETS` (the single list `doctor`,
+		// `teardown`, and `rotate-secret` all read) has named this a managed
+		// secret since the base-url/Railway-deploy-job wiring landed, but this
+		// phase never pushed it -- so `gh secret list` never showed all six
+		// managed secrets after a full wizard run, contradicting
+		// `DEPLOYMENT-RUNBOOK.md`'s documented "it worked" check. The value
+		// already exists in `.env.local` by this point: `setupSessionConfiguration`
+		// runs before this phase in `runFullSetup`'s own order.
+		const sessionSigningSecret = getEnvironmentValue('SESSION_SIGNING_SECRET');
+		if (!sessionSigningSecret) {
+			console.error(
+				'SESSION_SIGNING_SECRET is missing from .env.local. Run the session phase first: ' +
+					'bun scripts/setup.ts session',
+			);
+			return;
+		}
+		setGithubSecret('SESSION_SIGNING_SECRET', sessionSigningSecret);
+
 		// `NEON-API-KEY-P1` (round 4 review): `.github/workflows/production.yml` passes
 		// NEON_API_KEY to `neondatabase/create-branch-action` before every migration (the
 		// mandatory rollback-branch snapshot), not only the PR-validation workflow. Skipping it

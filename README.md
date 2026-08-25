@@ -104,7 +104,7 @@ bun turbo test
 
 ## Deployment, Migrations, and Operations
 
-See `RUNBOOK.md` for what this server logs and measures, how to read it without inspecting a secret, and what to do when a named alert condition fires; `SECRETS-ROTATION.md` for the rotation and revocation procedure for every credential class this template issues or depends on; and `THREAT-MODEL.md` for the assets, actors, entry points, and mitigations this codebase actually implements — not an aspirational list.
+See `DEPLOYMENT-RUNBOOK.md` for the first-deployment procedure, in order: creating the Neon project, Railway service, Redis instance, and Google OAuth client; the two out-of-band prerequisites (disabling Railway's own deploy-on-push, creating the protected `production` GitHub environment); every required environment variable and GitHub secret and where it comes from; the migrate-then-deploy sequence; the exact verification-harness invocations; and rollback. See `RUNBOOK.md` for what this server logs and measures, how to read it without inspecting a secret, and what to do when a named alert condition fires; `SECRETS-ROTATION.md` for the rotation and revocation procedure for every credential class this template issues or depends on; and `THREAT-MODEL.md` for the assets, actors, entry points, and mitigations this codebase actually implements — not an aspirational list.
 
 ### Railway
 

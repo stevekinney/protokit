@@ -1,0 +1,93 @@
+import { describe, expect, it } from 'bun:test';
+import * as packageEntry from './index';
+
+/**
+ * `src/index.ts` is the package's public barrel -- the surface consumers
+ * outside this package (e.g. `applications/web`) actually import from
+ * (`@template/mcp`), never any of these files directly. No existing test
+ * imports through the barrel itself, only through relative internal paths,
+ * so it never appeared in the coverage report at all. Asserts real shape
+ * on a representative sample of each export family (factory function,
+ * tool/resource/prompt registries, logger, scope vocabulary, type-guard
+ * function) rather than merely checking `toBeDefined()` on every name,
+ * which would just move the coverage counter without proving the barrel
+ * actually re-exports the right values.
+ */
+describe('package entry barrel (./index.ts)', () => {
+	it('re-exports the server factory as a callable function', () => {
+		expect(typeof packageEntry.createMcpServer).toBe('function');
+	});
+
+	it('re-exports the real tool registry, including get_user_profile', () => {
+		expect(Array.isArray(packageEntry.allTools)).toBe(true);
+		expect(packageEntry.allTools.length).toBeGreaterThan(0);
+		expect(packageEntry.allTools).toContain(packageEntry.getUserProfileTool);
+		expect(packageEntry.getUserProfileTool.name).toBe('get_user_profile');
+	});
+
+	it('re-exports the real resource and prompt registries', () => {
+		expect(packageEntry.allResources).toContain(packageEntry.userProfileResource);
+		expect(packageEntry.allPrompts).toContain(packageEntry.summarizePrompt);
+	});
+
+	it('re-exports a working logger', () => {
+		expect(typeof packageEntry.logger.info).toBe('function');
+		expect(typeof packageEntry.logger.error).toBe('function');
+	});
+
+	it('re-exports the validated environment', () => {
+		expect(packageEntry.environment.NODE_ENV).toBeDefined();
+	});
+
+	it('re-exports the scope vocabulary and its type guard consistently', () => {
+		expect(packageEntry.mcpScopes.length).toBeGreaterThan(0);
+		for (const scope of packageEntry.mcpScopes) {
+			expect(packageEntry.isMcpScope(scope)).toBe(true);
+			expect(packageEntry.mcpScopeDescriptions[scope]).toBeTruthy();
+		}
+		expect(packageEntry.isMcpScope('not_a_real_scope')).toBe(false);
+	});
+
+	it('re-exports getSupportedScopes as the sorted union of production requiredScope values', () => {
+		const supported = packageEntry.getSupportedScopes();
+		expect(supported).toEqual([...supported].sort());
+		expect(supported.length).toBeGreaterThan(0);
+	});
+
+	it('re-exports localhost rebinding validation helpers that agree with each other', () => {
+		expect(packageEntry.isLoopbackHostname('localhost')).toBe(true);
+		expect(packageEntry.hasValidLocalhostRebindingHeaders(new Headers({ host: 'localhost' }))).toBe(
+			true,
+		);
+	});
+
+	it('re-exports tool-response builders that produce well-formed content', () => {
+		const response = packageEntry.createToolTextResponse('hello');
+		expect(response.content[0]).toEqual({ type: 'text', text: 'hello' });
+	});
+
+	it('re-exports handler-context helpers that parse sampled text', () => {
+		expect(packageEntry.parseSampledText({ content: [{ text: 'result text' }] })).toBe(
+			'result text',
+		);
+		expect(packageEntry.stringifyUnknown('already a string')).toBe('already a string');
+	});
+
+	it('re-exports defineTool/definePrompt as passthrough identity helpers', () => {
+		const tool = { name: 'x' } as unknown as Parameters<typeof packageEntry.defineTool>[0];
+		expect(packageEntry.defineTool(tool)).toBe(tool);
+	});
+
+	it('re-exports the metrics collector', () => {
+		expect(typeof packageEntry.metricsCollector.snapshot).toBe('function');
+	});
+
+	it('re-exports EXTENSION_ID and RESOURCE_MIME_TYPE from the ext-apps server package', () => {
+		expect(typeof packageEntry.EXTENSION_ID).toBe('string');
+		expect(typeof packageEntry.RESOURCE_MIME_TYPE).toBe('string');
+	});
+
+	it('re-exports hasRegisteredUiExtensionResource as a function', () => {
+		expect(typeof packageEntry.hasRegisteredUiExtensionResource).toBe('function');
+	});
+});

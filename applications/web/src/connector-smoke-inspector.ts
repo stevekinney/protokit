@@ -57,7 +57,7 @@
 import { randomUUID } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { eq } from 'drizzle-orm';
-import { commandIsAvailable, runCli } from './connector-smoke-support';
+import { commandIsAvailable, runCli, runHarnessMain } from './connector-smoke-support';
 
 function parseHostArgument(argv: readonly string[]): string | undefined {
 	const flagIndex = argv.indexOf('--host');
@@ -227,19 +227,24 @@ export async function obtainRealAccessToken(
 			// (DATA-001), which would invalidate the token before it was ever
 			// used if this ran eagerly in a `finally` here.
 			cleanup: async () => {
-				await database
-					.delete(schema.oauthClients)
-					.where(eq(schema.oauthClients.clientId, clientId));
-				await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-				await database.delete(schema.users).where(eq(schema.users.id, userId));
+				// Deleting `users` cascades to `user_sessions`, so ordering is
+				// not load-bearing between these three; issued together for
+				// the same round-trip reason as the seeding above.
+				await Promise.all([
+					database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId)),
+					database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId)),
+					database.delete(schema.users).where(eq(schema.users.id, userId)),
+				]);
 			},
 		};
 	} catch (error) {
 		// The token was never issued -- nothing to leave behind but the seeded
 		// user/client rows, which normal cleanup would never otherwise reach.
-		await database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId));
-		await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-		await database.delete(schema.users).where(eq(schema.users.id, userId));
+		await Promise.all([
+			database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId)),
+			database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId)),
+			database.delete(schema.users).where(eq(schema.users.id, userId)),
+		]);
 		throw error;
 	}
 }
@@ -454,5 +459,5 @@ async function main(): Promise<void> {
 // `main()` against `process.argv`, including a real network `bunx` install
 // and a real `process.exit()` that tears down the importing process.
 if (import.meta.main) {
-	await main();
+	await runHarnessMain('connector-smoke-inspector', main);
 }

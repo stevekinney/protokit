@@ -1388,27 +1388,53 @@ async function handleOauthTokenAuthorizationCodeGrant(
 	// client for nothing.
 	const issueRefreshToken = client.grantTypes.includes('refresh_token');
 	try {
-		await database.insert(schema.oauthTokens).values({
-			accessToken: tokens.accessTokenHash,
-			clientId: authorizationCode.clientId,
-			userId: authorizationCode.userId,
-			scope: authorizationCode.scope || '',
-			resource: authorizationCode.resource,
-			expiresAt: tokens.accessTokenExpiresAt,
-		});
 		if (issueRefreshToken) {
-			await database.insert(schema.oauthRefreshTokens).values({
-				refreshToken: tokens.refreshTokenHash,
+			// OPEN-12: one statement rather than two sequential inserts. Two
+			// round trips through `neon-http` cost roughly twice one, and the
+			// driver has no transactions -- so the old shape could also leave
+			// an access token stored with no refresh token beside it if the
+			// second insert failed, which is a state nothing else in this
+			// codebase expects. A single CTE makes it one round trip and one
+			// atomic unit at the same time.
+			//
+			// OAUTH-003: the authorization-code exchange starts a new
+			// refresh-token lineage, so this refresh token is the root of its
+			// own family. Every token this one rotates into carries the same
+			// `familyId` forward.
+			await database.execute(sql`
+				WITH issued_access_token AS (
+					INSERT INTO oauth_tokens (access_token, client_id, user_id, scope, resource, expires_at)
+					VALUES (
+						${tokens.accessTokenHash},
+						${authorizationCode.clientId},
+						${authorizationCode.userId},
+						${authorizationCode.scope || ''},
+						${authorizationCode.resource},
+						${tokens.accessTokenExpiresAt}
+					)
+					RETURNING access_token
+				)
+				INSERT INTO oauth_refresh_tokens
+					(refresh_token, client_id, user_id, scope, resource, access_token_hash, family_id, expires_at)
+				SELECT
+					${tokens.refreshTokenHash},
+					${authorizationCode.clientId},
+					${authorizationCode.userId},
+					${authorizationCode.scope || ''},
+					${authorizationCode.resource},
+					issued_access_token.access_token,
+					${randomUUID()},
+					${tokens.refreshTokenExpiresAt}
+				FROM issued_access_token
+			`);
+		} else {
+			await database.insert(schema.oauthTokens).values({
+				accessToken: tokens.accessTokenHash,
 				clientId: authorizationCode.clientId,
 				userId: authorizationCode.userId,
 				scope: authorizationCode.scope || '',
 				resource: authorizationCode.resource,
-				accessTokenHash: tokens.accessTokenHash,
-				// OAUTH-003: the authorization-code exchange starts a new refresh-token
-				// lineage, so this refresh token is the root of its own family. Every
-				// token this one rotates into carries the same familyId forward.
-				familyId: randomUUID(),
-				expiresAt: tokens.refreshTokenExpiresAt,
+				expiresAt: tokens.accessTokenExpiresAt,
 			});
 		}
 	} catch (error) {
