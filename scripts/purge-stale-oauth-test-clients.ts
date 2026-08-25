@@ -41,11 +41,31 @@ const TEST_FIXTURE_CLIENT_NAME_PATTERNS = [
 	'consent-inventory-test-client%',
 ];
 
+/**
+ * Hostnames `docker-compose.test.yml`'s Postgres service is ever reachable
+ * at: bound directly to the loopback interface, or through `db.localtest.me`
+ * (a public DNS entry that always resolves to `127.0.0.1`, used where a
+ * real-looking hostname is required).
+ */
+const LOCAL_TEST_DATABASE_HOSTNAMES = new Set(['localhost', '127.0.0.1', 'db.localtest.me']);
+
+/**
+ * Review finding (P1): checking only the database NAME let any connection
+ * string whose database happened to be named `protokit_test` -- including a
+ * remote, shared, or hosted one -- pass this guard and run the real `DELETE`
+ * below. The host and port `docker-compose.test.yml` actually binds this
+ * fixture to are checked too, so only the local stack this script exists to
+ * clean up after can ever satisfy this function.
+ */
 export function isLocalTestDatabase(connectionString: string | undefined): boolean {
 	if (!connectionString) return false;
 	try {
-		const { pathname } = new URL(connectionString);
-		return pathname.replace(/^\//, '') === 'protokit_test';
+		const { pathname, hostname, port } = new URL(connectionString);
+		return (
+			pathname.replace(/^\//, '') === 'protokit_test' &&
+			LOCAL_TEST_DATABASE_HOSTNAMES.has(hostname) &&
+			(port === '' || port === '5432')
+		);
 	} catch {
 		return false;
 	}

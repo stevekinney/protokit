@@ -111,10 +111,14 @@ that declaration by itself gates nothing—it is inert until a GitHub _environme
 unconditionally on every push to `main`.
 
 Create it in the repository's Settings → Environments → New environment, name it exactly
-`production`, and attach at least one of:
+`production`, and attach **required reviewers** (someone must approve before the job runs).
 
-- Required reviewers (someone must approve before the job runs), or
-- A deployment branch policy restricted to `main` (or a protected branch pattern),
+A deployment branch policy restricted to `main` is not a substitute: this workflow already
+triggers only on `push: branches: [main]` (see the top of `production.yml`), so restricting the
+environment to `main` gates nothing beyond what the trigger already guarantees—both jobs would
+still run unconditionally on every push to `main`, exactly as they do with no environment
+protection at all. Reviewers are the only rule here that actually stops an unattended production
+run.
 
 Also add the environment's own secrets and variables here if you prefer per-environment secrets
 over repository-wide ones (see the next section—either scope works, since `production.yml`
@@ -243,7 +247,7 @@ Run `bun scripts/setup.ts` (or the individual phases in order) to write `.env.lo
 Neon project, collect Google credentials, collect a production `REDIS_URL`, set `BASE_URL` and
 the trusted-proxy configuration, push the resulting variable set to Railway
 (`railway variable set`, one key at a time, forcing `NODE_ENV=production` regardless of the local
-machine's own mode), and set the four GitHub secrets under "What `production.yml` needs" above
+machine's own mode), and set the six GitHub secrets under "What `production.yml` needs" above
 (`NEON_PROJECT_ID`, `NEON_API_KEY`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SESSION_SIGNING_SECRET`,
 and `RAILWAY_TOKEN`—six total, all from `MANAGED_GITHUB_SECRETS`). Set
 `RAILWAY_SERVICE_NAME` by hand afterward (`gh variable set RAILWAY_SERVICE_NAME`)—the wizard

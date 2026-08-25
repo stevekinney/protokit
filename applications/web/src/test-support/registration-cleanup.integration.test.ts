@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { fetchFromTestServer, startTestServer } from '@web/test-support/start-test-server';
@@ -33,6 +33,18 @@ describe('OAuth client cleanup actually deletes the row', () => {
 			.where(eq(schema.oauthClients.clientId, seededClientId));
 		return rows.length;
 	}
+
+	// Belt-and-braces: if the dynamically-registered `afterEach` this file
+	// exists to verify ever stops firing, this removes the seeded row anyway
+	// so a failing run here does not also leave a live row behind for the next
+	// run to trip over. Runs after both cases above without weakening either
+	// assertion -- the second case still fails loudly first if the row is
+	// still present.
+	afterAll(async () => {
+		await database
+			.delete(schema.oauthClients)
+			.where(eq(schema.oauthClients.clientId, seededClientId));
+	});
 
 	it('registers a real client through the helper', async () => {
 		await database.insert(schema.oauthClients).values({

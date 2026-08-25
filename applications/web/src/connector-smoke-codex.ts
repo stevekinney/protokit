@@ -45,7 +45,7 @@ import {
 	runHarnessMain,
 } from './connector-smoke-support';
 
-function parseHostArgument(argv: readonly string[]): string | undefined {
+export function parseHostArgument(argv: readonly string[]): string | undefined {
 	const flagIndex = argv.indexOf('--host');
 	if (flagIndex === -1) return undefined;
 	return argv[flagIndex + 1];

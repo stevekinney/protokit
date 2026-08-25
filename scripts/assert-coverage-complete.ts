@@ -95,22 +95,6 @@ export const NEVER_IMPORTABLE_FILES: ReadonlySet<string> = new Set([
 	'applications/web/src/end-to-end-tests/hydration.e2e.ts', // Playwright spec, run by `bunx playwright test` (`test:end-to-end`), never by `bun test` -- has its own runner and its own gate.
 	'applications/web/src/end-to-end-tests/interactive-components.e2e.ts',
 	'applications/web/src/end-to-end-tests/streaming.e2e.ts',
-	// applications/web -- BLOCKED, not exempt by design: both connector-smoke
-	// harnesses call `await main()` unconditionally at module load, with no
-	// `import.meta.main` guard (unlike their four siblings -- `deployed-oauth.ts`,
-	// `deployed-smoke.ts`, `deployed-streaming.ts`, `connector-smoke-inspector.ts`
-	// -- which all have one specifically so a test file CAN import their pure
-	// helpers without triggering a real run). Importing either file from a test
-	// would self-host a real server and shell out to a real `codex`/`claude` CLI.
-	// This is a source defect, not a genuinely unmeasurable file: the fix is a
-	// one-line `if (import.meta.main) { await main(); }` guard around the
-	// existing `await main();` call, mirroring the four siblings exactly. Not
-	// applied here -- `applications/web/src/{connector-smoke-claude-code,connector-smoke-codex}.ts`
-	// are outside this script's file lane (test files and this script only).
-	// Listed here, with this reason, so the exclusion is explicit rather than
-	// this file silently vanishing from the report.
-	'applications/web/src/connector-smoke-claude-code.ts',
-	'applications/web/src/connector-smoke-codex.ts',
 	// applications/web -- real, unconditional side effects at module load:
 	// `await buildStyles()`/`buildClientBundle()`/`writeStableManifest()`, a
 	// real `fs.watch`, and a real `Bun.spawn(['bun', '--watch', ...])` that
@@ -187,20 +171,8 @@ export const LINE_COVERAGE_WAIVED_FILES: ReadonlySet<string> = new Set([
 	'applications/web/src/deployed-smoke.ts', // `main()`: real HTTP probes against a real deployed host.
 	'applications/web/src/deployed-streaming.ts', // `main()`: opens a real SSE stream against a real deployed host and measures real wall-clock chunk timing. Pure helpers (`parseArguments`, `detectStreamBuffering`) are covered by `deployed-streaming.test.ts`.
 	'applications/web/src/connector-smoke-inspector.ts', // `main()`: self-hosts a real server and shells out to the real `@modelcontextprotocol/inspector` CLI via `bunx`. `runAuthenticatedInspectorCheck`/`obtainRealAccessToken` are covered by `connector-smoke-inspector.test.ts` against real Postgres.
-
-	// Reason 2: `SKIP_ENV_VALIDATION` fail-closed guard, subprocess-only
-	// reachable. Three independent files, one per workspace, each with its
-	// own copy of the identical guard (CONFIG-001/BUG-001 -- deliberately
-	// duplicated per-package rather than shared, so each package's `env.ts`
-	// stays independently readable).
-	'applications/web/src/env.ts', // Lines 10-13, `if (process.env.SKIP_ENV_VALIDATION) throw ...`. Real behavior proven by `src/env-skip-validation-guard.test.ts` (a real `Bun.spawn` subprocess).
-	'packages/database/src/env.ts', // Lines 9-11, identical guard and identical subprocess-only-reachable reason.
-	'packages/mcp/src/env.ts', // Lines 9-11 (guard) and 39-41 (production-only companion check), identical reason.
-
-	// Reason 3: proven-unreachable lines, cited with the specific evidence.
-	'applications/web/src/lib/trusted-proxy.ts', // Line 180, the closing brace of `extractForwardedAddress`'s `'forwarded'`-header branch. Every statement inside that branch (the lines immediately above) is fully hit, 51-68 times each in a real full-suite run; only this specific closing brace never registers, while the structurally identical closing braces of the other two branches in the same function do. Reproduces in complete isolation (this file's own test file run alone, no other test file involved) -- a Bun/SWC coverage-instrumentation artifact on this exact brace, not a real code gap.
-	'packages/mcp/src/conformance-fixture-registration.ts', // Lines 21-22 (`delay()`'s already-aborted branch -- `runWithStandardizedTimeout` always hands `delay` a freshly-constructed, unaborted signal) and lines 255-263, 315-320, 372-377, 430-435 (the `!sendRequest` branches in `test_sampling`/`test_elicitation*` -- every real per-request `ctx.mcpReq` the installed `@modelcontextprotocol/server@2.0.0` SDK builds always attaches a `send` function unconditionally, confirmed by reading that SDK's source directly and by testing against legacy HTTP, modern-era HTTP, and `InMemoryTransport` transports alike).
-	'packages/mcp/src/server.ts', // Line 248, the MCP-Apps experimental-capability branch -- unreachable because `hasRegisteredUiExtensionResource()` always returns `false` today; no MCP App is registered anywhere in this codebase yet. NOTE: this is `createMcpServer`, a different file from `applications/web/src/server.ts` (see `NEVER_IMPORTABLE_FILES`'s header comment) -- every other line here is required and covered.
+	'applications/web/src/connector-smoke-claude-code.ts', // `main()`: self-hosts a real server and shells out to the real `claude` CLI. Now guarded by `import.meta.main` (round-16 review, thread 8, fixed the gap the two siblings below were originally missing), so its pure `parseHostArgument` is exported and covered by `connector-smoke-claude-code.test.ts`.
+	'applications/web/src/connector-smoke-codex.ts', // `main()`: self-hosts a real server and shells out to the real `codex` CLI. Same `import.meta.main` guard and same reason as `connector-smoke-claude-code.ts` above; `parseHostArgument` is covered by `connector-smoke-codex.test.ts`.
 ]);
 
 /**
@@ -253,6 +225,73 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		'applications/web/src/connector-smoke-support.ts',
 		new Set([279, 280, 281, 282, 283, 284, 285, 286, 287, 288]),
 	],
+	[
+		// Review finding (P2): this and the five entries below used to be
+		// whole-file waivers in `LINE_COVERAGE_WAIVED_FILES`, which hid any
+		// OTHER line in these files from ever being checked again -- exactly
+		// the shape this Tier B-narrow section exists to avoid. Narrowed to
+		// the throw BODY of the `SKIP_ENV_VALIDATION` guard (CONFIG-001/
+		// BUG-001) -- the `if` line itself always executes and registers a
+		// real hit under normal test conditions (the variable is simply
+		// false), so only `throw new Error(...)` and its message are
+		// genuinely subprocess-only reachable. Real behavior proven by
+		// `src/env-skip-validation-guard.test.ts` (a real `Bun.spawn`
+		// subprocess) -- same reason as `connector-smoke-support.ts` above.
+		'applications/web/src/env.ts',
+		new Set([11, 12, 13]),
+	],
+	[
+		// Identical guard and identical subprocess-only-reachable reason as
+		// `applications/web/src/env.ts` above.
+		'packages/database/src/env.ts',
+		new Set([9, 10, 11]),
+	],
+	[
+		// Identical guard, plus this workspace's own production-only companion
+		// check (same shape: the `if` line itself is always covered, only its
+		// throw body is subprocess-only reachable) -- same reason.
+		'packages/mcp/src/env.ts',
+		new Set([9, 10, 11, 39, 40, 41]),
+	],
+	[
+		// Reason 3-equivalent: the closing brace of `extractForwardedAddress`'s
+		// `'forwarded'`-header branch. Every statement inside that branch (the
+		// lines immediately above) is fully hit, 51-68 times each in a real
+		// full-suite run; only this specific closing brace never registers,
+		// while the structurally identical closing braces of the other two
+		// branches in the same function do. Reproduces in complete isolation
+		// (this file's own test file run alone, no other test file involved)
+		// -- a Bun/SWC coverage-instrumentation artifact on this exact brace,
+		// not a real code gap.
+		'applications/web/src/lib/trusted-proxy.ts',
+		new Set([180]),
+	],
+	[
+		// Lines 21-22: `delay()`'s already-aborted branch --
+		// `runWithStandardizedTimeout` always hands `delay` a freshly
+		// constructed, unaborted signal. Lines 255-263, 315-320, 372-377,
+		// 430-435: the `!sendRequest` branches in
+		// `test_sampling`/`test_elicitation*` -- every real per-request
+		// `ctx.mcpReq` the installed `@modelcontextprotocol/server@2.0.0` SDK
+		// builds always attaches a `send` function unconditionally, confirmed
+		// by reading that SDK's source directly and by testing against legacy
+		// HTTP, modern-era HTTP, and `InMemoryTransport` transports alike.
+		'packages/mcp/src/conformance-fixture-registration.ts',
+		new Set([
+			21, 22, 255, 256, 257, 258, 259, 260, 261, 262, 263, 315, 316, 317, 318, 319, 320, 372, 373,
+			374, 375, 376, 377, 430, 431, 432, 433, 434, 435,
+		]),
+	],
+	[
+		// Line 248: the MCP-Apps experimental-capability branch -- unreachable
+		// because `hasRegisteredUiExtensionResource()` always returns `false`
+		// today; no MCP App is registered anywhere in this codebase yet. NOTE:
+		// this is `createMcpServer`, a different file from
+		// `applications/web/src/server.ts` (see `NEVER_IMPORTABLE_FILES`'s
+		// header comment) -- every other line here is required and covered.
+		'packages/mcp/src/server.ts',
+		new Set([248]),
+	],
 ]);
 
 /**
@@ -286,13 +325,25 @@ export function unwaivedUncoveredLines(
 }
 
 export function assertExclusionsExist(
-	// Defaults to the real Tier A/B sets; overridable so this stale-entry
-	// check is directly unit-testable against synthetic entries, rather than
-	// only indirectly through the real, current exclusion lists. Keys are
-	// workspace-qualified (`<workspace.directory>/<path>`), so this check no
-	// longer needs a `WorkspaceTarget` argument or a per-workspace loop --
-	// each key states its own workspace up front.
-	exclusions: Iterable<string> = [...NEVER_IMPORTABLE_FILES, ...LINE_COVERAGE_WAIVED_FILES],
+	// Defaults to the real Tier A/B/B-narrow sets; overridable so this
+	// stale-entry check is directly unit-testable against synthetic entries,
+	// rather than only indirectly through the real, current exclusion lists.
+	// Keys are workspace-qualified (`<workspace.directory>/<path>`), so this
+	// check no longer needs a `WorkspaceTarget` argument or a per-workspace
+	// loop -- each key states its own workspace up front.
+	//
+	// Review finding (P2): this used to default to only the two whole-file
+	// sets, so a `LINE_COVERAGE_WAIVED_LINES` path that was deleted or
+	// renamed left its numbered waiver behind indefinitely -- the source-file
+	// loop can no longer encounter that path, so neither this check nor
+	// `findStaleWaivedLines` would ever report it, and if the path were later
+	// reused it could silently exempt unrelated code. Including this map's
+	// keys closes that.
+	exclusions: Iterable<string> = [
+		...NEVER_IMPORTABLE_FILES,
+		...LINE_COVERAGE_WAIVED_FILES,
+		...LINE_COVERAGE_WAIVED_LINES.keys(),
+	],
 ): void {
 	for (const workspaceQualifiedPath of exclusions) {
 		try {
