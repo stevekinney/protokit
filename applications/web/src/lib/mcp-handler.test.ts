@@ -55,7 +55,7 @@ const {
  * OBS-001 acceptance criterion 2: "a trace follows one connector action
  * from HTTP entry through OAuth validation and tool completion." This
  * exercises the real, unmocked path end to end — `buildAuthInfo`'s
- * `requestId` (standing in for `application.tsx`'s HTTP-boundary
+ * `requestId` (standing in for `application.ts`'s HTTP-boundary
  * `requestId`) through `readMcpRequestAuthExtra`, into
  * `createMcpServer`'s context, into a real tool call — and asserts the
  * SAME `requestId` shows up on the resulting structured log line, proving
@@ -523,7 +523,7 @@ describe('subscriptions/listen (PROTO-002 / S-11)', () => {
 		// defect was specific to.
 		//
 		// `publishUserResourceUpdate` is the function callers OUTSIDE the
-		// request path use (e.g. `google-authentication-routes.tsx` after a
+		// request path use (e.g. `google-authentication-routes.ts` after a
 		// real Google profile mutation) — it does not have a `handler`
 		// closure variable to call `.notify` on the way the in-request
 		// `publishResourceUpdate` callback in `createUserHandlerEntry` does.

@@ -48,7 +48,7 @@ import {
 import type { RequestContext } from '@web/lib/request-context';
 import { redirectUriMatchesRegistered } from '@web/lib/redirect-uri-matching';
 import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';
-import { OauthAuthorizePage } from '@web/views/oauth-authorize-page';
+import OauthAuthorizePage from '@web/views/oauth-authorize-page.svelte';
 import {
 	PayloadTooLargeError,
 	readBoundedFormUrlEncoded,
@@ -362,12 +362,8 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
-			body: (
-				<OauthAuthorizePage
-					mode="error"
-					error={`Duplicate OAuth parameter: ${duplicateParameterName}.`}
-				/>
-			),
+			component: OauthAuthorizePage,
+			props: { mode: 'error', error: `Duplicate OAuth parameter: ${duplicateParameterName}.` },
 		});
 	}
 
@@ -384,12 +380,8 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
-			body: (
-				<OauthAuthorizePage
-					mode="error"
-					error="Invalid OAuth parameters. Missing required fields."
-				/>
-			),
+			component: OauthAuthorizePage,
+			props: { mode: 'error', error: 'Invalid OAuth parameters. Missing required fields.' },
 		});
 	}
 
@@ -416,7 +408,8 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
-			body: <OauthAuthorizePage mode="error" error="A parameter exceeded its maximum length." />,
+			component: OauthAuthorizePage,
+			props: { mode: 'error', error: 'A parameter exceeded its maximum length.' },
 		});
 	}
 
@@ -488,7 +481,8 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
-			body: <OauthAuthorizePage mode="error" error="Unknown OAuth client." />,
+			component: OauthAuthorizePage,
+			props: { mode: 'error', error: 'Unknown OAuth client.' },
 		});
 	}
 
@@ -506,7 +500,8 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 		return createStaticHtmlResponse({
 			metadata: { title: 'OAuth Authorize' },
 			status: 400,
-			body: <OauthAuthorizePage mode="error" error="Invalid redirect URI." />,
+			component: OauthAuthorizePage,
+			props: { mode: 'error', error: 'Invalid redirect URI.' },
 		});
 	}
 
@@ -687,20 +682,19 @@ export async function handleOauthAuthorizeGet(context: RequestContext): Promise<
 
 	return createStaticHtmlResponse({
 		metadata: { title: 'OAuth Authorize' },
-		body: (
-			<OauthAuthorizePage
-				mode="form"
-				clientName={displayClientName}
-				redirectUri={redirectUri}
-				transactionId={transaction.transactionId}
-				csrfToken={transaction.csrfToken}
-				user={context.user}
-				scopes={splitScopeString(grantedScope).map((scope) => ({
-					scope,
-					description: isMcpScope(scope) ? mcpScopeDescriptions[scope] : scope,
-				}))}
-			/>
-		),
+		component: OauthAuthorizePage,
+		props: {
+			mode: 'form',
+			clientName: displayClientName,
+			redirectUri: redirectUri,
+			transactionId: transaction.transactionId,
+			csrfToken: transaction.csrfToken,
+			user: context.user,
+			scopes: splitScopeString(grantedScope).map((scope) => ({
+				scope,
+				description: isMcpScope(scope) ? mcpScopeDescriptions[scope] : scope,
+			})),
+		},
 	});
 }
 

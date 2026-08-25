@@ -8,7 +8,7 @@
  * register a name containing bidirectional-override characters (to visually
  * reverse or splice text into something impersonating a trusted app) or
  * other C0/C1 control characters (to inject line breaks, hide characters,
- * or otherwise manipulate how the name renders) even though React JSX text
+ * or otherwise manipulate how the name renders) even though Svelte template text
  * nodes already prevent HTML/script injection.
  *
  * Every disallowed character is matched by its exact \uXXXX code point,

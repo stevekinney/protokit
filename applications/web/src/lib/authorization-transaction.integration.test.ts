@@ -18,7 +18,7 @@ import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
  * `consumeAuthorizationTransaction` uses in production — nothing here is
  * mocked, so a regression that weakens the `WHERE` clause (or a database
  * driver quirk the mocked unit suite can't see) would fail this file even
- * if `oauth-routes.test.tsx`'s mocked suite stayed green.
+ * if `oauth-routes.test.ts`'s mocked suite stayed green.
  *
  * Runs against the shared local test database other wave agents also use;
  * every row this file creates is scoped under one random UUID prefix and

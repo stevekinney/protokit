@@ -268,7 +268,7 @@ describe('createUserServerEventBus', () => {
 // capability advertisement but no update, ever. This proves the fix's
 // actual delivery mechanism -- a fresh bus constructed for the same
 // `userId` elsewhere in the process reaches an already-open subscription,
-// matching `google-authentication-routes.tsx`'s call site, which does not
+// matching `google-authentication-routes.ts`'s call site, which does not
 // hold a reference to the subscriber's own bus instance.
 describeWithRedis('publishUserResourceUpdate (requires Redis)', () => {
 	it('delivers a resource_updated event to an independently-constructed listener for the same user', async () => {

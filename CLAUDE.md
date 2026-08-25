@@ -1,8 +1,8 @@
-# Bun + React MCP Template
+# Bun + Svelte MCP Template
 
 ## Monorepo Structure
 
-- `applications/web` — Bun-native React SSR app (UI + OAuth endpoints + MCP server transport)
+- `applications/web` — Bun-native Svelte 5 SSR app (UI + OAuth endpoints + MCP server transport)
 - `packages/database` — Drizzle schema, migrations, shared database client
 - `packages/mcp` — MCP tool/resource/prompt definitions + shared logger
 
@@ -15,7 +15,7 @@
 ## TypeScript
 
 - Each package/application manages its own `tsconfig.json`
-- `applications/web` uses explicit path aliases (`@web/*`) and Bun-compatible JSX settings
+- `applications/web` uses explicit path aliases (`@web/*`); `.svelte` files are type-checked by `svelte-check`, not `tsc`
 
 ## Validation
 

@@ -77,7 +77,7 @@ const SOURCE_ROOTS = [
 // (images, fonts) so the scan never reads garbage bytes as text.
 const TEXT_FILE_EXTENSIONS = new Set([
 	'.ts',
-	'.tsx',
+	'.svelte',
 	'.md',
 	'.json',
 	'.css',
@@ -88,7 +88,7 @@ const TEXT_FILE_EXTENSIONS = new Set([
 
 /**
  * Every production artifact this scan reads. Deliberately excludes
- * `*.test.ts`/`*.test.tsx` (test fixtures legitimately use synthetic data
+ * `*.test.ts` (test fixtures legitimately use synthetic data
  * and are never shipped) and `*.example` files (`.env.example`,
  * `server.json.example`) — those are meant to carry placeholder values for
  * a consumer to replace, and are never served or shipped as-is.
@@ -101,7 +101,7 @@ export function collectScanTargets(rootDirectory: string): string[] {
 		if (!existsSync(sourceRootPath)) continue;
 		for (const filePath of listFilesRecursively(sourceRootPath)) {
 			if (filePath.includes('.example')) continue;
-			if (/\.test\.tsx?$/.test(filePath)) continue;
+			if (/\.test\.ts$/.test(filePath)) continue;
 			const extension = filePath.slice(filePath.lastIndexOf('.'));
 			if (!TEXT_FILE_EXTENSIONS.has(extension)) continue;
 			targets.push(filePath);

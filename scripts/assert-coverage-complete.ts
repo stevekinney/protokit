@@ -91,7 +91,7 @@ export const NEVER_IMPORTABLE_FILES: ReadonlySet<string> = new Set([
 	// applications/web -- real process entry points and build tooling.
 	'applications/web/src/server.ts', // Binds a real port and installs real SIGTERM/SIGINT/uncaughtException handlers at module load; no `import.meta.main` guard, by design (this *is* the process entry point).
 	'applications/web/src/build.ts', // Runs the real production `Bun.build` pipeline (writes to `dist/`) unconditionally at module load; no `export` worth importing for.
-	'applications/web/src/client/entry.tsx', // Browser-runtime entry: reads `document.getElementById` at module load. Bun's `bun test` environment has no DOM; this file is never evaluated there, by construction (see `applications/web/CLAUDE.md`'s client/server boundary).
+	'applications/web/src/client/entry.ts', // Browser-runtime entry: reads `document.getElementById` at module load. Bun's `bun test` environment has no DOM; this file is never evaluated there, by construction (see `applications/web/CLAUDE.md`'s client/server boundary).
 	'applications/web/src/end-to-end-tests/hydration.e2e.ts', // Playwright spec, run by `bunx playwright test` (`test:end-to-end`), never by `bun test` -- has its own runner and its own gate.
 	'applications/web/src/end-to-end-tests/interactive-components.e2e.ts',
 	'applications/web/src/end-to-end-tests/streaming.e2e.ts',
@@ -129,6 +129,17 @@ export const NEVER_IMPORTABLE_FILES: ReadonlySet<string> = new Set([
 	// treatment: an explicit, reasoned exclusion, not a silent gap.
 	'applications/web/src/lib/request-context.ts', // `RequestContext` -- `export type` only, no runtime code.
 	'applications/web/src/types/user.ts', // `ApplicationUser` -- `export type` only, no runtime code.
+	'applications/web/src/components/home-page.types.ts', // `ConnectionSummaryView`/`HomePageUser`/`HomePageProps` -- `export type` only, no runtime code.
+	'applications/web/src/views/oauth-authorize-page.types.ts', // `OAuthAuthorizePageScope`/`OAuthAuthorizePageInput` -- `export type` only, no runtime code.
+	// applications/web -- CSS-collection bundler input. `style-entry.ts` exists
+	// purely to be a graph `build.ts` walks with `Bun.build({ target:
+	// 'browser' })` to collect every page's Cinder CSS; it is never imported as
+	// a module by any test -- `style-entry.test.ts` reads its source as text
+	// (`Bun.file(...).text()`) and asserts the import list textually rather
+	// than importing the file itself, specifically so asserting "every page is
+	// listed" doesn't require actually resolving and rendering every `.svelte`
+	// component through it.
+	'applications/web/src/styles/style-entry.ts',
 	// packages/mcp -- a real standalone conformance server. NOTE: this is a
 	// DIFFERENT file from `applications/web/src/server.ts` above, and this
 	// key correctly does not collide with it (see this block's header
@@ -311,8 +322,12 @@ function collectSourceFiles(workspaceDirectory: string): string[] {
 				walk(fullPath);
 				continue;
 			}
-			if (!/\.(ts|tsx)$/.test(entry)) continue;
-			if (/\.test\.(ts|tsx)$/.test(entry)) continue;
+			// `.svelte` is included deliberately: Bun's coverage instrumentation
+			// does emit `SF:` records for compiled components, so leaving them out
+			// let a page render with no test at all still report the workspace as
+			// complete. `.tsx` is gone from this repository entirely.
+			if (!/\.(ts|svelte)$/.test(entry)) continue;
+			if (/\.test\.ts$/.test(entry)) continue;
 			if (entry.endsWith('.d.ts')) continue;
 			results.push(fullPath);
 		}
@@ -427,7 +442,7 @@ export interface MergedFileCoverage {
  * not this script's own cwd, so it must be used as-is (when relative)
  * rather than passed through `relative()` a second time -- doing so
  * previously produced the wrong key for every file and made this gate
- * report already well-tested files (`env.ts`, `oauth-routes.tsx`,
+ * report already well-tested files (`env.ts`, `oauth-routes.ts`,
  * `mcp-handler.ts`) as never covered at all.
  *
  * Review finding (P2): duplicate records for the same file used to be
@@ -562,6 +577,22 @@ async function runCoverageForWorkspace(workspace: WorkspaceTarget): Promise<bool
 				workspaceFailed = true;
 				continue;
 			}
+			// Svelte components get the file-completeness check above but not the
+			// line and function thresholds below.
+			//
+			// Bun instruments the *compiled* component, and the same `.svelte`
+			// source compiled in two `--isolate` processes with different import
+			// graphs produces different instrumented output — so its `DA:` line
+			// numbers are not comparable across records and unioning them is
+			// meaningless. Measured directly: `privacy-policy-page.svelte` reports
+			// LF:14/LH:14 (fully covered) when its own test file runs alone, and
+			// 4/43 in the combined run, purely from merging incompatible records.
+			//
+			// Enforcing those numbers would therefore fail a fully covered
+			// component. The completeness check is what actually catches the risk
+			// worth catching here: a page that no test imports at all.
+			if (sourceFile.endsWith('.svelte')) continue;
+
 			// The task decision this gate implements: enforce line coverage and
 			// file-level completeness -- what Bun's `--isolate` lcov output can
 			// honestly measure as a real union (see `mergeLcovRecordsByFile`'s

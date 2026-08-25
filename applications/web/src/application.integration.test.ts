@@ -31,7 +31,7 @@ try {
 // test in this file, and that state persists in Redis across process
 // runs. Flush every `rate_limit:*` key before this file's Redis-backed
 // tests run so a prior run's accumulated counts can never flip a test that
-// expects success into a stale 429. See `oauth-routes.integration.test.tsx`
+// expects success into a stale 429. See `oauth-routes.integration.test.ts`
 // for the sibling copy of this reset.
 if (redisAvailable) {
 	const { resetRateLimitState } = await import('@web/test-support/reset-rate-limit-state');
@@ -321,7 +321,7 @@ describeWithRedis('OAuth token endpoint (requires Redis)', () => {
 describeWithRedis('OAuth token revocation (requires Redis)', () => {
 	// OAUTH-003 / S-02: `/oauth/revoke` now authenticates the caller as a
 	// registered OAuth client before it will touch any token row (see
-	// `handleOauthRevokePostInner` in `oauth-routes.tsx`). A real, public
+	// `handleOauthRevokePostInner` in `oauth-routes.ts`). A real, public
 	// (`token_endpoint_auth_method: none`) client is registered through the
 	// live `/oauth/register` endpoint so this file keeps proving RFC 7009's
 	// "200 even for an unknown token" contract against an *authenticated*

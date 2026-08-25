@@ -71,7 +71,7 @@ export function checkBearerCredential(input: {
  * deployment already configures it) and makes the header trustworthy only
  * when it actually can be. Skipped outside production because local/dev
  * traffic is routinely plain HTTP on loopback, same reasoning as HSTS in
- * `application.tsx`.
+ * `application.ts`.
  */
 export function isPlaintextTransport(input: {
 	request: Request;

@@ -15,34 +15,31 @@
 		"dev": "NODE_ENV=development bun run src/development.ts",
 		"build": "bun run src/build.ts",
 		"start": "NODE_ENV=production bun run dist/server.js",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit && svelte-check --threshold error",
 		"lint": "eslint .",
 		"format": "prettier --write .",
 		"test": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate",
 		"test:end-to-end": "bunx playwright test"
 	},
 	"dependencies": {
+		"@lostgradient/cinder": "^0.24.8",
 		"@modelcontextprotocol/core": "^2.0.0",
 		"@modelcontextprotocol/server": "^2.0.0",
 		"@t3-oss/env-core": "^0.13.11",
-		"@tailwindcss/postcss": "^4.3.3",
 		"@template/database": "workspace:*",
 		"@template/mcp": "workspace:*",
 		"drizzle-orm": "^0.45.2",
 		"jose": "^6.2.9",
-		"postcss": "^8.5.26",
-		"react": "^19.2.8",
-		"react-dom": "^19.2.8",
 		"redis": "^6.2.1",
-		"tailwindcss": "^4.3.3",
+		"svelte": "^5.56.4",
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {
+		"@lostgradient/bun-plugin-svelte": "^0.0.1",
 		"@modelcontextprotocol/client": "^2.0.0",
 		"@playwright/test": "^1.62.1",
 		"@types/node": "^26.2.0",
-		"@types/react": "^19.2.18",
-		"@types/react-dom": "^19.2.4",
+		"svelte-check": "^4.7.6",
 		"typescript": "6.0.3"
 	}
 }

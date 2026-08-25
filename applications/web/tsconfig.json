@@ -11,11 +11,28 @@
 		"skipLibCheck": true,
 		"noEmit": true,
 		"sourceMap": true,
-		"jsx": "react-jsx",
 		"paths": {
 			"@web/*": ["./src/*"]
 		}
 	},
-	"include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts"],
-	"exclude": ["node_modules", "dist", "src/build.ts", "src/development.ts", "src/plugins"]
+	"include": ["src/**/*.ts", "src/**/*.svelte", "src/**/*.d.ts"],
+	// `build.ts`, `development.ts`, and `svelte-preload.ts` are Bun-runtime
+	// scripts rather than part of the application's type-checked surface. They
+	// are also the only files that import `@lostgradient/bun-plugin-svelte`,
+	// whose types reference `@types/bun` -- ambient Bun globals that would
+	// collide with the hand-written ones in `src/bun-runtime.d.ts`. Excluding a
+	// file only keeps it from being a compilation ROOT, though -- a typechecked
+	// file that imports one of these three still pulls its types in and hits
+	// the same collision, which is why `svelte-preload.test.ts` (imports
+	// `registerSveltePlugin` from `svelte-preload.ts` to test its
+	// compiler-missing branch directly) is excluded alongside it, run only
+	// through `bun test`'s own untyped execution like its sibling.
+	"exclude": [
+		"node_modules",
+		"dist",
+		"src/build.ts",
+		"src/development.ts",
+		"src/svelte-preload.ts",
+		"src/svelte-preload.test.ts"
+	]
 }

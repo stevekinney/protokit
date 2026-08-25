@@ -256,7 +256,7 @@ describe('revokeUserClientGrant', () => {
 	// revoked. This proves revocation now overwrites `usedAt` on such a code
 	// too, which is what makes that reopen's own `usedAt = <original value>`
 	// predicate match nothing afterward -- see the paired unit-level proof
-	// in `oauth-routes.test.tsx` for the reopen side of this same fix.
+	// in `oauth-routes.test.ts` for the reopen side of this same fix.
 	it('overwrites usedAt on a code an in-flight token exchange already consumed, closing the compensating-reopen race', async () => {
 		const { userId, clientId } = await seedUserWithConnection('In-Flight Consume Race Client');
 		const { code, usedAt: originalUsedAt } = await seedInFlightConsumedAuthorizationCode(

@@ -23,7 +23,7 @@ export function getTrustedProxyConfiguration(): TrustedProxyConfiguration {
  * Resolves the one canonical network identity for a request: the verified
  * socket address, unless it belongs to a configured trusted proxy, in which
  * case the configured forwarding header is trusted instead. This should be
- * called exactly once per request (see `application.tsx`, which stores the
+ * called exactly once per request (see `application.ts`, which stores the
  * result on `RequestContext.networkIdentity`) — every other module must
  * consume that context value rather than re-deriving identity from headers.
  */

@@ -105,7 +105,7 @@ describeWithRedis('client_credentials rejection end-to-end (requires Redis)', ()
 });
 
 // Dynamic-registration success and the full authorization_code + PKCE token exchange are
-// covered against a mocked database in oauth-routes.test.tsx — that suite proves the
+// covered against a mocked database in oauth-routes.test.ts — that suite proves the
 // interactive connector flow (authorize -> approve -> code exchange -> refresh) is untouched
 // by this removal. This boot-level check only proves the route is still wired end to end
 // without requiring a live Postgres instance.

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 // This file targets the `upsertGoogleUser`/`findUserIdByGoogleSubject`
 // branches inside `handleGoogleSignInCallback` that
-// `google-authentication-routes.test.tsx`'s always-`[]`/always-succeed
+// `google-authentication-routes.test.ts`'s always-`[]`/always-succeed
 // `@template/database` mock cannot reach: an already-linked Google account
 // signing in again, an email already claimed by a different account, and
 // the unique-constraint-violation race-condition handling (including its

@@ -3,7 +3,7 @@ import { describe, expect, it, mock } from 'bun:test';
 // Covers `googleAuthNotConfiguredResponse` (returned by both
 // `handleGoogleSignInStart` and `handleGoogleSignInCallback` when
 // `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are unset), which
-// `google-authentication-routes.test.tsx`'s env mock never exercises since
+// `google-authentication-routes.test.ts`'s env mock never exercises since
 // it always sets both. Lives in its own file (this project runs
 // `bun test --isolate`) so its differing `@web/env` mock cannot leak into
 // the sibling test files.

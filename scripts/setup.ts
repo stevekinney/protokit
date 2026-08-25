@@ -135,7 +135,7 @@ async function setupGoogle() {
 	console.log('Configure your own credentials for both development and production.\n');
 
 	// `/auth/google/callback` (not `/api/auth/callback/google`) is what the router and both
-	// token-exchange call sites actually serve — `applications/web/src/application.tsx`'s route
+	// token-exchange call sites actually serve — `applications/web/src/application.ts`'s route
 	// table and `applications/web/src/lib/google-authentication.ts`'s `callbackUrl` at both the
 	// authorization-request and code-exchange steps. Google requires an exact registered redirect
 	// URI match, so printing any other path here hands the operator credentials that fail sign-in
@@ -887,7 +887,7 @@ async function runInitialMigration() {
 }
 
 async function runFullSetup() {
-	console.log('\n=== Bun + React MCP Template Setup ===\n');
+	console.log('\n=== Bun + Svelte MCP Template Setup ===\n');
 
 	console.log('Checking prerequisites...');
 	checkPrerequisites(['neonctl']);

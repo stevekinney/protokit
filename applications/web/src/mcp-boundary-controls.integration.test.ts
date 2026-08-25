@@ -14,7 +14,7 @@ import type { TestServerHandle } from '@web/test-support/start-test-server';
  * against a mocked `@web/lib/mcp-origin-validation` and `@template/mcp`;
  * this file is the sibling that proves the real implementations, wired
  * together, produce the same result end to end -- the same relationship
- * `oauth-mcp-resource-binding.integration.test.ts` has to `oauth-routes.test.tsx`.
+ * `oauth-mcp-resource-binding.integration.test.ts` has to `oauth-routes.test.ts`.
  */
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
