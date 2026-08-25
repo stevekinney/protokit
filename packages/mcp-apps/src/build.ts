@@ -41,7 +41,13 @@ for (const applicationName of applicationNames) {
 		// `'external'` so component styles come back as a real CSS artifact that
 		// gets inlined into the single self-contained HTML document below,
 		// rather than being appended to the document at runtime by the bundle.
-		plugins: [sveltePlugin({ generate: 'client', css: 'external' })],
+		// `dev: false` is explicit rather than inherited. The plugin defaults it
+		// to `NODE_ENV !== 'production'`, and a dev-compiled bundle expects
+		// Svelte's *development* runtime, which `esm-env` only resolves through
+		// the `development` export condition. This is a production artifact, so
+		// it wants neither -- and the mismatch surfaces as a runtime failure in
+		// the app's iframe rather than a build error.
+		plugins: [sveltePlugin({ generate: 'client', css: 'external', dev: false })],
 	});
 
 	if (!result.success) {
