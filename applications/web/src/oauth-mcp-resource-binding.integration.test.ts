@@ -296,6 +296,146 @@ describeWithRedis('resource-bound authorize -> token -> /mcp chain (requires Red
 		expect(tokenBody.error).toBe('invalid_target');
 	});
 
+	/**
+	 * OAUTH-004's acceptance criterion bundles six properties of an
+	 * authorization code: single-use, client-bound, resource-bound,
+	 * redirect-bound, PKCE-bound, and short-lived. A 2026-08-24 verification
+	 * sweep found only client-bound and resource-bound had tests that assert
+	 * the rejection branch. The other four were implemented correctly and
+	 * covered by nothing -- the nearest-looking tests exercise different
+	 * paths: reopening a code after a downstream failure is not a replay, and
+	 * a malformed `code_verifier` is rejected on format before the challenge
+	 * is ever compared.
+	 *
+	 * "The code is visibly right" is the standard this project has repeatedly
+	 * been burned by, so each of the four now has a real-Postgres test that
+	 * presents the specific bad input and asserts the rejection.
+	 */
+	async function issueAuthorizationCode(
+		handle: TestServerHandle,
+		cookie: string,
+	): Promise<{ code: string; resource: string }> {
+		const resource = `http://127.0.0.1:${handle.port}/mcp`;
+		const consentResponse = await fetchFromTestServer(
+			handle,
+			`/oauth/authorize?client_id=${clientId}&redirect_uri=https://example.com/callback&response_type=code&code_challenge=${codeChallenge}&resource=${encodeURIComponent(resource)}`,
+			{ headers: { cookie } },
+		);
+		const html = await consentResponse.text();
+		const approveResponse = await fetchFromTestServer(handle, `/oauth/authorize/approve`, {
+			method: 'POST',
+			redirect: 'manual',
+			headers: {
+				cookie,
+				'content-type': 'application/x-www-form-urlencoded',
+				'sec-fetch-site': 'same-origin',
+			},
+			body: new URLSearchParams({
+				transaction_id: extractHiddenInputValue(html, 'transaction_id'),
+				csrf_token: extractHiddenInputValue(html, 'csrf_token'),
+			}).toString(),
+		});
+		const location = new URL(approveResponse.headers.get('location')!);
+		return { code: location.searchParams.get('code')!, resource };
+	}
+
+	function redeemAuthorizationCode(
+		handle: TestServerHandle,
+		parameters: Record<string, string>,
+	): Promise<Response> {
+		return fetchFromTestServer(handle, `/oauth/token`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'authorization_code',
+				redirect_uri: 'https://example.com/callback',
+				client_id: clientId,
+				client_secret: clientSecret,
+				code_verifier: codeVerifier,
+				...parameters,
+			}).toString(),
+		});
+	}
+
+	it('OAUTH-004: a redeemed authorization code cannot be redeemed again (single-use)', async () => {
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { code, resource } = await issueAuthorizationCode(handle, cookie);
+
+		const first = await redeemAuthorizationCode(handle, { code, resource });
+		expect(first.status).toBe(200);
+
+		// The identical request again, from the same rightful client with the
+		// correct verifier and redirect URI. Only the code's already-used
+		// state distinguishes it from the request that just succeeded.
+		const replay = await redeemAuthorizationCode(handle, { code, resource });
+		expect(replay.status).toBe(400);
+		expect(((await replay.json()) as { error: string }).error).toBe('invalid_grant');
+	});
+
+	it('OAUTH-004: rejects a redirect_uri that differs from the one the code was issued for (redirect-bound)', async () => {
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { code, resource } = await issueAuthorizationCode(handle, cookie);
+
+		// A URI this client HAS registered, so it passes registration
+		// validation -- the only thing wrong with it is that it is not the one
+		// this particular code was issued against. That distinction is the
+		// whole point of redirect binding.
+		const mismatched = await redeemAuthorizationCode(handle, {
+			code,
+			resource,
+			redirect_uri: 'https://example.com/other-callback',
+		});
+		expect(mismatched.status).toBe(400);
+		expect(((await mismatched.json()) as { error: string }).error).toBe('invalid_grant');
+
+		// Still redeemable with the correct redirect URI, proving the
+		// rejection was binding rather than the code being burned.
+		expect((await redeemAuthorizationCode(handle, { code, resource })).status).toBe(200);
+	});
+
+	it('OAUTH-004: rejects a well-formed code_verifier that does not match the challenge (PKCE-bound)', async () => {
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { code, resource } = await issueAuthorizationCode(handle, cookie);
+
+		// Deliberately a VALID RFC 7636 verifier -- 43 unreserved characters,
+		// so it passes the format check that the existing "malformed
+		// code_verifier" test stops at -- that simply hashes to a different
+		// challenge. This is the only input that reaches the constant-time
+		// challenge comparison and fails it.
+		const wrongButWellFormedVerifier = 'a'.repeat(43);
+		const mismatched = await redeemAuthorizationCode(handle, {
+			code,
+			resource,
+			code_verifier: wrongButWellFormedVerifier,
+		});
+		expect(mismatched.status).toBe(400);
+		expect(((await mismatched.json()) as { error: string }).error).toBe('invalid_grant');
+
+		expect((await redeemAuthorizationCode(handle, { code, resource })).status).toBe(200);
+	});
+
+	it('OAUTH-004: rejects an authorization code past its expiry (short-lived)', async () => {
+		const handle = startServer();
+		const cookie = await signIn(handle);
+		const { code, resource } = await issueAuthorizationCode(handle, cookie);
+
+		// Codes are issued with a ten-minute lifetime, so rather than wait,
+		// age this specific row past it. The lookup predicate under test is
+		// `gt(expiresAt, now())`, and nothing else about the code changes --
+		// it is still unused, still client-bound, still PKCE-correct.
+		await database
+			.update(schema.oauthCodes)
+			.set({ expiresAt: new Date(Date.now() - 1000) })
+			.where(eq(schema.oauthCodes.code, hashCredential(code)));
+
+		const expired = await redeemAuthorizationCode(handle, { code, resource });
+		expect(expired.status).toBe(400);
+		expect(((await expired.json()) as { error: string }).error).toBe('invalid_grant');
+	});
+
 	it('OAUTH-004: rejects a token request presenting a code issued to a different client (client-bound)', async () => {
 		const handle = startServer();
 		const cookie = await signIn(handle);
