@@ -237,7 +237,7 @@ export function createMcpServer(context: {
 	// but an operator can still set it) — it also requires at least one
 	// registered resource that is actually an MCP App (`RESOURCE_MIME_TYPE`).
 	// `hasRegisteredUiExtensionResource()` is the single source of truth for
-	// that predicate, shared with `oauth-routes.tsx`'s authorization-server
+	// that predicate, shared with `oauth-routes.ts`'s authorization-server
 	// metadata `extensions` field — see its own doc comment for why that
 	// sharing matters. `packages/mcp-apps` ships no application today, so
 	// this mechanically keeps the capability absent even if the flag is

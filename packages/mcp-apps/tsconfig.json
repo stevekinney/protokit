@@ -3,7 +3,6 @@
 		"target": "ES2022",
 		"module": "ESNext",
 		"moduleResolution": "bundler",
-		"jsx": "react-jsx",
 		"strict": true,
 		"esModuleInterop": true,
 		"skipLibCheck": true,
@@ -11,6 +10,6 @@
 		"noEmit": true,
 		"lib": ["ES2022", "DOM", "DOM.Iterable"]
 	},
-	"include": ["src/**/*.ts", "src/**/*.tsx"],
+	"include": ["src/**/*.ts", "src/**/*.svelte"],
 	"exclude": ["node_modules", "dist", "src/build.ts"]
 }

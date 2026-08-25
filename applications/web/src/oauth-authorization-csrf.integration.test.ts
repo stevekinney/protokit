@@ -21,7 +21,7 @@ const { createSession } = await import('@web/lib/session-authentication');
  * Postgres, and real Redis rate limiter, that the consent approve/deny
  * forms are bound to a one-time server-side transaction and that a
  * cross-site request cannot approve or deny on a signed-in user's behalf.
- * `oauth-routes.test.tsx` proves the same properties against a mocked
+ * `oauth-routes.test.ts` proves the same properties against a mocked
  * database for every accept/reject branch individually; this file proves
  * the pieces are wired together correctly in the real request path.
  */

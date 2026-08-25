@@ -18,7 +18,7 @@ export type McpContext = {
 	userId: string;
 	user: McpUserProfile;
 	/**
-	 * OBS-001: the same request identifier `application.tsx` generated at
+	 * OBS-001: the same request identifier `application.ts` generated at
 	 * the HTTP boundary (`X-Request-Id`), carried through OAuth token
 	 * validation (`McpRequestAuthExtra.requestId`) into every tool,
 	 * resource, and prompt handler. Lets one connector action be traced end

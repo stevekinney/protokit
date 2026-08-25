@@ -1,4 +1,4 @@
-This is a Model Context Protocol (MCP) server built from the Bun + React MCP Template. It exposes read-only account tools, a JSON resource, and a summarization prompt over Streamable HTTP, secured by OAuth 2.1 with PKCE. Every call must carry a bearer token issued through this server's own /oauth/authorize and /oauth/token endpoints; there is no anonymous or service-account access. Every operation acts only on the authenticated caller's own account.
+This is a Model Context Protocol (MCP) server built from the Bun + Svelte MCP Template. It exposes read-only account tools, a JSON resource, and a summarization prompt over Streamable HTTP, secured by OAuth 2.1 with PKCE. Every call must carry a bearer token issued through this server's own /oauth/authorize and /oauth/token endpoints; there is no anonymous or service-account access. Every operation acts only on the authenticated caller's own account.
 
 ## Available capability families
 

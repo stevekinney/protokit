@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Component } from 'svelte';
 import { logger } from '@template/mcp/logger';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
@@ -41,7 +42,7 @@ import {
 	handleAccountConnectionRevokePost,
 	handleAccountConnectionsRevokeAllPost,
 } from '@web/routes/account-connections-routes';
-import { HomePage } from '@web/components/home-page';
+import HomePage from '@web/components/home-page.svelte';
 
 function isHtmlResponse(response: Response): boolean {
 	const contentType = response.headers.get('content-type') ?? '';
@@ -134,45 +135,46 @@ function withSecurityHeaders(inputResponse: Response, requestPathname: string): 
 	});
 }
 
-async function renderHomePage(context: RequestContext): Promise<Response> {
+function renderHomePage(context: RequestContext): Promise<Response> {
 	const baseUrl = getBaseUrl(context.request);
-	// SEC-005: only derived (never sent to the client) when a session
-	// actually exists — the sign-out form has nothing to protect otherwise.
-	const signOutCsrfToken =
-		context.user && context.sessionToken ? deriveSessionCsrfToken(context.sessionToken) : undefined;
-	// DATA-001 / S-18: the same session-bound CSRF token protects the
-	// connections revoke forms — one token, reused, exactly like sign-out.
-	const connectionsCsrfToken = signOutCsrfToken;
-	const connections = context.user ? await listUserConnections(context.user.id) : [];
 
 	return createStreamingHtmlResponse({
 		metadata: { title: 'MCP OAuth Server' },
-		body: (
-			<HomePage
-				user={context.user}
-				baseUrl={baseUrl}
-				signOutCsrfToken={signOutCsrfToken}
-				connections={connections.map((connection) => ({
-					clientId: connection.clientId,
-					clientName: connection.clientName,
-					earliestExpiresAt: connection.earliestExpiresAt.toISOString(),
-				}))}
-				connectionsCsrfToken={connectionsCsrfToken}
-			/>
-		),
-		serverData: {
-			page: 'home',
-			user: context.user
-				? { email: context.user.email, name: context.user.name, image: context.user.image }
-				: null,
-			baseUrl,
-			signOutCsrfToken,
-			connections: connections.map((connection) => ({
-				clientId: connection.clientId,
-				clientName: connection.clientName,
-				earliestExpiresAt: connection.earliestExpiresAt.toISOString(),
-			})),
-			connectionsCsrfToken,
+		// Everything below runs AFTER the document head has been flushed, so
+		// the browser is already fetching the stylesheet while this query is
+		// in flight. Keep the database work inside this callback for that
+		// reason -- hoisting it back out would restore the old behavior of
+		// sending nothing until the query returned.
+		resolvePage: async () => {
+			// SEC-005: only derived (never sent to the client) when a session
+			// actually exists -- the sign-out form has nothing to protect otherwise.
+			const signOutCsrfToken =
+				context.user && context.sessionToken
+					? deriveSessionCsrfToken(context.sessionToken)
+					: undefined;
+			const connections = context.user ? await listUserConnections(context.user.id) : [];
+
+			return {
+				component: HomePage as unknown as Component<Record<string, unknown>>,
+				// This object is the props for the server render AND the payload the
+				// browser hydrates from. One object, so the two renders cannot drift.
+				serverData: {
+					page: 'home',
+					user: context.user
+						? { email: context.user.email, name: context.user.name, image: context.user.image }
+						: null,
+					baseUrl,
+					signOutCsrfToken,
+					connections: connections.map((connection) => ({
+						clientId: connection.clientId,
+						clientName: connection.clientName,
+						earliestExpiresAt: connection.earliestExpiresAt.toISOString(),
+					})),
+					// DATA-001 / S-18: the same session-bound CSRF token protects the
+					// connections revoke forms -- one token, reused, exactly like sign-out.
+					connectionsCsrfToken: signOutCsrfToken,
+				},
+			};
 		},
 	});
 }

@@ -61,7 +61,7 @@ export async function listUserConnections(userId: string): Promise<ConnectionSum
 	// Review finding (P2): a client registered before `isValidClientName`
 	// existed (the previous registration schema accepted any nonempty
 	// string) can still hold a stored name containing bidirectional-override,
-	// control, or zero-width characters. `oauth-routes.tsx`'s consent page
+	// control, or zero-width characters. `oauth-routes.ts`'s consent page
 	// already substitutes a safe fallback for exactly this case; this is the
 	// same defense-in-depth applied to the connected-applications inventory,
 	// which otherwise copied the raw name next to that row's revoke button —
@@ -183,7 +183,7 @@ function revocationResultFromRow(row: RevocationRow | undefined): RevocationResu
  *
  * Fix: revocation now OVERWRITES `used_at` unconditionally for every
  * not-yet-expired code, rather than skipping one that is already non-null.
- * That reopen's own `UPDATE` (see `oauth-routes.tsx`) is conditioned on
+ * That reopen's own `UPDATE` (see `oauth-routes.ts`) is conditioned on
  * `used_at` still holding the exact value it wrote when it consumed the
  * code -- once revocation overwrites it here, that condition no longer
  * matches and the reopen becomes a no-op, so the code stays dead instead of

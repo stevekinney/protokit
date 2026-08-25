@@ -37,13 +37,29 @@ jobs:
 
       # SUPPLY-001: filesystem-wide dependency, Dockerfile misconfiguration,
       # and secret scan — the source tree, not only the built image.
+      #
+      # `--skip-dirs node_modules` keeps this scan on the source tree, which is
+      # what it is for. Without it the misconfig scanner lints Dockerfiles that
+      # ship inside dependency tarballs — files this repository never builds and
+      # cannot fix. `comlink`, pulled in transitively by `@lostgradient/cinder`,
+      # ships exactly such a Dockerfile (a Selenium test fixture running as
+      # root), and it failed this gate on HIGH while both real Dockerfiles here
+      # scored zero findings.
+      #
+      # This costs no dependency-vulnerability coverage. Trivy reads advisories
+      # from `bun.lock` at the repository root rather than by walking
+      # `node_modules`, and the `bun audit --audit-level=high` step above is a
+      # second, independent check on the same dependency set. What is dropped is
+      # misconfiguration and secret linting of vendored third-party files, which
+      # this repository has no ability to act on.
       - name: trivy fs (vuln, secret, misconfig)
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/repo" \
             -w /repo \
             aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c \
-            fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,secret,misconfig .
+            fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,secret,misconfig \
+            --skip-dirs node_modules .
 
       # SUPPLY-001 (S-12/S-19 adjacent): full git history secret scan, not
       # only the working tree — a secret committed and later deleted is

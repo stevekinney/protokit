@@ -103,7 +103,7 @@ function extractHiddenInputValue(html: string, fieldName: string): string {
 }
 
 // RFC 7636 Appendix B's worked example pair -- used identically elsewhere in
-// this test suite (`oauth-routes.test.tsx`, `oauth-mcp-resource-binding.integration.test.ts`).
+// this test suite (`oauth-routes.test.ts`, `oauth-mcp-resource-binding.integration.test.ts`).
 const codeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 const codeChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 

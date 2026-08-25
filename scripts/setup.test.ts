@@ -555,7 +555,7 @@ describe('trusted proxy setup phase ordering', () => {
 describe('Google OAuth callback instructions', () => {
 	// Regression for a bot-reported P1: the printed redirect URI (/api/auth/callback/google)
 	// did not match what the router and both token-exchange call sites actually serve
-	// (/auth/google/callback — application.tsx's route table and google-authentication.ts's
+	// (/auth/google/callback — application.ts's route table and google-authentication.ts's
 	// callbackUrl at both the authorization-request and code-exchange steps). Google requires an
 	// exact registered redirect URI, so following the old instructions produced credentials that
 	// could never complete sign-in.
