@@ -11,9 +11,13 @@ import { renderDocumentHead, renderDocumentTail, renderStaticDocument } from '@w
  * responses -- flushes it before the body is ever rendered. Anything a
  * component tried to put in the head would therefore be silently dropped.
  *
- * Failing loudly instead catches both a stray `<svelte:head>` and any
- * accidental style injection (a `<style>` block in a component compiled with a
- * `css` mode other than `'none'` arrives here too). See `src/svelte-preload.ts`.
+ * Failing loudly instead catches a stray `<svelte:head>`, and would catch
+ * component styles if the compiler were ever switched to `css: 'injected'`,
+ * which delivers them this way.
+ *
+ * It does NOT catch a `<style>` block under the `css: 'none'` this application
+ * actually compiles with -- those are discarded before they could reach the
+ * head. `styles/style-entry.test.ts` rejects them instead.
  */
 function assertEmptyHead(head: string, componentName: string): void {
 	if (head !== '') {

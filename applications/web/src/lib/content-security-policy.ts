@@ -9,8 +9,10 @@ export function getContentSecurityPolicy(options: { allowScripts: boolean }): st
 	// Svelte is compiled with `css: 'none'` (see `svelte-preload.ts`), which is
 	// what keeps that true: any other CSS mode would deliver component styles
 	// either as an injected `<style>` element or through `render().head`, and
-	// both would need `'unsafe-inline'` here. `html-response.ts` throws if a
-	// component emits head content, so a change of CSS mode fails loudly rather
-	// than silently requiring this policy to be loosened.
+	// both would need `'unsafe-inline'` here. Two checks keep that from drifting
+	// unnoticed: `html-response.ts` throws if a component emits head content
+	// (which is how `'injected'` would surface), and `styles/style-entry.test.ts`
+	// rejects `<style>` blocks outright, since under `css: 'none'` they are
+	// discarded silently rather than surfacing anywhere.
 	return `default-src 'self'; script-src ${scriptSrc}; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`;
 }

@@ -71,6 +71,13 @@ MCP Apps are interactive HTML interfaces rendered in sandboxed iframes inside ho
    - `packages/mcp-apps/src/applications/{app-name}/{app-name}.svelte` — the component
    - `packages/mcp-apps/src/applications/{app-name}/{app-name}.ts` — the entry the build compiles, which mounts it:
      ```ts
+     // Required whenever the component uses a Cinder component or token.
+     // Component entries pull in their own CSS; none of them pull in the base,
+     // which is what defines the `@layer` order, tokens, foundation, and
+     // utilities those rules reference. Without it the built app ships rules
+     // against undefined variables and renders unstyled.
+     import '@lostgradient/cinder/styles';
+
      import { mount } from 'svelte';
      import Application from './{app-name}.svelte';
 

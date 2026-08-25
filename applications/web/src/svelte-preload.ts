@@ -17,8 +17,11 @@
  * `src/styles/style-entry.ts` collects. See `src/build.ts`.
  *
  * Consequence: `.svelte` files in this application must not use `<style>`
- * blocks. `renderDocument` asserts `render().head` is empty, which catches
- * both a stray `<svelte:head>` and any accidental style injection.
+ * blocks. Under `css: 'none'` such a block is discarded outright rather than
+ * surfacing anywhere -- the element still gets its scoped class, no stylesheet
+ * defines it, and nothing complains. `assertEmptyHead` in `html-response.ts`
+ * does NOT catch this: the CSS never reaches `render().head` to begin with.
+ * The check that does is in `styles/style-entry.test.ts`.
  */
 import { createRequire } from 'node:module';
 import { plugin } from 'bun';

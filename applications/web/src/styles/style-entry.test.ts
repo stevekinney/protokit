@@ -35,4 +35,35 @@ describe('style-entry.ts', () => {
 
 		expect(missing).toEqual([]);
 	});
+
+	/**
+	 * Components in this application must not use `<style>` blocks, and this is
+	 * the check that enforces it — `assertEmptyHead` in `html-response.ts` does
+	 * not and cannot.
+	 *
+	 * The compiler runs with `css: 'none'` on every side (see
+	 * `svelte-preload.ts` for why: the zero-JavaScript pages have no way to load
+	 * component-emitted CSS). Under that mode a `<style>` block is discarded
+	 * outright — it never reaches `render().head`, so the head stays empty and
+	 * every existing assertion passes. What ships is an element carrying a
+	 * scoped class, `class="probe svelte-19c2009"`, that no stylesheet anywhere
+	 * defines. Verified directly; the failure is completely silent.
+	 *
+	 * Style with Cinder components, Cinder tokens, and the classes in
+	 * `application.css` instead.
+	 */
+	it('has no component that uses a <style> block, which would be silently discarded', async () => {
+		const roots = ['../views', '../components', '../test-fixtures'];
+		const offenders: string[] = [];
+
+		for (const root of roots) {
+			const directory = new URL(`${root}/`, import.meta.url);
+			for (const name of new Bun.Glob('**/*.svelte').scanSync({ cwd: directory.pathname })) {
+				const source = await Bun.file(new URL(name, directory)).text();
+				if (/^\s*<style[\s>]/m.test(source)) offenders.push(`${root.slice(3)}/${name}`);
+			}
+		}
+
+		expect(offenders).toEqual([]);
+	});
 });

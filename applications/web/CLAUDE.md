@@ -9,7 +9,7 @@ Bun-native Svelte 5 SSR application — UI, OAuth endpoints, and MCP server tran
 - `src/lib/session-authentication.ts` — Custom cookie sessions backed by `user_sessions`
 - `src/lib/google-authentication.ts` — Google OAuth redirect/callback state handling and profile fetch
 - `src/lib/mcp-handler.ts` — MCP transport handling; hands validated requests to the official SDK, which owns the transport statelessly (no session affinity/ownership tracking)
-- `src/views/` — Server-only components (async, database access, env reads). Never included in client bundle.
+- `src/views/` — Page components rendered on the server and never shipped in the client bundle. They must still be **browser-resolvable**: `src/styles/style-entry.ts` imports every one of them and is bundled with `target: 'browser'` to collect their Cinder CSS, so a view that imports the database, `env.ts`, or any other server-only module breaks the production style build. Do the server work in the route handler and pass plain props.
 - `src/components/` — Shared/client components. Must be isomorphic — no server-only imports. Receive all data via props.
 - `src/client/` — Client-only code (entry point, hydration bootstrap, page registry).
 - `src/types/` — Shared type definitions used across server and client boundaries.
