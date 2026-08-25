@@ -45,30 +45,50 @@ import { plugin } from 'bun';
 const isDevelopment = process.env['NODE_ENV'] === 'development';
 
 /**
- * The plugin is a devDependency, so a production install (`bun install
- * --production`) does not have it. That is fine and expected: the only thing
- * run in production is the bundled `dist/server.js`, which already has every
- * component compiled into it and never asks the runtime to load a `.svelte`
- * file. Registering nothing there is correct.
+ * The compiler is a devDependency, so it is legitimately absent from a
+ * production install (`bun install --production`). Several things run in that
+ * state and none of them touch a `.svelte` file: the bundled `dist/server.js`
+ * has every component compiled into it already, and root diagnostics like
+ * `bun run doctor` never render anything.
  *
- * Outside production a missing plugin is a broken install, and swallowing it
- * would surface much later as the genuinely baffling "component is not a
- * function" — the `.svelte` import silently resolving to its own file path.
- * So the failure is only tolerated for the one case where it means something.
+ * So a missing compiler is not an error by itself — it is only an error if
+ * something actually asks for a component. Rather than guess from `NODE_ENV`
+ * (which breaks `bun run doctor`, whose whole job is diagnosing a missing or
+ * wrong `NODE_ENV`), register a loader that fails at the point of use with a
+ * message that says what to do. A broken dev install therefore still fails
+ * loudly, and fails pointing at the real cause rather than surfacing later as
+ * the baffling "component is not a function" — a `.svelte` import silently
+ * resolving to its own file path.
+ *
+ * Loaded synchronously via `createRequire`: a preload's top-level `await` does
+ * not block the module resolution that follows it, so an async import would
+ * register the loader after the first `.svelte` import had already resolved.
  */
-// Loaded synchronously. A preload's top-level `await` does not block the
-// module resolution that follows it, so an async import here would register
-// the loader *after* the first `.svelte` import had already been resolved.
 const require = createRequire(import.meta.url);
 
 let sveltePlugin: typeof import('@lostgradient/bun-plugin-svelte').sveltePlugin | undefined;
 
 try {
 	({ sveltePlugin } = require('@lostgradient/bun-plugin-svelte'));
-} catch (error) {
-	if (process.env['NODE_ENV'] !== 'production') throw error;
+} catch {
+	sveltePlugin = undefined;
 }
 
 if (sveltePlugin) {
 	plugin(sveltePlugin({ generate: 'server', css: 'none', dev: isDevelopment }));
+} else {
+	plugin({
+		name: 'svelte-compiler-unavailable',
+		setup(build) {
+			build.onLoad({ filter: /\.svelte$/ }, (args) => {
+				throw new Error(
+					`Cannot load ${args.path}: @lostgradient/bun-plugin-svelte is not installed, ` +
+						`so there is no Svelte compiler registered. It is a devDependency, so this is ` +
+						`expected under \`bun install --production\` — but nothing in a production ` +
+						`install should be importing a component. Run \`bun install\` to get the ` +
+						`compiler back.`,
+				);
+			});
+		},
+	});
 }

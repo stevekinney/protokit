@@ -12,6 +12,7 @@
 		"lint": "eslint src/"
 	},
 	"dependencies": {
+		"@lostgradient/cinder": "^0.24.8",
 		"@modelcontextprotocol/ext-apps": "^1.7.5",
 		"svelte": "^5.56.4"
 	},

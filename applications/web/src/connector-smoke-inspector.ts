@@ -120,24 +120,30 @@ export async function obtainRealAccessToken(
 	const codeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 	const codeChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 
-	await database.insert(schema.users).values({
-		id: userId,
-		email,
-		name: 'Inspector Smoke Test User',
-		image: null,
-		emailVerified: true,
-		role: 'user',
-	});
-	await database.insert(schema.oauthClients).values({
-		clientId,
-		clientSecret: hashCredential(clientSecret),
-		clientName: 'Inspector Smoke Test Client',
-		clientType: 'confidential',
-		tokenEndpointAuthMethod: 'client_secret_post',
-		redirectUris: ['https://example.com/callback'],
-		grantTypes: ['authorization_code', 'refresh_token'],
-		responseTypes: ['code'],
-	});
+	// Issued together rather than in sequence: the account and the OAuth client
+	// reference each other through neither a foreign key nor a generated value,
+	// so ordering them buys nothing and costs a full round-trip -- which is not
+	// free here, since every statement crosses the Neon HTTP proxy.
+	await Promise.all([
+		database.insert(schema.users).values({
+			id: userId,
+			email,
+			name: 'Inspector Smoke Test User',
+			image: null,
+			emailVerified: true,
+			role: 'user',
+		}),
+		database.insert(schema.oauthClients).values({
+			clientId,
+			clientSecret: hashCredential(clientSecret),
+			clientName: 'Inspector Smoke Test Client',
+			clientType: 'confidential',
+			tokenEndpointAuthMethod: 'client_secret_post',
+			redirectUris: ['https://example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+		}),
+	]);
 
 	try {
 		const session = await createSession({ userId, request: new Request(`${baseUrl}/`) });

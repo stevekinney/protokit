@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, mock } from 'bun:test';
 import { count, eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import {
@@ -20,7 +20,25 @@ import {
  * These tests count matching `oauth_clients` rows before and after a forced
  * failure to prove the rows are gone, not just that the function "handled"
  * the error.
+ *
+ * One server is shared across all three cases rather than one per case.
+ * `selfHostLocally()` costs roughly 435ms, and each test here already spends
+ * most of its budget on a real OAuth handshake against a real database, which
+ * put the slowest case over `bun test`'s 5000ms default on CI's slower I/O.
+ * Sharing the listener changes nothing any case proves -- each still seeds its
+ * own rows, runs its own handshake, and asserts its own before/after counts --
+ * it only stops paying for the same startup three times.
  */
+let baseUrl: string;
+let stopServer: () => void;
+
+beforeAll(async () => {
+	({ baseUrl, stop: stopServer } = await selfHostLocally());
+});
+
+afterAll(() => {
+	stopServer();
+});
 
 afterAll(async () => {
 	// Belt-and-braces in case a test assertion fails before its own cleanup
@@ -43,13 +61,8 @@ describe('runAuthenticatedInspectorCheck', () => {
 	it('cleans up the seeded user/client rows on the real, successful path', async () => {
 		const before = await countInspectorSmokeClients();
 
-		const { baseUrl, stop } = await selfHostLocally();
 		const problems: string[] = [];
-		try {
-			await runAuthenticatedInspectorCheck(baseUrl, problems);
-		} finally {
-			stop();
-		}
+		await runAuthenticatedInspectorCheck(baseUrl, problems);
 
 		expect(problems).toEqual([]);
 		const after = await countInspectorSmokeClients();
@@ -59,16 +72,11 @@ describe('runAuthenticatedInspectorCheck', () => {
 
 describe('obtainRealAccessToken', () => {
 	it('leaves no rows behind when the caller runs its returned cleanup', async () => {
-		const { baseUrl, stop } = await selfHostLocally();
-		try {
-			const before = await countInspectorSmokeClients();
-			const { cleanup } = await obtainRealAccessToken(baseUrl);
-			expect(await countInspectorSmokeClients()).toBe(before + 1);
-			await cleanup();
-			expect(await countInspectorSmokeClients()).toBe(before);
-		} finally {
-			stop();
-		}
+		const before = await countInspectorSmokeClients();
+		const { cleanup } = await obtainRealAccessToken(baseUrl);
+		expect(await countInspectorSmokeClients()).toBe(before + 1);
+		await cleanup();
+		expect(await countInspectorSmokeClients()).toBe(before);
 	});
 });
 
@@ -96,14 +104,9 @@ describe('runAuthenticatedInspectorCheck (MCP client throws after token issuance
 
 		const before = await countInspectorSmokeClients();
 
-		const { baseUrl, stop } = await selfHostLocally();
-		try {
-			await expect(checkWithMockedClient(baseUrl, [])).rejects.toThrow(
-				'simulated MCP connect failure',
-			);
-		} finally {
-			stop();
-		}
+		await expect(checkWithMockedClient(baseUrl, [])).rejects.toThrow(
+			'simulated MCP connect failure',
+		);
 
 		const after = await countInspectorSmokeClients();
 		expect(after).toBe(before);

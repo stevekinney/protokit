@@ -1,0 +1,15 @@
+import { obtainRealAccessToken, selfHostLocally } from '@web/connector-smoke-inspector';
+const t0 = performance.now();
+const { baseUrl, stop } = await selfHostLocally();
+const t1 = performance.now();
+const { cleanup } = await obtainRealAccessToken(baseUrl);
+const t2 = performance.now();
+await cleanup();
+const t3 = performance.now();
+stop();
+const t4 = performance.now();
+console.log(`selfHostLocally():      ${(t1 - t0).toFixed(0)}ms`);
+console.log(`obtainRealAccessToken:  ${(t2 - t1).toFixed(0)}ms`);
+console.log(`cleanup():              ${(t3 - t2).toFixed(0)}ms`);
+console.log(`stop():                 ${(t4 - t3).toFixed(0)}ms`);
+console.log(`TOTAL:                  ${(t4 - t0).toFixed(0)}ms`);
