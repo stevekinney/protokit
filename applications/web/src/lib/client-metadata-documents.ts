@@ -25,7 +25,7 @@ import {
  * fetches a JSON document from that exact URL and treats the document as
  * the client's registration metadata, instead of requiring a prior
  * `POST /oauth/register` call. This file owns fetching, validating, and
- * caching that document. It never touches the database — `oauth-routes.tsx`
+ * caching that document. It never touches the database — `oauth-routes.ts`
  * upserts a `oauthClients` row from the validated result so downstream
  * authorization-code and token-grant lookups need no CIMD-specific branch.
  *

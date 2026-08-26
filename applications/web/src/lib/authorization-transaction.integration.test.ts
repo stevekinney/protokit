@@ -5,6 +5,7 @@ import { database, schema } from '@template/database';
 import {
 	consumeAuthorizationTransaction,
 	createAuthorizationTransaction,
+	unconsumeAuthorizationTransaction,
 } from '@web/lib/authorization-transaction';
 import { hashCredential } from '@web/lib/hash-credential';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
@@ -17,7 +18,7 @@ import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
  * `consumeAuthorizationTransaction` uses in production — nothing here is
  * mocked, so a regression that weakens the `WHERE` clause (or a database
  * driver quirk the mocked unit suite can't see) would fail this file even
- * if `oauth-routes.test.tsx`'s mocked suite stayed green.
+ * if `oauth-routes.test.ts`'s mocked suite stayed green.
  *
  * Runs against the shared local test database other wave agents also use;
  * every row this file creates is scoped under one random UUID prefix and
@@ -216,5 +217,49 @@ describe('createAuthorizationTransaction / consumeAuthorizationTransaction (real
 		expect(row!.transactionId).toBe(hashCredential(created.transactionId));
 		expect(row!.csrfTokenHash).not.toBe(created.csrfToken);
 		expect(row!.csrfTokenHash).toBe(hashCredential(created.csrfToken));
+	});
+});
+
+describe('unconsumeAuthorizationTransaction (real Postgres)', () => {
+	it('clears consumedAt, letting a transaction be consumed again after a downstream failure', async () => {
+		const created = await createAuthorizationTransaction(baseTransactionInput());
+
+		const firstConsume = await consumeAuthorizationTransaction({
+			transactionId: created.transactionId,
+			csrfToken: created.csrfToken,
+			userId,
+			sessionToken: 'session-token-abc',
+		});
+		expect(firstConsume).not.toBeNull();
+
+		// Simulates the caller's own catch block reopening the transaction
+		// after the second, separate insert (the authorization code) failed.
+		await unconsumeAuthorizationTransaction(created.transactionId);
+
+		const [row] = await database
+			.select()
+			.from(schema.oauthAuthorizationTransactions)
+			.where(
+				eq(
+					schema.oauthAuthorizationTransactions.transactionId,
+					hashCredential(created.transactionId),
+				),
+			)
+			.limit(1);
+		expect(row?.consumedAt).toBeNull();
+
+		const secondConsume = await consumeAuthorizationTransaction({
+			transactionId: created.transactionId,
+			csrfToken: created.csrfToken,
+			userId,
+			sessionToken: 'session-token-abc',
+		});
+		expect(secondConsume).not.toBeNull();
+	});
+
+	it('is a safe no-op for a transaction id that does not exist', async () => {
+		expect(
+			await unconsumeAuthorizationTransaction('does-not-exist-transaction-id'),
+		).toBeUndefined();
 	});
 });

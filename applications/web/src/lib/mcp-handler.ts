@@ -9,11 +9,8 @@ import {
 	createMcpServer,
 	getSupportedScopes,
 } from '@template/mcp';
-import type { McpUserProfile } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { metricsCollector } from '@template/mcp/metrics';
-import { database, schema } from '@template/database';
-import { eq } from 'drizzle-orm';
 import { environment } from '@web/env';
 import { createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
 import { McpUserHandlerCache } from '@web/lib/mcp-user-handler-cache';
@@ -48,22 +45,6 @@ export function shouldEnableConformanceMode(input: {
 	tunnelActive: boolean;
 }): boolean {
 	return input.conformanceModeConfigured && !input.tunnelActive;
-}
-
-async function fetchUserProfile(userId: string): Promise<McpUserProfile | null> {
-	const [user] = await database
-		.select({
-			id: schema.users.id,
-			email: schema.users.email,
-			name: schema.users.name,
-			image: schema.users.image,
-			role: schema.users.role,
-		})
-		.from(schema.users)
-		.where(eq(schema.users.id, userId))
-		.limit(1);
-
-	return user ?? null;
 }
 
 /**
@@ -115,14 +96,16 @@ function createUserHandlerEntry(userId: string): {
 				throw new Error('MCP request authenticated user does not match its routed handler.');
 			}
 
-			const user = await fetchUserProfile(requestAuthExtra.userId);
-			if (!user) {
-				throw new Error(`MCP request authenticated as unknown user ${requestAuthExtra.userId}.`);
-			}
-
+			// OPEN-12: the HTTP boundary (`mcp-routes.ts`'s `authenticateMcpUser`)
+			// already fetched this profile in the same database round trip as
+			// the access-token lookup -- see `McpRequestAuthExtra.userProfile`.
+			// Fetching it again here would be a second round trip for data this
+			// request already has; the SDK calls this factory unconditionally on
+			// every request (even ones that never touch the profile), so
+			// re-fetching here would tax every request just as often.
 			return createMcpServer({
 				userId: requestAuthExtra.userId,
-				user,
+				user: requestAuthExtra.userProfile,
 				requestId: requestAuthExtra.requestId,
 				enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
 				enableConformanceMode: shouldEnableConformanceMode({

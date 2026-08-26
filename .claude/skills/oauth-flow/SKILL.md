@@ -3,7 +3,7 @@
 Reference for the OAuth 2.1 + PKCE authorization-code flow this template implements for MCP
 clients (Claude hosted connectors, Claude Code, Codex CLI/desktop, ChatGPT). See `THREAT-MODEL.md`
 for the security reasoning behind each control named below, `CONNECTORS.md` for exact per-client
-setup/removal commands, and `applications/web/src/routes/oauth-routes.tsx` for the implementation.
+setup/removal commands, and `applications/web/src/routes/oauth-routes.ts` for the implementation.
 
 ## Endpoints
 
@@ -85,4 +85,4 @@ Protected-resource metadata carries RFC 9728's `resource_name`, `resource_docume
 `resource_policy_uri`, and `resource_tos_uri`; authorization server metadata carries RFC 8414's
 `service_documentation`, `op_policy_uri`, and `op_tos_uri`. All of them point at this server's own
 `/privacy`, `/terms`, and `/support` pages via the canonical `BASE_URL`, never a hardcoded or
-placeholder domain — see `applications/web/src/routes/oauth-routes.tsx` and `CONNECTORS.md`.
+placeholder domain — see `applications/web/src/routes/oauth-routes.ts` and `CONNECTORS.md`.

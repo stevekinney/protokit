@@ -57,7 +57,7 @@
 import { randomUUID } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { eq } from 'drizzle-orm';
-import { commandIsAvailable, runCli } from './connector-smoke-support';
+import { commandIsAvailable, runCli, runHarnessMain } from './connector-smoke-support';
 
 function parseHostArgument(argv: readonly string[]): string | undefined {
 	const flagIndex = argv.indexOf('--host');
@@ -120,24 +120,52 @@ export async function obtainRealAccessToken(
 	const codeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 	const codeChallenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 
-	await database.insert(schema.users).values({
-		id: userId,
-		email,
-		name: 'Inspector Smoke Test User',
-		image: null,
-		emailVerified: true,
-		role: 'user',
-	});
-	await database.insert(schema.oauthClients).values({
-		clientId,
-		clientSecret: hashCredential(clientSecret),
-		clientName: 'Inspector Smoke Test Client',
-		clientType: 'confidential',
-		tokenEndpointAuthMethod: 'client_secret_post',
-		redirectUris: ['https://example.com/callback'],
-		grantTypes: ['authorization_code', 'refresh_token'],
-		responseTypes: ['code'],
-	});
+	// Issued together rather than in sequence: the account and the OAuth client
+	// reference each other through neither a foreign key nor a generated value,
+	// so ordering them buys nothing and costs a full round-trip -- which is not
+	// free here, since every statement crosses the Neon HTTP proxy.
+	//
+	// `allSettled` rather than `all`, because `all` rejects as soon as either
+	// insert fails while the other may still commit. Sequential ordering could
+	// not strand a row that way; running them together can, and this helper is
+	// also the standalone Inspector command, which has no test teardown to sweep
+	// up after it. So whatever did commit is removed before rethrowing, and a
+	// failed run leaves nothing behind -- least of all a live confidential OAuth
+	// client with no owning account.
+	const seedResults = await Promise.allSettled([
+		database.insert(schema.users).values({
+			id: userId,
+			email,
+			name: 'Inspector Smoke Test User',
+			image: null,
+			emailVerified: true,
+			role: 'user',
+		}),
+		database.insert(schema.oauthClients).values({
+			clientId,
+			clientSecret: hashCredential(clientSecret),
+			clientName: 'Inspector Smoke Test Client',
+			clientType: 'confidential',
+			tokenEndpointAuthMethod: 'client_secret_post',
+			redirectUris: ['https://example.com/callback'],
+			grantTypes: ['authorization_code', 'refresh_token'],
+			responseTypes: ['code'],
+		}),
+	]);
+
+	const seedFailure = seedResults.find((result) => result.status === 'rejected');
+	if (seedFailure) {
+		const [userResult, clientResult] = seedResults;
+		await Promise.allSettled([
+			userResult?.status === 'fulfilled'
+				? database.delete(schema.users).where(eq(schema.users.id, userId))
+				: Promise.resolve(),
+			clientResult?.status === 'fulfilled'
+				? database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId))
+				: Promise.resolve(),
+		]);
+		throw seedFailure.reason;
+	}
 
 	try {
 		const session = await createSession({ userId, request: new Request(`${baseUrl}/`) });
@@ -199,20 +227,93 @@ export async function obtainRealAccessToken(
 			// (DATA-001), which would invalidate the token before it was ever
 			// used if this ran eagerly in a `finally` here.
 			cleanup: async () => {
-				await database
-					.delete(schema.oauthClients)
-					.where(eq(schema.oauthClients.clientId, clientId));
-				await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-				await database.delete(schema.users).where(eq(schema.users.id, userId));
+				// Deleting `users` cascades to `user_sessions`, so ordering is
+				// not load-bearing between these three; issued together for
+				// the same round-trip reason as the seeding above.
+				await Promise.all([
+					database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId)),
+					database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId)),
+					database.delete(schema.users).where(eq(schema.users.id, userId)),
+				]);
 			},
 		};
 	} catch (error) {
 		// The token was never issued -- nothing to leave behind but the seeded
 		// user/client rows, which normal cleanup would never otherwise reach.
-		await database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId));
-		await database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId));
-		await database.delete(schema.users).where(eq(schema.users.id, userId));
+		await Promise.all([
+			database.delete(schema.oauthClients).where(eq(schema.oauthClients.clientId, clientId)),
+			database.delete(schema.userSessions).where(eq(schema.userSessions.userId, userId)),
+			database.delete(schema.users).where(eq(schema.users.id, userId)),
+		]);
 		throw error;
+	}
+}
+
+/**
+ * The MCP half of the check: open a real Streamable HTTP session with an
+ * already-issued token and exercise `tools/list` and `tools/call`.
+ *
+ * Split out of `runAuthenticatedInspectorCheck` so it can be tested against a
+ * token that was issued once rather than re-running the whole OAuth handshake.
+ * Issuing a token costs roughly 3.6s on CI and this session about 1.7s, so a
+ * single case doing both exceeded `bun test`'s 5000ms budget while neither
+ * half does alone.
+ */
+export async function runInspectorMcpSession(
+	baseUrl: string,
+	token: string,
+	email: string,
+	problems: string[],
+): Promise<void> {
+	const client = new Client({ name: 'connector-smoke-inspector', version: '1.0.0' });
+	const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+		// `requestInit.headers` alone is not reliably applied to every
+		// request the transport makes -- `oauth-mcp-resource-binding
+		// .integration.test.ts` documents the same finding for
+		// `Content-Type` and settled on overriding `fetch` directly,
+		// building the header set from a real `Headers(...)` instance
+		// (never an object spread of one, which silently drops entries).
+		fetch: (input, init) => {
+			const headers = new Headers(init?.headers);
+			headers.set('authorization', `Bearer ${token}`);
+			return fetch(input, { ...init, headers });
+		},
+	});
+
+	try {
+		await client.connect(transport);
+
+		const tools = await client.listTools();
+		const profileTool = tools.tools.find((tool) => tool.name === 'get_user_profile');
+		if (!profileTool) {
+			problems.push(`tools/list did not include get_user_profile: ${JSON.stringify(tools.tools)}`);
+		} else if (profileTool.annotations?.readOnlyHint !== true) {
+			problems.push(
+				`get_user_profile is missing readOnlyHint: true in its own tools/list annotations: ${JSON.stringify(profileTool.annotations)}`,
+			);
+		} else if (!profileTool.title) {
+			problems.push('get_user_profile has no title in its own tools/list output');
+		} else {
+			console.log(
+				'[connector-smoke-inspector] tools/list lists get_user_profile with title and readOnlyHint intact',
+			);
+		}
+
+		const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
+		const resultText = JSON.stringify(result);
+		if (result.isError) {
+			problems.push(`tools/call get_user_profile returned isError: true: ${resultText}`);
+		} else if (!resultText.includes(email)) {
+			problems.push(
+				`tools/call get_user_profile did not return the test user's own email: ${resultText}`,
+			);
+		} else {
+			console.log(
+				'[connector-smoke-inspector] tools/call get_user_profile returned the real, authenticated profile',
+			);
+		}
+	} finally {
+		await client.close();
 	}
 }
 
@@ -241,57 +342,7 @@ export async function runAuthenticatedInspectorCheck(
 	const { token, email, cleanup } = await obtainRealAccessToken(baseUrl);
 
 	try {
-		const client = new Client({ name: 'connector-smoke-inspector', version: '1.0.0' });
-		const transport = new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
-			// `requestInit.headers` alone is not reliably applied to every
-			// request the transport makes -- `oauth-mcp-resource-binding
-			// .integration.test.ts` documents the same finding for
-			// `Content-Type` and settled on overriding `fetch` directly,
-			// building the header set from a real `Headers(...)` instance
-			// (never an object spread of one, which silently drops entries).
-			fetch: (input, init) => {
-				const headers = new Headers(init?.headers);
-				headers.set('authorization', `Bearer ${token}`);
-				return fetch(input, { ...init, headers });
-			},
-		});
-		try {
-			await client.connect(transport);
-
-			const tools = await client.listTools();
-			const profileTool = tools.tools.find((tool) => tool.name === 'get_user_profile');
-			if (!profileTool) {
-				problems.push(
-					`tools/list did not include get_user_profile: ${JSON.stringify(tools.tools)}`,
-				);
-			} else if (profileTool.annotations?.readOnlyHint !== true) {
-				problems.push(
-					`get_user_profile is missing readOnlyHint: true in its own tools/list annotations: ${JSON.stringify(profileTool.annotations)}`,
-				);
-			} else if (!profileTool.title) {
-				problems.push('get_user_profile has no title in its own tools/list output');
-			} else {
-				console.log(
-					'[connector-smoke-inspector] tools/list lists get_user_profile with title and readOnlyHint intact',
-				);
-			}
-
-			const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
-			const resultText = JSON.stringify(result);
-			if (result.isError) {
-				problems.push(`tools/call get_user_profile returned isError: true: ${resultText}`);
-			} else if (!resultText.includes(email)) {
-				problems.push(
-					`tools/call get_user_profile did not return the test user's own email: ${resultText}`,
-				);
-			} else {
-				console.log(
-					'[connector-smoke-inspector] tools/call get_user_profile returned the real, authenticated profile',
-				);
-			}
-		} finally {
-			await client.close();
-		}
+		await runInspectorMcpSession(baseUrl, token, email, problems);
 	} finally {
 		await cleanup();
 	}
@@ -408,5 +459,5 @@ async function main(): Promise<void> {
 // `main()` against `process.argv`, including a real network `bunx` install
 // and a real `process.exit()` that tears down the importing process.
 if (import.meta.main) {
-	await main();
+	await runHarnessMain('connector-smoke-inspector', main);
 }

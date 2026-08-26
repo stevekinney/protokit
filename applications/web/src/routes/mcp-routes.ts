@@ -43,7 +43,7 @@ import { mcpMaxBearerTokenLength } from '@web/lib/request-limits';
  * produced the `401`. Built once, here, rather than at each of this file's
  * four challenge call sites, so they cannot drift out of sync with each
  * other or with the identical list the OAuth metadata endpoints publish
- * (`getSupportedScopes()`, shared with `oauth-routes.tsx`).
+ * (`getSupportedScopes()`, shared with `oauth-routes.ts`).
  */
 function bearerChallenge(resourceMetadataUrl: string, errorCode?: string): string {
 	const parts = [
@@ -180,10 +180,32 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		});
 	}
 
+	// OPEN-12: the token lookup and the profile lookup `mcp-handler.ts`'s
+	// per-request server factory used to run separately are joined into one
+	// query here, one database round trip instead of two sequential ones. An
+	// `INNER JOIN` (not `LEFT JOIN`) is deliberate: `oauth_tokens.user_id`
+	// carries `onDelete: 'cascade'` against `users.id`
+	// (`packages/database/src/schema.ts`), so a token row can never survive
+	// its user's deletion -- a token match with no user match is not a real
+	// state this schema can produce, and folding that impossibility into
+	// "token not found" (below) is simpler than inventing a third outcome
+	// for it.
 	const accessTokenHash = hashCredential(bearerToken);
 	const [oauthToken] = await database
-		.select()
+		.select({
+			accessToken: schema.oauthTokens.accessToken,
+			clientId: schema.oauthTokens.clientId,
+			userId: schema.oauthTokens.userId,
+			scope: schema.oauthTokens.scope,
+			resource: schema.oauthTokens.resource,
+			expiresAt: schema.oauthTokens.expiresAt,
+			userEmail: schema.users.email,
+			userName: schema.users.name,
+			userImage: schema.users.image,
+			userRole: schema.users.role,
+		})
 		.from(schema.oauthTokens)
+		.innerJoin(schema.users, eq(schema.users.id, schema.oauthTokens.userId))
 		.where(
 			and(
 				eq(schema.oauthTokens.accessToken, accessTokenHash),
@@ -261,6 +283,13 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 		expiresAt: oauthToken.expiresAt,
 		extra: {
 			userId: oauthToken.userId,
+			userProfile: {
+				id: oauthToken.userId,
+				email: oauthToken.userEmail,
+				name: oauthToken.userName,
+				image: oauthToken.userImage,
+				role: oauthToken.userRole,
+			},
 			oauthClientId: oauthToken.clientId,
 			scopes: (oauthToken.scope ?? '').split(' ').filter((scope) => scope.length > 0),
 			resource: oauthToken.resource,

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { afterEach } from 'bun:test';
 
 /**
  * TEST-001 (OPEN-9).
@@ -105,5 +106,71 @@ export async function fetchFromTestServer(
 	if (actualInstanceId !== handle.instanceId) {
 		throw new CrossServerRoutingError(handle.instanceId, actualInstanceId, url);
 	}
+	await scheduleOauthClientCleanupIfRegistered(path, init?.method, response);
 	return response;
+}
+
+/**
+ * OPEN-11: registration tests leaked 3,712 `oauth_clients` rows into the
+ * shared local test database before anyone noticed. Three suites accounted
+ * for nearly all of it, and every one of them created its clients through the
+ * real `POST /oauth/register` endpoint rather than through any helper -- so a
+ * helper that only tracks what it created itself cannot see them, and a check
+ * gated on "did this test use my helper" is trivially defeated by exactly the
+ * tests that leak.
+ *
+ * Hooking this shared choke point instead means it does not matter which path
+ * a test takes to create a client: if the response came back through
+ * `fetchFromTestServer`, its cleanup is registered automatically.
+ *
+ * Every successful (`201`) registration response schedules its own `afterEach`
+ * cleanup for exactly the `client_id` that call minted, via the existing
+ * `deleteTestAccounts` cascade. `bun:test` runs an `afterEach` added during a
+ * running test only once, right after that same test -- confirmed empirically,
+ * since it is not documented behavior -- so cleanup scopes itself to the test
+ * that created the client, with no shared cross-test bookkeeping that
+ * `--isolate`'s concurrent, shared database would make unsafe. Because that
+ * behavior is undocumented, `registration-cleanup.integration.test.ts` asserts
+ * the row is genuinely gone rather than merely that this code path ran; if the
+ * scheduling ever changes, that test fails loudly instead of the leak
+ * returning silently.
+ *
+ * This does not catch a test that drives registration through a bare
+ * `fetch(...)` instead of `fetchFromTestServer`. Nothing in this file's scope
+ * can close that gap, so the root `eslint.config.js` forbids a literal
+ * `/oauth/register` fetch outside this module.
+ */
+async function scheduleOauthClientCleanupIfRegistered(
+	path: string,
+	method: string | undefined,
+	response: Response,
+): Promise<void> {
+	const normalizedMethod = (method ?? 'GET').toUpperCase();
+	if (
+		normalizedMethod !== 'POST' ||
+		!path.startsWith('/oauth/register') ||
+		response.status !== 201
+	) {
+		return;
+	}
+
+	let clientId: string | undefined;
+	try {
+		const body = (await response.clone().json()) as { client_id?: unknown };
+		if (typeof body.client_id === 'string' && body.client_id.length > 0) {
+			clientId = body.client_id;
+		}
+	} catch {
+		// A malformed body on a 201 is itself a bug the test's own assertions
+		// should surface; don't let cleanup bookkeeping mask or duplicate that.
+		return;
+	}
+
+	if (!clientId) return;
+
+	const registeredClientId = clientId;
+	afterEach(async () => {
+		const { deleteTestAccounts } = await import('./delete-test-accounts');
+		await deleteTestAccounts({ clientIds: [registeredClientId] });
+	});
 }

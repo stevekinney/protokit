@@ -67,7 +67,7 @@ describe('scanFileContentsForViolations', () => {
 	it('finds nothing wrong with genuine, filled-in content', () => {
 		const violations = scanFileContentsForViolations(
 			'instructions.md',
-			'This is a Model Context Protocol (MCP) server built from the Bun + React MCP Template.',
+			'This is a Model Context Protocol (MCP) server built from the Bun + Svelte MCP Template.',
 		);
 		expect(violations).toHaveLength(0);
 	});

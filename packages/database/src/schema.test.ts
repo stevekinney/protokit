@@ -40,6 +40,24 @@ describe('database schema exports', () => {
  * drops the option is caught by `bun test packages/database`, not only by
  * reading a migration file nobody re-reads.
  */
+/**
+ * `users` is the one table whose extra-config callback (`(table) => ({...})`
+ * declaring `emailUniqueIndex`) was never invoked by any existing test --
+ * `getTableConfig` is what drizzle-orm calls internally to lazily evaluate
+ * that callback, and no prior test in this package called it against
+ * `schema.users` specifically.
+ */
+describe('users table indexes', () => {
+	it('declares a unique index on email', () => {
+		const config = getTableConfig(schema.users);
+		const emailIndex = config.indexes.find((candidate) =>
+			candidate.config.columns.some((column) => column.name === 'email'),
+		);
+		expect(emailIndex).toBeDefined();
+		expect(emailIndex?.config.unique).toBe(true);
+	});
+});
+
 describe('onDelete cascade behavior', () => {
 	it.each([
 		{ table: schema.userSessions, name: 'user_sessions' },

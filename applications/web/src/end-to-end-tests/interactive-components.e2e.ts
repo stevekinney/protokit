@@ -5,7 +5,7 @@ test.describe('interactive components', () => {
 		await page.goto('/');
 		await page.waitForLoadState('networkidle');
 
-		const copyButton = page.locator('button', { hasText: 'Copy' });
+		const copyButton = page.locator('.cinder-copy-button');
 		await expect(copyButton).toBeVisible();
 		await copyButton.click();
 	});
@@ -15,9 +15,13 @@ test.describe('interactive components', () => {
 		await page.goto('/');
 		await page.waitForLoadState('networkidle');
 
-		const copyButton = page.locator('button', { hasText: 'Copy' });
+		const copyButton = page.locator('.cinder-copy-button');
 		await copyButton.click();
 
-		await expect(page.locator('button', { hasText: 'Copied!' })).toBeVisible({ timeout: 3000 });
+		// Asserted against the component's own state attribute rather than its
+		// visible label: the accessible name stays "Copy to clipboard" through
+		// the confirmation window by design, and the visible text is
+		// presentational.
+		await expect(copyButton).toHaveAttribute('data-cinder-copied', 'true', { timeout: 3000 });
 	});
 });

@@ -2,13 +2,13 @@
 
 ## Overview
 
-This template provides a production-ready remote MCP (Model Context Protocol) server with OAuth 2.1 authentication. It is built on Bun, server-rendered React, Neon Postgres (via Drizzle ORM), and Redis. The system supports multi-instance deployments backed by the official MCP SDK's stateless transport and a shared, atomic Redis-backed sliding-window rate limiter.
+This template provides a production-ready remote MCP (Model Context Protocol) server with OAuth 2.1 authentication. It is built on Bun, server-rendered Svelte 5, Neon Postgres (via Drizzle ORM), and Redis. The system supports multi-instance deployments backed by the official MCP SDK's stateless transport and a shared, atomic Redis-backed sliding-window rate limiter.
 
 ## Monorepo Layout
 
 | Package             | Responsibility                                                                                                                                                                                                      |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `applications/web`  | Bun-native HTTP server, React SSR views, OAuth 2.1 endpoints, MCP transport layer, cookie session management                                                                                                        |
+| `applications/web`  | Bun-native HTTP server, Svelte 5 SSR views, OAuth 2.1 endpoints, MCP transport layer, cookie session management                                                                                                     |
 | `packages/database` | Drizzle ORM schema (`users`, `user_sessions`, `user_google_accounts`, `oauth_clients`, `oauth_codes`, `oauth_tokens`, `oauth_refresh_tokens`, `mcp_sessions`), migrations, shared database client for Neon Postgres |
 | `packages/mcp`      | MCP server factory (`createMcpServer`), tool/resource/prompt definitions, server instructions, shared pino logger                                                                                                   |
 
@@ -18,7 +18,7 @@ Every HTTP request passes through three layers:
 
 1. **`server.ts`** -- Bun's built-in `Bun.serve` entrypoint. Serves pre-resolved static files (favicon, CSS, robots.txt) via Bun's `static` option. All other requests are forwarded to `handleApplicationRequest`.
 
-2. **`application.tsx`** -- The application layer. Each request gets:
+2. **`application.ts`** -- The application layer. Each request gets:
    - A unique request ID (`X-Request-Id` header).
    - Static file resolution for anything under `/assets/`.
    - Session hydration: the cookie is read, the token is hashed, and the `user_sessions` table is queried to build a `RequestContext` containing the authenticated user (or `null`).
@@ -26,12 +26,12 @@ Every HTTP request passes through three layers:
    - Security headers (`X-Content-Type-Options`, `Referrer-Policy`, `Content-Security-Policy`, `X-Frame-Options` on `/oauth/authorize`).
    - Structured request logging (method, path, status, duration, user ID).
 
-3. **Route handlers** -- Plain functions that receive a `RequestContext` and return a `Response`. There is no framework router; dispatch is a sequential `if` chain in `application.tsx`.
+3. **Route handlers** -- Plain functions that receive a `RequestContext` and return a `Response`. There is no framework router; dispatch is a sequential `if` chain in `application.ts`.
 
 ```
 Bun.serve (server.ts)
 	-> static file? return cached Response
-	-> handleApplicationRequest (application.tsx)
+	-> handleApplicationRequest (application.ts)
 		-> static asset under /assets/? return file
 		-> hydrateSession (cookie -> database lookup)
 		-> dispatch (pathname + method matching)
@@ -139,7 +139,7 @@ document anyone can read.
    exactly match this server's canonical `${BASE_URL}/mcp`), an optional `scope` (defaults to every
    scope this server's tool/resource/prompt registry supports when omitted), and `state`.
 2. If the user is not signed in, they are redirected to Google sign-in first.
-3. After validating the client, redirect URI, resource, and scope, the server creates a short-lived, single-use authorization transaction (`oauth_authorization_transactions`) binding the authenticated session, user, client, redirect URI, PKCE challenge, resource, scope, state, and the canonical issuer identifier server-side, and returns only an opaque `transaction_id` and one-time `csrf_token` to the browser. The consent page (server-rendered React, no client-side JavaScript) shows the client name, the human-readable description of each scope being granted, and an approve/deny form whose hidden fields carry only those two opaque values -- never the client, redirect, PKCE, resource, or scope data itself, so editing them client-side cannot change what was reviewed.
+3. After validating the client, redirect URI, resource, and scope, the server creates a short-lived, single-use authorization transaction (`oauth_authorization_transactions`) binding the authenticated session, user, client, redirect URI, PKCE challenge, resource, scope, state, and the canonical issuer identifier server-side, and returns only an opaque `transaction_id` and one-time `csrf_token` to the browser. The consent page (server-rendered Svelte, no client-side JavaScript) shows the client name, the human-readable description of each scope being granted, and an approve/deny form whose hidden fields carry only those two opaque values -- never the client, redirect, PKCE, resource, or scope data itself, so editing them client-side cannot change what was reviewed.
 4. On approval, `POST /oauth/authorize/approve` validates the request's `Sec-Fetch-Site`/`Origin` header, then atomically consumes the transaction in one `UPDATE ... WHERE ... RETURNING` (rejecting a missing, mismatched, expired, already-consumed, cross-session, or cross-user transaction with no code issued). A 32-byte authorization code is then generated, hashed, and stored in `oauth_codes` with a 10-minute expiration, using only the transaction's stored values.
 5. The user is redirected back to the client's `redirect_uri` (from the transaction, not the form) with the plaintext code, state, and, per RFC 9207, `iss` -- the canonical issuer identifier this authorization was issued under, which a client should verify before redeeming the code.
 6. The client exchanges the code at `POST /oauth/token` with the `code_verifier` and the same `resource` value. The server verifies the PKCE challenge (`SHA-256(code_verifier) == stored code_challenge`) using constant-time comparison and rejects a `resource` mismatch with `invalid_target`.
@@ -214,18 +214,33 @@ The MCP transport itself is stateless (owned by the official SDK — no session 
 
 Bun provides a built-in HTTP server, native TypeScript execution, a test runner, and a package manager in a single binary. There is no need for a separate bundler, transpiler, or process manager. The `Bun.serve` API supports static file preloading, direct `Request`/`Response` handling, and `requestIP` for rate limiting, which removes the need for middleware frameworks.
 
-### Server-rendered React, with client-side JavaScript deliberately excluded from the OAuth consent page
+### Server-rendered Svelte, with client-side JavaScript deliberately excluded from the OAuth consent page
 
-The OAuth consent screen (`applications/web/src/views/oauth-authorize-page.tsx`) is rendered via
+The OAuth consent screen (`applications/web/src/views/oauth-authorize-page.svelte`) is rendered via
 `renderStaticDocument`/`createStaticHtmlResponse`, which never includes the client bundle — it is a
 plain form that submits via standard POST requests and redirects, and must not be manipulable by
-client-side scripts. The home page (`applications/web/src/components/home-page.tsx`) is rendered via
-`renderStreamingDocument`/`createStreamingHtmlResponse` and does include a small client bundle
-(`applications/web/src/client/entry.tsx`, `/assets/client.js`) for genuinely client-only affordances
-like the copy-to-clipboard button (`components/copy-button.tsx`) — there is no client-side router or
-global state management, and no route depends on JavaScript to function. The distinction is
-deliberate per page, not an inconsistency: security-sensitive pages get no client bundle at all;
-ordinary pages get the minimum client-side behavior an actual affordance needs.
+client-side scripts. The home page (`applications/web/src/components/home-page.svelte`) is rendered
+via `createStreamingHtmlResponse` and does include a small client bundle
+(`applications/web/src/client/entry.ts`) for genuinely client-only affordances like Cinder's
+copy-to-clipboard button — there is no client-side router or global state management, and no route
+depends on JavaScript to function. The distinction is deliberate per page, not an inconsistency:
+security-sensitive pages get no client bundle at all; ordinary pages get the minimum client-side
+behavior an actual affordance needs.
+
+Svelte has no streaming renderer — `svelte/server` exports only a synchronous `render()` — so
+"streaming" here means the document is flushed shell-first: `createStreamingHtmlResponse` writes the
+`<head>` and opening `<body>` immediately, _before_ the page's data callback runs, so the browser
+begins fetching the stylesheet while the server is still querying. The rendered body then arrives in
+a single chunk. A consequence of flushing the head first is that `render().head` can never be
+delivered, so both response helpers assert it is empty and throw otherwise — which also catches a
+component that tried to inject styles.
+
+Component CSS is collected by bundling `applications/web/src/styles/style-entry.ts`, a module whose
+only job is to import every page component so the bundler walks into the Cinder components those
+pages render and picks up the stylesheet shipped beside each one. Neither the server build (which
+resolves Cinder through its CSS-free `node` entry) nor the client bundle (which contains only the
+pages that hydrate) can do that collection alone, and the pages that ship no JavaScript need their
+styles all the same. `style-entry.test.ts` fails if a page component is missing from that module.
 
 ### Separate MCP package for reusability
 

@@ -1,0 +1,20 @@
+# Bun resolves `bunfig.toml` from the current working directory, and this
+# repository runs `bun` from two of them: the root (every `test:*` and audit
+# script in the root `package.json`) and `applications/web` (its own `dev` and
+# `test` scripts). Both need the Svelte runtime loader registered, so the
+# config exists in both places, each pointing at the same preload module by a
+# path relative to itself.
+#
+# This does mean every `bun` process started from the root loads the Svelte
+# plugin, including `scripts/seed.ts`, `scripts/doctor.ts`, and the husky
+# hooks. That is intentional and harmless -- registering a loader for an
+# extension those scripts never import costs nothing. Please do not narrow
+# this to `[test]`, which would break `bun run` for everything else.
+preload = ["./applications/web/src/svelte-preload.ts"]
+
+# `bun test` does not inherit the top-level `preload` above, so the loader has
+# to be registered for the test runner separately. Without this, importing a
+# `.svelte` file from a test yields the file's path as a string instead of a
+# component, and every render fails with "component is not a function".
+[test]
+preload = ["./applications/web/src/svelte-preload.ts"]

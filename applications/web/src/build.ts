@@ -1,7 +1,24 @@
 import { cpSync, mkdirSync, rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { sveltePlugin } from '@lostgradient/bun-plugin-svelte';
 import type { AssetManifest } from '@web/lib/asset-manifest';
-import { createTailwindPlugin } from './plugins/tailwind.js';
+
+// Both browser-side builds compile Svelte identically. `conditions` is
+// required for Cinder, which ships its component source behind the `svelte`
+// export condition; the plugin cannot add it itself because Bun snapshots the
+// build config before plugins run.
+const browserBuildOptions = {
+	target: 'browser',
+	conditions: ['svelte'],
+	minify: true,
+	// `dev: false` is explicit, not inherited. The plugin's default is
+	// `NODE_ENV !== 'production'`, and a dev-compiled bundle expects Svelte's
+	// *development* runtime -- which `esm-env` only resolves through the
+	// `development` export condition. A production build never wants either,
+	// and the mismatch shows up as a hydration failure rather than a build
+	// error. Same reasoning as `src/svelte-preload.ts`.
+	plugins: [sveltePlugin({ generate: 'client', css: 'none', dev: false })],
+} as const;
 
 // Every generated asset is built into this scratch directory first, never
 // straight into `public/assets`. That lets the build validate exactly what
@@ -14,11 +31,17 @@ const publishedAssetsDirectory = 'public/assets';
 rmSync('dist', { recursive: true, force: true });
 mkdirSync(stagingDirectory, { recursive: true });
 
+// The stylesheet is produced by bundling a JavaScript graph, not a CSS file.
+// `style-entry.ts` imports every page component, so Bun walks into each Cinder
+// component those pages render and picks up the CSS shipped beside it -- which
+// is how the pages that serve no JavaScript still get exactly the component
+// styles they need, and no more. The JavaScript this build emits is a
+// byproduct and is deliberately discarded below.
 const styleBuildResult = await Bun.build({
-	entrypoints: ['src/styles/application.css'],
+	...browserBuildOptions,
+	entrypoints: ['src/styles/style-entry.ts'],
 	outdir: stagingDirectory,
-	plugins: [createTailwindPlugin({ minify: true })],
-	naming: '[name]-[hash].[ext]',
+	naming: 'application-[hash].[ext]',
 });
 
 if (!styleBuildResult.success) {
@@ -29,11 +52,10 @@ if (!styleBuildResult.success) {
 }
 
 const clientBuildResult = await Bun.build({
-	entrypoints: ['src/client/entry.tsx'],
-	target: 'browser',
+	...browserBuildOptions,
+	entrypoints: ['src/client/entry.ts'],
 	outdir: stagingDirectory,
 	naming: 'client-[hash].[ext]',
-	minify: true,
 	sourcemap: 'external',
 });
 
@@ -44,11 +66,32 @@ if (!clientBuildResult.success) {
 	process.exit(1);
 }
 
-const stylesheetFilename = basename(styleBuildResult.outputs[0].path);
+const styleOutputs = styleBuildResult.outputs;
 const clientOutputs = clientBuildResult.outputs;
-const clientBundleFilename = basename(clientOutputs.find((o) => o.path.endsWith('.js'))!.path);
+
+const stylesheetFilename = basename(styleOutputs.find((o) => o.path.endsWith('.css'))!.path);
+const clientBundleFilename = basename(
+	clientOutputs.find((o) => o.path.endsWith('.js') && !o.path.endsWith('.js.map'))!.path,
+);
 const clientSourceMapFilename = basename(
 	clientOutputs.find((o) => o.path.endsWith('.js.map'))!.path,
+);
+
+// Two outputs are expected and intentionally thrown away:
+//
+//   - the style build's JavaScript, which only ever existed to give the
+//     bundler a graph to walk for CSS;
+//   - the client build's CSS, which is a strict subset of the stylesheet
+//     above (the hydrated pages are a subset of all pages), so publishing it
+//     would ship the same rules twice.
+//
+// They are named here rather than ignored so the undeclared-output check
+// below stays exhaustive: a genuinely unexpected artifact still fails.
+const discardedOutputFilenames = new Set(
+	[
+		...styleOutputs.filter((o) => !o.path.endsWith('.css')),
+		...clientOutputs.filter((o) => o.path.endsWith('.css')),
+	].map((output) => basename(output.path)),
 );
 
 // Fail the build if either bundler produced anything beyond the three files
@@ -60,8 +103,9 @@ const declaredOutputFilenames = new Set([
 	stylesheetFilename,
 	clientBundleFilename,
 	clientSourceMapFilename,
+	...discardedOutputFilenames,
 ]);
-const producedOutputFilenames = [...styleBuildResult.outputs, ...clientOutputs].map((output) =>
+const producedOutputFilenames = [...styleOutputs, ...clientOutputs].map((output) =>
 	basename(output.path),
 );
 const undeclaredOutputFilenames = producedOutputFilenames.filter(
@@ -105,6 +149,10 @@ const serverBuildResult = await Bun.build({
 	target: 'bun',
 	outdir: 'dist',
 	sourcemap: 'external',
+	// `generate: 'server'` and `css: 'none'` must match `src/svelte-preload.ts`
+	// exactly, so the bundled server renders identically to the one that runs
+	// under `bun run src/server.ts` in development and under `bun test`.
+	plugins: [sveltePlugin({ generate: 'server', css: 'none', dev: false })],
 	// Deliberately no `define` for `process.env.NODE_ENV`. Baking it in as a
 	// compile-time literal makes the built server read "production" no matter
 	// what the runtime environment says, which defeats CONFIG-001's fail-closed

@@ -112,6 +112,121 @@ describe('McpUserHandlerCache', () => {
 		expect(cache.size).toBe(1);
 	});
 
+	it('peek returns an existing entry without creating one, and without touching lastAccessedAt', () => {
+		let now = 0;
+		let createCount = 0;
+		const cache = new McpUserHandlerCache(
+			() => {
+				createCount += 1;
+				return { handler: fakeHandler().handler, bus: fakeBus() };
+			},
+			() => now,
+		);
+
+		expect(cache.peek('never-created')).toBeUndefined();
+		expect(createCount).toBe(0);
+		expect(cache.size).toBe(0);
+
+		now = 100;
+		const created = cache.get('user-a');
+		expect(createCount).toBe(1);
+
+		now = 5000;
+		const peeked = cache.peek('user-a');
+		expect(peeked).toBe(created);
+		expect(createCount).toBe(1);
+		// peek() must not refresh lastAccessedAt -- it's still idle by the
+		// original access time.
+		expect(peeked?.lastAccessedAt).toBe(100);
+	});
+
+	it('logs and continues when an evicted idle handler fails to close', async () => {
+		let now = 0;
+		const cache = new McpUserHandlerCache(
+			() => ({
+				handler: {
+					fetch: async () => new Response(null),
+					close: async () => {
+						throw new Error('idle close failed');
+					},
+					notify: {
+						toolsChanged: () => {},
+						promptsChanged: () => {},
+						resourcesChanged: () => {},
+						resourceUpdated: () => {},
+					},
+					bus: fakeBus(),
+				} as unknown as McpHttpHandler,
+				bus: fakeBus(0),
+			}),
+			() => now,
+		);
+
+		cache.get('idle-user');
+		now = 2000;
+
+		const evicted = cache.evictIdle(1000);
+		expect(evicted).toEqual(['idle-user']);
+		expect(cache.size).toBe(0);
+
+		// Let the fire-and-forget close().catch(...) settle -- it must not
+		// throw an unhandled rejection.
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+
+	it('startSweep periodically evicts idle entries, and a second call replaces the previous timer', async () => {
+		let now = 0;
+		const closedFlags = new Map<string, boolean>();
+		const cache = new McpUserHandlerCache(
+			(userId) => ({
+				handler: {
+					fetch: async () => new Response(null),
+					close: async () => {
+						closedFlags.set(userId, true);
+					},
+					notify: {
+						toolsChanged: () => {},
+						promptsChanged: () => {},
+						resourcesChanged: () => {},
+						resourceUpdated: () => {},
+					},
+					bus: fakeBus(),
+				} as unknown as McpHttpHandler,
+				bus: fakeBus(0),
+			}),
+			() => now,
+		);
+
+		cache.get('idle-user');
+		now = 2000;
+
+		cache.startSweep(10, 1000);
+		// Replacing the timer must clear the first one rather than leaving
+		// two sweeps running concurrently.
+		cache.startSweep(10, 1000);
+
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(cache.size).toBe(0);
+		expect(closedFlags.get('idle-user')).toBe(true);
+
+		await cache.closeAll();
+	});
+
+	it('closeAll clears a pending sweep timer', async () => {
+		const cache = new McpUserHandlerCache(() => ({
+			handler: fakeHandler().handler,
+			bus: fakeBus(),
+		}));
+
+		cache.startSweep(50_000, 1000);
+		await cache.closeAll();
+		// No assertion beyond "this resolves without throwing and without
+		// leaving a dangling interval" -- closeAll must clear the timer set
+		// by startSweep, not just close handlers.
+		expect(cache.size).toBe(0);
+	});
+
 	it('closeAll closes every entry and empties the cache', async () => {
 		const closedFlags: { closed: boolean }[] = [];
 		const cache = new McpUserHandlerCache(() => {
@@ -141,6 +256,34 @@ describe('McpUserHandlerCache', () => {
 
 		expect(cache.size).toBe(0);
 		expect(closedFlags.every((flag) => flag.closed)).toBe(true);
+	});
+
+	it('logs and continues when one handler fails to close during closeAll, without leaving it in the cache', async () => {
+		const cache = new McpUserHandlerCache(() => ({
+			handler: {
+				fetch: async () => new Response(null),
+				close: async () => {
+					throw new Error('shutdown close failed');
+				},
+				notify: {
+					toolsChanged: () => {},
+					promptsChanged: () => {},
+					resourcesChanged: () => {},
+					resourceUpdated: () => {},
+				},
+				bus: fakeBus(),
+			} as unknown as McpHttpHandler,
+			bus: fakeBus(),
+		}));
+
+		cache.get('user-a');
+		cache.get('user-b');
+		expect(cache.size).toBe(2);
+
+		// Must not reject even though every handler's close() throws -- the
+		// catch inside closeAll's map is what this test proves runs.
+		expect(await cache.closeAll()).toBeUndefined();
+		expect(cache.size).toBe(0);
 	});
 });
 
