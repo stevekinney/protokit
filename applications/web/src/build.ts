@@ -187,11 +187,28 @@ if (!serverBuildResult.success) {
 // through a literal `process.env.NODE_ENV`/`process.env["NODE_ENV"]` access
 // instead of the resolver's dynamic enumeration fails the build rather than
 // quietly shipping an artifact whose environment is frozen at build time.
+//
+// Two checks, not one — a single "does the bundle contain a dynamic read
+// anywhere" check would pass even if `applications/web/src/env.ts`
+// specifically regressed to a static literal, because `packages/mcp` and
+// `packages/database`'s own `env.ts` files enumerate `process.env`
+// independently and would still satisfy it (review finding on PR #31). The
+// second check closes that gap directly: it fails the build if a literal
+// `process.env.NODE_ENV`/`process.env["NODE_ENV"]` access appears ANYWHERE
+// in the bundle, which is exactly the shape a regression would reintroduce,
+// regardless of which package's `env.ts` it happened in.
 const serverBundleSource = await Bun.file('dist/server.js').text();
-if (!serverBundleSource.includes('Object.entries(process.env)')) {
+const hasDynamicEnvironmentRead = serverBundleSource.includes('Object.entries(process.env)');
+const hasStaticNodeEnvironmentAccess = /process\.env(\.NODE_ENV|\[["']NODE_ENV["']\])/.test(
+	serverBundleSource,
+);
+if (!hasDynamicEnvironmentRead || hasStaticNodeEnvironmentAccess) {
 	console.error(
-		'Build aborted: dist/server.js contains no runtime enumeration of process.env, which\n' +
-			'means NODE_ENV (and every other setting) may have been inlined at build time.\n' +
+		'Build aborted: dist/server.js ' +
+			(hasStaticNodeEnvironmentAccess
+				? 'contains a static process.env.NODE_ENV (or process.env["NODE_ENV"]) access'
+				: 'contains no runtime enumeration of process.env') +
+			', which means NODE_ENV (and every other setting) may have been inlined at build time.\n' +
 			"Resolve the environment through env.ts's `environmentalist.sync(...)` call so the\n" +
 			'value stays configurable at runtime.',
 	);
