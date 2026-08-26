@@ -16,8 +16,8 @@ import { applyLocalProxyFetchEndpoint } from './local-proxy';
  * migrations rely on, and never collides with another concurrent test run.
  */
 describe('baselineExistingDatabase', () => {
-	applyLocalProxyFetchEndpoint(environment.DATABASE_LOCAL_PROXY_URL);
-	const client = neon(environment.DATABASE_URL);
+	applyLocalProxyFetchEndpoint(environment.databaseLocalProxyUrl);
+	const client = neon(environment.databaseUrl);
 	const database = drizzle(client);
 
 	const runId = randomUUID().replace(/-/g, '_');

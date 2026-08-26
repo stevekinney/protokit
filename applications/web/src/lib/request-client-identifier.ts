@@ -9,13 +9,14 @@ import { resolveNetworkIdentity, type TrustedProxyConfiguration } from '@web/lib
  */
 export function getTrustedProxyConfiguration(): TrustedProxyConfiguration {
 	return {
-		trustedProxyCidrs: environment.TRUSTED_PROXY_CIDRS
-			? environment.TRUSTED_PROXY_CIDRS.split(',')
+		trustedProxyCidrs: environment.trustedProxyCidrs
+			? environment.trustedProxyCidrs
+					.split(',')
 					.map((cidr) => cidr.trim())
 					.filter(Boolean)
 			: [],
-		trustedProxyHeader: environment.TRUSTED_PROXY_HEADER,
-		trustedProxyHopCount: environment.TRUSTED_PROXY_HOP_COUNT,
+		trustedProxyHeader: environment.trustedProxyHeader,
+		trustedProxyHopCount: environment.trustedProxyHopCount,
 	};
 }
 

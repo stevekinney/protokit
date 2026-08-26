@@ -4,7 +4,7 @@
  *
  * Deliberately has NO import of `@web/env` or anything that transitively
  * imports it (`@web/application`, `@web/lib/session-authentication`, ...).
- * `@t3-oss/env-core` validates `process.env` once, at import time, so every
+ * `env.ts` validates `process.env` once, at import time, so every
  * caller of this module must finish setting environment variables *before*
  * it imports anything env-backed -- importing this file first, before that
  * env-backed import, keeps that ordering obvious at the call site instead

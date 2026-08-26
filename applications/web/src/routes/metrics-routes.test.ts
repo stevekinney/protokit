@@ -41,7 +41,7 @@ function setEnvironment(overrides: Record<string, unknown>) {
 	for (const key of Object.keys(mockEnvironment)) {
 		delete mockEnvironment[key];
 	}
-	Object.assign(mockEnvironment, { NODE_ENV: 'test', ...overrides });
+	Object.assign(mockEnvironment, { nodeEnv: 'test', ...overrides });
 }
 
 describe('handleMetricsGet', () => {
@@ -50,7 +50,7 @@ describe('handleMetricsGet', () => {
 	});
 
 	it('returns 404 when no API key is configured', async () => {
-		setEnvironment({ METRICS_API_KEY: undefined });
+		setEnvironment({ metricsApiKey: undefined });
 		const response = await handleMetricsGet(
 			buildContext(new Request('https://app.example.com/metrics')),
 		);
@@ -58,7 +58,7 @@ describe('handleMetricsGet', () => {
 	});
 
 	it('returns 401 when authorization header is missing', async () => {
-		setEnvironment({ METRICS_API_KEY: 'secret-key' });
+		setEnvironment({ metricsApiKey: 'secret-key' });
 		const response = await handleMetricsGet(
 			buildContext(new Request('https://app.example.com/metrics')),
 		);
@@ -66,7 +66,7 @@ describe('handleMetricsGet', () => {
 	});
 
 	it('returns 401 when bearer token does not match', async () => {
-		setEnvironment({ METRICS_API_KEY: 'secret-key' });
+		setEnvironment({ metricsApiKey: 'secret-key' });
 		const response = await handleMetricsGet(
 			buildContext(
 				new Request('https://app.example.com/metrics', {
@@ -78,7 +78,7 @@ describe('handleMetricsGet', () => {
 	});
 
 	it('returns 200 with metrics snapshot when bearer token matches', async () => {
-		setEnvironment({ METRICS_API_KEY: 'secret-key' });
+		setEnvironment({ metricsApiKey: 'secret-key' });
 		const response = await handleMetricsGet(
 			buildContext(
 				new Request('https://app.example.com/metrics', {
@@ -93,13 +93,13 @@ describe('handleMetricsGet', () => {
 	});
 
 	it('sets Cache-Control: no-store on every response shape', async () => {
-		setEnvironment({ METRICS_API_KEY: undefined });
+		setEnvironment({ metricsApiKey: undefined });
 		const notConfigured = await handleMetricsGet(
 			buildContext(new Request('https://app.example.com/metrics')),
 		);
 		expect(notConfigured.headers.get('Cache-Control')).toBe('no-store');
 
-		setEnvironment({ METRICS_API_KEY: 'secret-key' });
+		setEnvironment({ metricsApiKey: 'secret-key' });
 		const unauthorized = await handleMetricsGet(
 			buildContext(new Request('https://app.example.com/metrics')),
 		);
@@ -116,7 +116,7 @@ describe('handleMetricsGet', () => {
 	});
 
 	it('rejects a plaintext request in production even with a valid key', async () => {
-		setEnvironment({ METRICS_API_KEY: 'secret-key', NODE_ENV: 'production' });
+		setEnvironment({ metricsApiKey: 'secret-key', nodeEnv: 'production' });
 		const response = await handleMetricsGet(
 			buildContext(
 				new Request('http://app.example.com/metrics', {
@@ -128,7 +128,7 @@ describe('handleMetricsGet', () => {
 	});
 
 	it('returns 429 with Retry-After and no-store when rate limited', async () => {
-		setEnvironment({ METRICS_API_KEY: 'secret-key' });
+		setEnvironment({ metricsApiKey: 'secret-key' });
 		mock.module('@web/lib/request-rate-limiter', () => ({
 			enforceMetricsRateLimit: async () => ({
 				allowed: false,
@@ -157,14 +157,14 @@ describe('handleMetricsGet', () => {
 		}));
 	});
 
-	// Review finding (P2): a disabled endpoint (METRICS_API_KEY unset) must
+	// Review finding (P2): a disabled endpoint (metricsApiKey unset) must
 	// return its promised 404 even when Redis -- which the rate limiter
 	// depends on -- is unavailable. Before the fix, the rate-limit check ran
 	// BEFORE the not-configured check, so this scenario threw instead of
 	// returning 404, turning a disabled endpoint into a 500 that depends on
 	// infrastructure it has no other reason to need.
 	it('returns 404 when no API key is configured, even if the rate limiter would throw (Redis unavailable)', async () => {
-		setEnvironment({ METRICS_API_KEY: undefined });
+		setEnvironment({ metricsApiKey: undefined });
 		mock.module('@web/lib/request-rate-limiter', () => ({
 			enforceMetricsRateLimit: async () => {
 				throw new Error('simulated Redis unavailable');

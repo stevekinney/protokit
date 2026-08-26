@@ -131,7 +131,7 @@ export function applySecurityHeaders(
 
 function withSecurityHeaders(inputResponse: Response, requestPathname: string): Response {
 	return applySecurityHeaders(inputResponse, requestPathname, {
-		isProduction: environment.NODE_ENV === 'production',
+		isProduction: environment.nodeEnv === 'production',
 	});
 }
 

@@ -35,7 +35,7 @@ import {
 import OauthAuthorizePage from '@web/views/oauth-authorize-page.svelte';
 
 function isGoogleAuthConfigured(): boolean {
-	return Boolean(environment.GOOGLE_CLIENT_ID && environment.GOOGLE_CLIENT_SECRET);
+	return Boolean(environment.googleClientId && environment.googleClientSecret);
 }
 
 function googleAuthNotConfiguredResponse(): Response {
@@ -318,7 +318,7 @@ export async function handleGoogleSignInCallback(context: RequestContext): Promi
 			stateValidation.codeVerifier,
 		);
 		const idTokenClaims = await validateGoogleIdToken(idToken, {
-			clientId: environment.GOOGLE_CLIENT_ID!,
+			clientId: environment.googleClientId!,
 			expectedNonce: stateValidation.nonce,
 		});
 		// FEDAUTH-001: the ID token's cryptographically-verified claims are

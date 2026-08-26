@@ -14,7 +14,7 @@ import { resolvePublicFile } from '@web/resolve-public-file';
 
 assertProductionStartupInvariants();
 
-const port = environment.PORT;
+const port = environment.port;
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10_000;
 
 const manifest = await loadAssetManifest();
@@ -72,8 +72,8 @@ const globalMaxRequestBodyBytes = mcpRequestMaxBodyBytes * 2;
 // address is therefore configurable rather than inferred from NODE_ENV alone —
 // the restrictive default is unchanged, but widening it is now a deliberate act.
 const hostname = resolveBindAddress({
-	nodeEnvironment: environment.NODE_ENV,
-	configuredBindAddress: environment.SERVER_BIND_ADDRESS,
+	nodeEnvironment: environment.nodeEnv,
+	configuredBindAddress: environment.serverBindAddress,
 });
 
 // `OPS-001`: `Bun.serve(...).stop(false)` (below) stops accepting new
@@ -117,7 +117,7 @@ logger.info({ port, listenHostname: describeBindAddress(hostname) }, 'Web server
 // still exists for a manual or externally-cron-scheduled run against a
 // deployment that does not keep this process alive (e.g. a one-shot job),
 // calling the same `runScheduledCleanup` this interval does.
-startScheduledCleanup(environment.SCHEDULED_CLEANUP_INTERVAL_SECONDS * 1000);
+startScheduledCleanup(environment.scheduledCleanupIntervalSeconds * 1000);
 
 let isShuttingDown = false;
 

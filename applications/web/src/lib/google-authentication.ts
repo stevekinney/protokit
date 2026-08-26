@@ -173,7 +173,7 @@ function computePkceCodeChallengeS256(codeVerifier: string): string {
 function cookieSerializationOptions(
 	requestUrl: URL,
 ): Pick<Parameters<typeof serializeCookie>[0], 'httpOnly' | 'secure' | 'sameSite' | 'path'> {
-	const secureCookie = requestUrl.protocol === 'https:' || environment.NODE_ENV === 'production';
+	const secureCookie = requestUrl.protocol === 'https:' || environment.nodeEnv === 'production';
 	return { httpOnly: true, secure: secureCookie, sameSite: 'Lax', path: '/' };
 }
 
@@ -212,7 +212,7 @@ export function createGoogleSignInRedirectResponse(request: Request): Response {
 	const callbackUrl = `${getBaseUrl(request)}/auth/google/callback`;
 
 	const googleAuthorizationUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-	googleAuthorizationUrl.searchParams.set('client_id', environment.GOOGLE_CLIENT_ID!);
+	googleAuthorizationUrl.searchParams.set('client_id', environment.googleClientId!);
 	googleAuthorizationUrl.searchParams.set('redirect_uri', callbackUrl);
 	googleAuthorizationUrl.searchParams.set('response_type', 'code');
 	googleAuthorizationUrl.searchParams.set('scope', 'openid email profile');
@@ -339,8 +339,8 @@ export async function exchangeGoogleCodeForTokens(
 ): Promise<GoogleTokenExchangeResult> {
 	const callbackUrl = `${getBaseUrl(request)}/auth/google/callback`;
 	const body = new URLSearchParams({
-		client_id: environment.GOOGLE_CLIENT_ID!,
-		client_secret: environment.GOOGLE_CLIENT_SECRET!,
+		client_id: environment.googleClientId!,
+		client_secret: environment.googleClientSecret!,
 		code,
 		grant_type: 'authorization_code',
 		redirect_uri: callbackUrl,

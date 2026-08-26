@@ -10,13 +10,13 @@ import { describe, expect, it, mock } from 'bun:test';
 
 mock.module('@web/env', () => ({
 	environment: {
-		GOOGLE_CLIENT_ID: undefined,
-		GOOGLE_CLIENT_SECRET: undefined,
-		SESSION_SIGNING_SECRET: 'a-very-secret-key-that-is-at-least-32-chars-long',
-		SESSION_COOKIE_NAME: 'test_session',
-		SESSION_TIME_TO_LIVE_SECONDS: 3600,
-		NODE_ENV: 'test',
-		BASE_URL: undefined,
+		googleClientId: undefined,
+		googleClientSecret: undefined,
+		sessionSigningSecret: 'a-very-secret-key-that-is-at-least-32-chars-long',
+		sessionCookieName: 'test_session',
+		sessionTimeToLiveSeconds: 3600,
+		nodeEnv: 'test',
+		baseUrl: undefined,
 	},
 }));
 

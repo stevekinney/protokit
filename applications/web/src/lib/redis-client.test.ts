@@ -14,7 +14,7 @@ import { afterAll, describe, expect, it, mock } from 'bun:test';
 const realRedisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
 
 mock.module('@web/env', () => ({
-	environment: { REDIS_URL: realRedisUrl },
+	environment: { redisUrl: realRedisUrl },
 }));
 
 const {

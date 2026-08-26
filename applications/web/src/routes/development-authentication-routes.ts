@@ -12,7 +12,7 @@ const DEVELOPMENT_USER_EMAIL = 'dev@localhost';
 const DEVELOPMENT_USER_NAME = 'Development User';
 
 export async function handleDevelopmentLogin(context: RequestContext): Promise<Response> {
-	if (environment.NODE_ENV !== 'development') {
+	if (environment.nodeEnv !== 'development') {
 		return jsonResponse({ error: 'not_found' }, { status: 404 });
 	}
 
@@ -21,7 +21,7 @@ export async function handleDevelopmentLogin(context: RequestContext): Promise<R
 	// makes every route — including this one — reachable from the public
 	// internet even though NODE_ENV stays 'development', so the login bypass
 	// must refuse regardless of NODE_ENV whenever a tunnel is active.
-	if (environment.PROTOKIT_TUNNEL_ACTIVE) {
+	if (environment.protokitTunnelActive) {
 		return jsonResponse({ error: 'not_found' }, { status: 404 });
 	}
 

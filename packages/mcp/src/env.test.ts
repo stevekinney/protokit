@@ -6,7 +6,7 @@ import { describe, expect, it } from 'bun:test';
  * (`CONFIG-001`). The check runs imperatively at module load, against the
  * real `process.env`, so it can only be proven by actually loading the
  * module in a fresh process with a real environment — not by constructing
- * a schema-only test around a mocked `t3-env` runtime.
+ * a schema-only test around a mocked Environmentalist runtime.
  */
 async function loadEnvironmentIn(env: Record<string, string>): Promise<{
 	exitCode: number;
@@ -32,7 +32,7 @@ async function loadEnvironmentIn(env: Record<string, string>): Promise<{
  * `--coverage` collector resets a source file's line-hit counters on every
  * fresh in-process re-instantiation of that file, so re-importing `env.ts`
  * in-process to observe the throw would wipe out the coverage already
- * recorded for the successful `createEnv(...)` path instead of unioning
+ * recorded for the successful `environmentalist.sync(...)` path instead of unioning
  * with it — regardless of import order or whether the two imports are
  * split across separate test files. A real subprocess cannot regress an
  * already-covered line (it is invisible to the parent's coverage
@@ -41,7 +41,7 @@ async function loadEnvironmentIn(env: Record<string, string>): Promise<{
  * toolchain, not silently skipped.
  */
 describe('SKIP_ENV_VALIDATION guard', () => {
-	it('throws immediately when SKIP_ENV_VALIDATION is set, before createEnv runs', async () => {
+	it('throws immediately when SKIP_ENV_VALIDATION is set, before environmentalist.sync runs', async () => {
 		const { exitCode, stderr } = await loadEnvironmentIn({
 			SKIP_ENV_VALIDATION: 'true',
 			NODE_ENV: 'test',

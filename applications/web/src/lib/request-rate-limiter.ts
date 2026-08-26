@@ -36,7 +36,7 @@ function buildRateLimitKey(route: RateLimitRoute, identifier: string): string {
 	// Giving each run its own namespace isolates the bucket while still
 	// exercising the real production limits — as opposed to raising the limit for
 	// tests, which would stop them testing the thing they exist to test.
-	const namespace = environment.RATE_LIMIT_KEY_NAMESPACE;
+	const namespace = environment.rateLimitKeyNamespace;
 	return namespace
 		? `rate_limit:${namespace}:${route}:${identifier}`
 		: `rate_limit:${route}:${identifier}`;
@@ -44,7 +44,7 @@ function buildRateLimitKey(route: RateLimitRoute, identifier: string): string {
 
 async function resolveAtomicStore(): Promise<AtomicSlidingWindowStore> {
 	if (!isRedisConfigured()) {
-		if (environment.NODE_ENV === 'production') {
+		if (environment.nodeEnv === 'production') {
 			// Belt-and-suspenders: `assertProductionStartupInvariants` should have
 			// already refused to boot without Redis. This throw exists so a
 			// misconfiguration that slips past startup (e.g. Redis becoming
@@ -89,8 +89,8 @@ export async function enforceOauthRegistrationRateLimit(input: {
 	return consumeRateLimit({
 		route: 'oauth_register',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_REGISTER_MAX,
-		windowSeconds: environment.RATE_LIMIT_REGISTER_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitRegisterMax,
+		windowSeconds: environment.rateLimitRegisterWindowSeconds,
 	});
 }
 
@@ -105,8 +105,8 @@ export async function enforceOauthTokenNetworkRateLimit(input: {
 	return consumeRateLimit({
 		route: 'oauth_token_network',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_TOKEN_MAX,
-		windowSeconds: environment.RATE_LIMIT_TOKEN_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitTokenMax,
+		windowSeconds: environment.rateLimitTokenWindowSeconds,
 	});
 }
 
@@ -122,8 +122,8 @@ export async function enforceOauthTokenClientRateLimit(input: {
 	return consumeRateLimit({
 		route: 'oauth_token_client',
 		identifier: `${input.networkIdentity}:${input.clientId}`,
-		maximumRequests: environment.RATE_LIMIT_TOKEN_MAX,
-		windowSeconds: environment.RATE_LIMIT_TOKEN_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitTokenMax,
+		windowSeconds: environment.rateLimitTokenWindowSeconds,
 	});
 }
 
@@ -133,8 +133,8 @@ export async function enforceOauthRevokeRateLimit(input: {
 	return consumeRateLimit({
 		route: 'oauth_revoke',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_REVOKE_MAX,
-		windowSeconds: environment.RATE_LIMIT_REVOKE_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitRevokeMax,
+		windowSeconds: environment.rateLimitRevokeWindowSeconds,
 	});
 }
 
@@ -144,8 +144,8 @@ export async function enforceOauthAuthorizeRateLimit(input: {
 	return consumeRateLimit({
 		route: 'oauth_authorize',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_AUTHORIZE_MAX,
-		windowSeconds: environment.RATE_LIMIT_AUTHORIZE_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitAuthorizeMax,
+		windowSeconds: environment.rateLimitAuthorizeWindowSeconds,
 	});
 }
 
@@ -155,8 +155,8 @@ export async function enforceGoogleAuthRateLimit(input: {
 	return consumeRateLimit({
 		route: 'google_auth',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_GOOGLE_AUTH_MAX,
-		windowSeconds: environment.RATE_LIMIT_GOOGLE_AUTH_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitGoogleAuthMax,
+		windowSeconds: environment.rateLimitGoogleAuthWindowSeconds,
 	});
 }
 
@@ -167,8 +167,8 @@ export async function enforceMcpNetworkRateLimit(input: {
 	return consumeRateLimit({
 		route: 'mcp_network',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_MCP_MAX,
-		windowSeconds: environment.RATE_LIMIT_MCP_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitMcpMax,
+		windowSeconds: environment.rateLimitMcpWindowSeconds,
 	});
 }
 
@@ -179,8 +179,8 @@ export async function enforceMcpRateLimit(input: {
 	return consumeRateLimit({
 		route: 'mcp_user',
 		identifier: input.userId,
-		maximumRequests: environment.RATE_LIMIT_MCP_MAX,
-		windowSeconds: environment.RATE_LIMIT_MCP_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitMcpMax,
+		windowSeconds: environment.rateLimitMcpWindowSeconds,
 	});
 }
 
@@ -190,8 +190,8 @@ export async function enforceHealthProbeRateLimit(input: {
 	return consumeRateLimit({
 		route: 'health_probe',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_HEALTH_MAX,
-		windowSeconds: environment.RATE_LIMIT_HEALTH_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitHealthMax,
+		windowSeconds: environment.rateLimitHealthWindowSeconds,
 	});
 }
 
@@ -208,8 +208,8 @@ export async function enforceMetricsRateLimit(input: {
 	return consumeRateLimit({
 		route: 'metrics_probe',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_METRICS_MAX,
-		windowSeconds: environment.RATE_LIMIT_METRICS_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitMetricsMax,
+		windowSeconds: environment.rateLimitMetricsWindowSeconds,
 	});
 }
 
@@ -219,8 +219,8 @@ export async function enforceSessionCreationRateLimit(input: {
 	return consumeRateLimit({
 		route: 'session_creation',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_SESSION_MAX,
-		windowSeconds: environment.RATE_LIMIT_SESSION_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitSessionMax,
+		windowSeconds: environment.rateLimitSessionWindowSeconds,
 	});
 }
 
@@ -238,10 +238,10 @@ export async function isAuthenticationLockedOut(input: {
 	const atomicStore = await resolveAtomicStore();
 	const currentCount = await slidingWindowRateLimiter.peek({
 		key: buildRateLimitKey('failed_authentication', input.networkIdentity),
-		windowSeconds: environment.RATE_LIMIT_FAILED_AUTH_WINDOW_SECONDS,
+		windowSeconds: environment.rateLimitFailedAuthWindowSeconds,
 		atomicStore,
 	});
-	return currentCount >= environment.RATE_LIMIT_FAILED_AUTH_MAX;
+	return currentCount >= environment.rateLimitFailedAuthMax;
 }
 
 export async function recordFailedAuthentication(input: {
@@ -250,7 +250,7 @@ export async function recordFailedAuthentication(input: {
 	await consumeRateLimit({
 		route: 'failed_authentication',
 		identifier: input.networkIdentity,
-		maximumRequests: environment.RATE_LIMIT_FAILED_AUTH_MAX,
-		windowSeconds: environment.RATE_LIMIT_FAILED_AUTH_WINDOW_SECONDS,
+		maximumRequests: environment.rateLimitFailedAuthMax,
+		windowSeconds: environment.rateLimitFailedAuthWindowSeconds,
 	});
 }

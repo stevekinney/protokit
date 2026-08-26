@@ -17,7 +17,7 @@ export function handlePrivacyPolicyGet(): Response {
 	return createStaticHtmlResponse({
 		metadata: { title: 'Privacy Policy' },
 		component: PrivacyPolicyPage,
-		props: { supportContactEmail: environment.SUPPORT_CONTACT_EMAIL },
+		props: { supportContactEmail: environment.supportContactEmail },
 	});
 }
 
@@ -25,7 +25,7 @@ export function handleTermsOfServiceGet(): Response {
 	return createStaticHtmlResponse({
 		metadata: { title: 'Terms of Service' },
 		component: TermsOfServicePage,
-		props: { supportContactEmail: environment.SUPPORT_CONTACT_EMAIL },
+		props: { supportContactEmail: environment.supportContactEmail },
 	});
 }
 
@@ -33,6 +33,6 @@ export function handleSupportGet(): Response {
 	return createStaticHtmlResponse({
 		metadata: { title: 'Support' },
 		component: SupportPage,
-		props: { supportContactEmail: environment.SUPPORT_CONTACT_EMAIL },
+		props: { supportContactEmail: environment.supportContactEmail },
 	});
 }

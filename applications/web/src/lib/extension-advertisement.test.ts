@@ -13,10 +13,10 @@ import { mock } from 'bun:test';
  */
 
 const mockEnvironment: Record<string, unknown> = {
-	MCP_ENABLE_UI_EXTENSION: true,
-	MCP_TOKEN_TTL_SECONDS: 3600,
-	MCP_REFRESH_TOKEN_TTL_SECONDS: 2_592_000,
-	BASE_URL: 'https://app.example.com',
+	mcpEnableUiExtension: true,
+	mcpTokenTtlSeconds: 3600,
+	mcpRefreshTokenTtlSeconds: 2_592_000,
+	baseUrl: 'https://app.example.com',
 };
 
 mock.module('@web/env', () => ({

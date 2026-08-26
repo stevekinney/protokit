@@ -5,15 +5,15 @@ import { cancellableOperationTestHooks } from '@template/mcp';
 
 mock.module('@web/env', () => ({
 	environment: {
-		MCP_ENABLE_UI_EXTENSION: false,
+		mcpEnableUiExtension: false,
 		// Conformance mode is on for this suite (unlike production) so the
 		// S-11 regression test below can drive the real
 		// `test_watched_resource_update` fixture instead of reaching into
 		// `mcp-handler.ts` internals — `shouldEnableConformanceMode`'s own
 		// pure-function unit tests above don't read this mock at all, and no
 		// other test in this file asserts anything is *absent* because of it.
-		MCP_CONFORMANCE_MODE: true,
-		PROTOKIT_TUNNEL_ACTIVE: false,
+		mcpConformanceMode: true,
+		protokitTunnelActive: false,
 	},
 }));
 

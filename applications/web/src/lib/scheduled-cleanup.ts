@@ -358,8 +358,8 @@ let activeSweep: Promise<void> | null = null;
 // per test run so two suites racing against the same shared test Redis
 // don't contend over one one global lease key that has nothing to do with
 // what either of them is asserting.
-const CLEANUP_LEASE_KEY = environment.RATE_LIMIT_KEY_NAMESPACE
-	? `scheduled_cleanup:${environment.RATE_LIMIT_KEY_NAMESPACE}:leader_lease`
+const CLEANUP_LEASE_KEY = environment.rateLimitKeyNamespace
+	? `scheduled_cleanup:${environment.rateLimitKeyNamespace}:leader_lease`
 	: 'scheduled_cleanup:leader_lease';
 /** One value per process, not per acquisition -- see `acquireScheduledCleanupLease`'s comment for why the SAME value must survive across an unref'd interval's repeated calls. */
 const cleanupLeaseHolderId = randomUUID();

@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 mock.module('@web/env', () => ({
 	environment: {
-		GOOGLE_CLIENT_ID: 'test-google-client-id',
-		GOOGLE_CLIENT_SECRET: 'test-google-client-secret',
-		SESSION_SIGNING_SECRET: 'a-very-secret-key-that-is-at-least-32-chars-long',
-		SESSION_COOKIE_NAME: 'test_session',
-		SESSION_TIME_TO_LIVE_SECONDS: 3600,
-		NODE_ENV: 'test',
-		BASE_URL: undefined,
+		googleClientId: 'test-google-client-id',
+		googleClientSecret: 'test-google-client-secret',
+		sessionSigningSecret: 'a-very-secret-key-that-is-at-least-32-chars-long',
+		sessionCookieName: 'test_session',
+		sessionTimeToLiveSeconds: 3600,
+		nodeEnv: 'test',
+		baseUrl: undefined,
 	},
 }));
 

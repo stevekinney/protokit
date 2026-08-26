@@ -170,22 +170,75 @@ if (!serverBuildResult.success) {
 	process.exit(1);
 }
 
-// Bun's bundler constant-folds `process.env.NODE_ENV` at build time. That made
-// the shipped server read whichever value happened to be set on the *build*
+// Bun's bundler constant-folds a static `process.env.NODE_ENV` (or
+// `process.env["NODE_ENV"]`) member access at build time. That made the
+// shipped server read whichever value happened to be set on the *build*
 // machine — "production" inside the Docker builder stage, "development" for a
 // local build — so CONFIG-001's fail-closed startup invariants could never
-// observe the real runtime value, and the image could not be booted in any other
-// mode. `env.ts` reads `process.env['NODE_ENV']` instead, which Bun leaves alone.
+// observe the real runtime value, and the image could not be booted in any
+// other mode. `env.ts` never names `NODE_ENV` as a static property access at
+// all: it resolves the whole environment through `@lostgradient/environmentalist`,
+// which reads variables by enumerating `Object.entries(process.env)` — a
+// dynamic read of the object Bun's bundler has no static property name to
+// fold.
 //
-// That is a subtle property to preserve by convention alone, so assert it here:
-// a future edit that reverts to the dot form fails the build rather than quietly
-// shipping an artifact whose environment is frozen at build time.
+// That is a subtle property to preserve by convention alone, so assert it
+// here: a future edit that reads `environment.nodeEnv` from a schema wired up
+// through a literal `process.env.NODE_ENV`/`process.env["NODE_ENV"]` access
+// instead of the resolver's dynamic enumeration fails the build rather than
+// quietly shipping an artifact whose environment is frozen at build time.
+//
+// One check on the built bundle is not enough on its own: "does the bundle
+// contain a dynamic read anywhere" would pass even if `applications/web/src/env.ts`
+// specifically regressed to a static literal, because `packages/mcp` and
+// `packages/database`'s own `env.ts` files enumerate `process.env`
+// independently and would still satisfy it (review finding on PR #31).
+//
+// The natural fix — also assert the bundle contains no static
+// `process.env.NODE_ENV` access — does NOT work, and shipping it was itself
+// a second review finding on the same PR: `Bun.build` folds a static dot-form
+// `process.env.NODE_ENV` into a baked string literal DURING the build that
+// produces `dist/server.js`, before this script ever inspects it (confirmed
+// directly: `bun build` on a file containing `process.env.NODE_ENV` emits
+// `var x = "production"`, no trace of the source expression, with no
+// `define` configured at all — the bracket form `process.env['NODE_ENV']`
+// is the only spelling immune to this). A post-build regex can never see
+// the dangerous access; by the time `dist/server.js` exists, the bundler
+// has already erased the evidence of exactly the regression this guards
+// against.
+//
+// So the static-access check has to run against SOURCE, before Bun ever
+// gets to fold it — scoped to the three `env.ts` files themselves (not
+// this file, whose comments and error messages legitimately mention the
+// literal pattern as prose).
+const environmentFilePaths = [
+	'src/env.ts',
+	'../../packages/mcp/src/env.ts',
+	'../../packages/database/src/env.ts',
+];
+const staticNodeEnvironmentPattern = /process\.env(\.NODE_ENV\b|\[["']NODE_ENV["']\])/;
+for (const path of environmentFilePaths) {
+	const source = await Bun.file(path).text();
+	if (staticNodeEnvironmentPattern.test(source)) {
+		console.error(
+			`Build aborted: ${path} contains a static process.env.NODE_ENV (or ` +
+				'process.env["NODE_ENV"]) access. Bun\'s bundler folds that into a build-time\n' +
+				'constant before this script ever inspects the built bundle, which would freeze\n' +
+				"NODE_ENV at whatever value the build machine had. Read it through env.ts's\n" +
+				'`environmentalist.sync(...)` call instead, which enumerates `process.env`\n' +
+				'dynamically and cannot be folded.',
+		);
+		process.exit(1);
+	}
+}
+
 const serverBundleSource = await Bun.file('dist/server.js').text();
-if (!serverBundleSource.includes(`process.env["NODE_ENV"]`)) {
+if (!serverBundleSource.includes('Object.entries(process.env)')) {
 	console.error(
-		'Build aborted: dist/server.js contains no runtime read of NODE_ENV, which means the\n' +
-			'bundler inlined it at build time. Read it as `process.env["NODE_ENV"]` (bracket\n' +
-			'literal) rather than `process.env.NODE_ENV` so the value stays configurable at runtime.',
+		'Build aborted: dist/server.js contains no runtime enumeration of process.env, which\n' +
+			'means NODE_ENV (and every other setting) may have been inlined at build time.\n' +
+			"Resolve the environment through env.ts's `environmentalist.sync(...)` call so the\n" +
+			'value stays configurable at runtime.',
 	);
 	process.exit(1);
 }

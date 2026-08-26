@@ -73,7 +73,7 @@ describe('acquireMcpConcurrencySlot', () => {
 
 	it('falls back to the real, module-level dependencies when none are injected', async () => {
 		// Exercises `liveMcpConcurrencyLimiterDependencies`, in particular its
-		// `maximumConcurrent` getter reading `environment.RATE_LIMIT_MCP_CONCURRENT_MAX`
+		// `maximumConcurrent` getter reading `environment.rateLimitMcpConcurrentMax`
 		// -- the default-parameter path production call sites actually use.
 		// Redis isn't configured for this test process (no REDIS_URL wiring
 		// via `@web/env`'s `isRedisConfigured`), so this exercises the

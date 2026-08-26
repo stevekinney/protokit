@@ -2,9 +2,9 @@ import { describe, expect, it, mock } from 'bun:test';
 
 mock.module('@web/env', () => ({
 	environment: {
-		SESSION_SIGNING_SECRET: 'a-very-secret-key-that-is-at-least-32-chars-long',
-		SESSION_SIGNING_SECRET_PREVIOUS: undefined,
-		NODE_ENV: 'test',
+		sessionSigningSecret: 'a-very-secret-key-that-is-at-least-32-chars-long',
+		sessionSigningSecretPrevious: undefined,
+		nodeEnv: 'test',
 	},
 }));
 

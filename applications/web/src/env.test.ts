@@ -11,14 +11,14 @@ import { environment } from '@web/env';
  * `import { environment } from '@web/env'` already exercised. Keeping the
  * two in separate files (the suite runs with `--isolate`, so each file is
  * its own process) means that reset can never clobber this file's real
- * coverage of the happy-path `createEnv(...)` call. Mirrors
+ * coverage of the happy-path `environmentalist.sync(...)` call. Mirrors
  * `resolve-public-file-realpath-failure.test.ts`'s identical reason for
  * isolating a module-reloading test into its own file.
  */
 describe('environment', () => {
 	it('validates the real test-process environment and exposes its typed values', () => {
-		expect(environment.NODE_ENV).toBe('test');
-		expect(typeof environment.SESSION_COOKIE_NAME).toBe('string');
-		expect(environment.SESSION_COOKIE_NAME.length).toBeGreaterThan(0);
+		expect(environment.nodeEnv).toBe('test');
+		expect(typeof environment.sessionCookieName).toBe('string');
+		expect(environment.sessionCookieName.length).toBeGreaterThan(0);
 	});
 });

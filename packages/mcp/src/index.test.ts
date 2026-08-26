@@ -36,7 +36,7 @@ describe('package entry barrel (./index.ts)', () => {
 	});
 
 	it('re-exports the validated environment', () => {
-		expect(packageEntry.environment.NODE_ENV).toBeDefined();
+		expect(packageEntry.environment.nodeEnv).toBeDefined();
 	});
 
 	it('re-exports the scope vocabulary and its type guard consistently', () => {

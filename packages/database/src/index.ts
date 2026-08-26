@@ -8,8 +8,8 @@ let instance: NeonHttpDatabase<typeof schema> | undefined;
 
 function getDatabase(): NeonHttpDatabase<typeof schema> {
 	if (!instance) {
-		applyLocalProxyFetchEndpoint(environment.DATABASE_LOCAL_PROXY_URL);
-		const sql = neon(environment.DATABASE_URL);
+		applyLocalProxyFetchEndpoint(environment.databaseLocalProxyUrl);
+		const sql = neon(environment.databaseUrl);
 		instance = drizzle(sql, { schema });
 	}
 	return instance;

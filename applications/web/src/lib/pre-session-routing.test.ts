@@ -12,9 +12,9 @@ import { describe, expect, it, mock, beforeEach } from 'bun:test';
  */
 
 const mockEnvironment: Record<string, unknown> = {
-	NODE_ENV: 'test',
-	MCP_ALLOWED_ORIGINS: 'http://localhost:3000',
-	BASE_URL: 'https://app.example.com',
+	nodeEnv: 'test',
+	mcpAllowedOrigins: 'http://localhost:3000',
+	baseUrl: 'https://app.example.com',
 };
 
 mock.module('@web/env', () => ({ environment: mockEnvironment }));

@@ -96,8 +96,8 @@ async function authenticateMcpUser(context: RequestContext): Promise<Response | 
 
 	if (
 		isDnsRebindingProtectionActive({
-			conformanceModeConfigured: environment.MCP_CONFORMANCE_MODE,
-			tunnelActive: environment.PROTOKIT_TUNNEL_ACTIVE,
+			conformanceModeConfigured: environment.mcpConformanceMode,
+			tunnelActive: environment.protokitTunnelActive,
 		}) &&
 		isLoopbackHostname(context.requestUrl.hostname) &&
 		!hasValidLocalhostRebindingHeaders(context.request.headers)

@@ -318,8 +318,8 @@ function respondToOauthBodyError(error: unknown, headers: Record<string, string>
 function issueTokens() {
 	const accessToken = randomBytes(48).toString('hex');
 	const refreshToken = randomBytes(48).toString('hex');
-	const tokenTimeToLiveSeconds = environment.MCP_TOKEN_TTL_SECONDS;
-	const refreshTimeToLiveSeconds = environment.MCP_REFRESH_TOKEN_TTL_SECONDS;
+	const tokenTimeToLiveSeconds = environment.mcpTokenTtlSeconds;
+	const refreshTimeToLiveSeconds = environment.mcpRefreshTokenTtlSeconds;
 
 	return {
 		accessToken,
@@ -2338,7 +2338,7 @@ export async function handleOauthAuthorizationMetadataGet(
 			// let a client discover UI-extension support in OAuth metadata and
 			// then receive server capabilities without it.
 			extensions: {
-				...(environment.MCP_ENABLE_UI_EXTENSION && hasRegisteredUiExtensionResource()
+				...(environment.mcpEnableUiExtension && hasRegisteredUiExtensionResource()
 					? { [mcpUiExtensionIdentifier]: {} }
 					: {}),
 			},
@@ -2359,7 +2359,7 @@ export async function handleOauthProtectedResourceMetadataGet(
 			// DOCS-001 / RFC 9728 sec. 2: same documentation/legal links as the
 			// authorization server metadata above, under this RFC's own field
 			// names.
-			resource_name: mcpEnvironment.MCP_SERVER_NAME,
+			resource_name: mcpEnvironment.mcpServerName,
 			resource_documentation: `${baseUrl}/support`,
 			resource_policy_uri: `${baseUrl}/privacy`,
 			resource_tos_uri: `${baseUrl}/terms`,
@@ -2379,7 +2379,7 @@ export async function handleOauthProtectedResourceMcpMetadataGet(
 			bearer_methods_supported: ['header'],
 			mcp_protocol_version: mcpLatestProtocolVersion,
 			scopes_supported: getSupportedScopes(),
-			resource_name: mcpEnvironment.MCP_SERVER_NAME,
+			resource_name: mcpEnvironment.mcpServerName,
 			resource_documentation: `${baseUrl}/support`,
 			resource_policy_uri: `${baseUrl}/privacy`,
 			resource_tos_uri: `${baseUrl}/terms`,

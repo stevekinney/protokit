@@ -22,7 +22,7 @@ import { describe, expect, it, mock } from 'bun:test';
  */
 mock.module('../env.js', () => ({
 	environment: {
-		LOG_CONTENT_DIAGNOSTICS_UNTIL: undefined,
+		logContentDiagnosticsUntil: undefined,
 	},
 }));
 

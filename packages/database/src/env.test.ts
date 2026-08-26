@@ -3,7 +3,7 @@ import { environment } from './env';
 
 /**
  * CONFIG-001 / BUG-001: `env.ts` refuses `SKIP_ENV_VALIDATION` outright, at
- * module load, before `createEnv(...)` ever runs. This can only be proven
+ * module load, before `environmentalist.sync(...)` ever runs. This can only be proven
  * by actually loading the module in a fresh process with a real
  * environment -- mirrors the idiom `packages/mcp/src/env.test.ts` already
  * uses for its own `SKIP_ENV_VALIDATION`/`LOG_CONTENT_DIAGNOSTICS_UNTIL`
@@ -16,7 +16,7 @@ import { environment } from './env';
  * collector resets a source file's line-hit counters on every fresh
  * in-process re-instantiation of that file, so re-importing `env.ts` to
  * observe the throw wipes out the *already-recorded* successful
- * `createEnv(...)` lines instead of unioning with them -- it does not
+ * `environmentalist.sync(...)` lines instead of unioning with them -- it does not
  * matter which import runs first/last or whether the two imports are
  * split across separate test files; whichever fresh module evaluation
  * happens to be the last one recorded replaces the entire file's coverage
@@ -42,7 +42,7 @@ async function loadEnvironmentIn(env: Record<string, string>): Promise<{
 }
 
 describe('SKIP_ENV_VALIDATION guard', () => {
-	it('throws immediately when SKIP_ENV_VALIDATION is set, before createEnv runs', async () => {
+	it('throws immediately when SKIP_ENV_VALIDATION is set, before environmentalist.sync runs', async () => {
 		const { exitCode, stderr } = await loadEnvironmentIn({
 			SKIP_ENV_VALIDATION: 'true',
 			DATABASE_URL: 'postgresql://protokit:protokit@db.localtest.me:5432/protokit_test',
@@ -63,8 +63,8 @@ describe('SKIP_ENV_VALIDATION guard', () => {
 
 describe('environment', () => {
 	it('validates the real test-process environment and exposes DATABASE_URL', () => {
-		expect(environment.DATABASE_URL).toBeDefined();
-		expect(typeof environment.DATABASE_URL).toBe('string');
-		expect(environment.DATABASE_URL.length).toBeGreaterThan(0);
+		expect(environment.databaseUrl).toBeDefined();
+		expect(typeof environment.databaseUrl).toBe('string');
+		expect(environment.databaseUrl.length).toBeGreaterThan(0);
 	});
 });

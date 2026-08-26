@@ -279,8 +279,8 @@ async function probeDatabaseUrl(
 /**
  * Probes `DATABASE_URL`, and — when `DATABASE_URL_UNPOOLED` is also set — probes it too, as a
  * second, separately reported result. `packages/database/src/migrate.ts`'s `runMigrations`
- * prefers `DATABASE_URL_UNPOOLED` over `DATABASE_URL` (`environment.DATABASE_URL_UNPOOLED ||
- * environment.DATABASE_URL`), so a stale or unreachable unpooled URL previously passed doctor
+ * prefers `DATABASE_URL_UNPOOLED` over `DATABASE_URL` (`environment.databaseUrlUnpooled ||
+ * environment.databaseUrl`), so a stale or unreachable unpooled URL previously passed doctor
  * silently — only the pooled URL was ever probed — while the real migration path (run during
  * every deployment) still failed against it despite doctor's all-green report. When
  * `DATABASE_URL_UNPOOLED` is unset, migration falls back to the same `DATABASE_URL` this already

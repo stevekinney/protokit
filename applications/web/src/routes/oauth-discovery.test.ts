@@ -5,7 +5,7 @@ process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-c
 process.env.SESSION_SIGNING_SECRET =
 	process.env.SESSION_SIGNING_SECRET ?? 'development-session-secret-with-at-least-32-characters';
 process.env.MCP_ALLOWED_ORIGINS = process.env.MCP_ALLOWED_ORIGINS ?? 'http://localhost:3000';
-// `@t3-oss/env-core` validates `process.env` once, at import time, so
+// `env.ts` validates `process.env` once, at import time, so
 // `BASE_URL` must be set before `@web/application` (and therefore `@web/env`)
 // is first imported — setting it later in this file would have no effect on
 // the already-validated `environment` singleton.

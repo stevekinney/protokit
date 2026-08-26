@@ -18,7 +18,7 @@ export const redisProbeTimeoutMs = 2000;
  * reading the live `@web/env` singleton (as `redis-client.ts`'s `isRedisHealthy` does) so it can
  * be imported by `scripts/doctor.ts`, which probes a *candidate* `REDIS_URL` that may differ from
  * — or not yet exist in — the real process environment. Importing anything from `env.ts` at
- * module load time runs `createEnv()` against the real environment immediately and throws on an
+ * module load time runs `environmentalist.sync()` against the real environment immediately and throws on an
  * incomplete one; this file has no such import, for the same reason `environment-schema.ts` and
  * `production-startup-requirements.ts` were split out of `env.ts`/`startup-invariants.ts` (see
  * `DX-001`).

@@ -5,11 +5,11 @@ const SESSION_SIGNING_SECRET = 'a-very-secret-key-that-is-at-least-32-chars-long
 
 mock.module('@web/env', () => ({
 	environment: {
-		GOOGLE_CLIENT_ID: 'test-google-client-id',
-		GOOGLE_CLIENT_SECRET: 'test-google-client-secret',
-		SESSION_SIGNING_SECRET,
-		NODE_ENV: 'test',
-		BASE_URL: undefined,
+		googleClientId: 'test-google-client-id',
+		googleClientSecret: 'test-google-client-secret',
+		sessionSigningSecret: SESSION_SIGNING_SECRET,
+		nodeEnv: 'test',
+		baseUrl: undefined,
 	},
 }));
 

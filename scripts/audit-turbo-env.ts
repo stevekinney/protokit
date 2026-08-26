@@ -10,37 +10,77 @@ import { join } from 'node:path';
  * cached result produced under a DIFFERENT value of that variable, and in
  * Turbo's strict environment mode an omitted variable can also be absent
  * from the task's process entirely. This audit is the prevention mechanism
- * for that class of drift recurring: every `env.ts` in the repository is
- * the single source of truth for what a package actually reads, so this
- * derives the expected set from those files rather than restating them,
- * the same "derive, don't restate" rule `DX-001`'s `doctor` follows for
- * `src/env.ts` schemas.
+ * for that class of drift recurring: every `environment-schema.ts` in the
+ * repository is the single source of truth for what a package actually
+ * reads, so this derives the expected set from those files rather than
+ * restating them, the same "derive, don't restate" rule `DX-001`'s `doctor`
+ * follows for the same schemas.
+ *
+ * Previously this derived the set by regex-matching literal
+ * `process.env.KEY` / `process.env['KEY']` reads inside each `env.ts`. The
+ * `@lostgradient/environmentalist` migration replaced those literal reads
+ * with a dynamic `Object.entries(process.env)` enumeration (see
+ * `applications/web/src/build.ts` for why that's load-bearing on its own),
+ * which made that regex match nothing and silently turned this audit into
+ * a no-op that always reported success. Environmentalist derives each
+ * variable's name from the schema's own key (`BASE_URL` in the schema is
+ * read from `BASE_URL` in the environment), so `environment-schema.ts` is
+ * now the thing this audit parses instead.
  */
 
-/** Repo-relative paths of every `env.ts` this audit checks, one per package that reads `process.env` directly. */
-export const ENV_FILE_PATHS: readonly string[] = [
-	'applications/web/src/env.ts',
-	'packages/mcp/src/env.ts',
-	'packages/database/src/env.ts',
+/** Repo-relative paths of every `environment-schema.ts` this audit checks, one per package with a validated environment. */
+export const ENV_SCHEMA_FILE_PATHS: readonly string[] = [
+	'applications/web/src/environment-schema.ts',
+	'packages/mcp/src/environment-schema.ts',
+	'packages/database/src/environment-schema.ts',
 ];
 
 /**
- * Extracts every environment variable name an `env.ts` file's `runtimeEnv`
- * block actually reads from `process.env`, in either the dot form
- * (`process.env.FOO`) or the bracket-literal form required for `NODE_ENV`
- * (`process.env['NODE_ENV']`). Deliberately regex-based rather than a real
- * parse: `env.ts` files in this repository are hand-written and small, and
- * a regex over the literal `process.env.KEY` / `process.env['KEY']` shape
- * is exactly what every existing entry looks like.
+ * Three variables `applications/web/src/env.ts` consults directly from the
+ * real OS environment (Railway's replica identifiers, and the generic
+ * `HOSTNAME`) to derive the `railwayReplicaIdentifier`/`hostnameIdentifier`
+ * schema fields — see that file's `env` object construction. They are not
+ * schema keys themselves (there is no `z.object()` field named
+ * `RAILWAY_REPLICA_ID`), so `extractSchemaKeyNames` can never find them;
+ * listed explicitly here so the audit still catches them dropping out of
+ * `turbo.json`'s `globalEnv`.
  */
-export function extractRuntimeEnvVarNames(source: string): string[] {
+export const EXTRA_RUNTIME_ENV_VAR_NAMES: readonly string[] = [
+	'RAILWAY_REPLICA_ID',
+	'RAILWAY_INSTANCE_ID',
+	'HOSTNAME',
+];
+
+/**
+ * The two web schema fields `RAILWAY_REPLICA_ID`/`RAILWAY_INSTANCE_ID`/
+ * `HOSTNAME` above feed into — `railwayReplicaIdentifier`'s and
+ * `hostnameIdentifier`'s canonical keys derive the schema names
+ * `RAILWAY_REPLICA_IDENTIFIER` and `HOSTNAME_IDENTIFIER`, which
+ * `extractSchemaKeyNames` finds like any other field, but neither is ever
+ * read from the real environment under its own name — only the three
+ * `EXTRA_RUNTIME_ENV_VAR_NAMES` above are. Excluded here for the same
+ * reason `findMissingGlobalEnvVars` excludes `SKIP_ENV_VALIDATION`: it is
+ * not a configuration value any cached task's output can vary by on its
+ * own, and `turbo.json`'s `globalEnv` has never listed it.
+ */
+export const DERIVED_ONLY_SCHEMA_KEYS: readonly string[] = [
+	'RAILWAY_REPLICA_IDENTIFIER',
+	'HOSTNAME_IDENTIFIER',
+];
+
+/**
+ * Extracts every top-level key of an `environment-schema.ts` file's
+ * exported Zod shape object — each one is the exact environment-variable
+ * name Environmentalist derives that field's canonical camelCase key from,
+ * since every schema in this repository already spells its keys in
+ * `SCREAMING_SNAKE_CASE`. Deliberately regex-based rather than a real
+ * parse: matches a `\tKEY: ` line, which is exactly the shape of every
+ * top-level entry in these hand-written, single-level shape objects.
+ */
+export function extractSchemaKeyNames(source: string): string[] {
 	const names = new Set<string>();
-	const dotForm = /process\.env\.([A-Z][A-Z0-9_]*)/g;
-	const bracketForm = /process\.env\[['"]([A-Z][A-Z0-9_]*)['"]\]/g;
-	for (const match of source.matchAll(dotForm)) {
-		names.add(match[1]!);
-	}
-	for (const match of source.matchAll(bracketForm)) {
+	const keyLine = /^\t([A-Z][A-Z0-9_]*):/gm;
+	for (const match of source.matchAll(keyLine)) {
 		names.add(match[1]!);
 	}
 	return [...names].sort();
@@ -75,9 +115,15 @@ export function findMissingGlobalEnvVars(
 
 async function runAudit(): Promise<void> {
 	const repoRoot = join(import.meta.dir, '..');
-	const runtimeEnvVarNames = ENV_FILE_PATHS.flatMap((path) =>
-		extractRuntimeEnvVarNames(readFileSync(join(repoRoot, path), 'utf8')),
-	);
+	const derivedOnly = new Set(DERIVED_ONLY_SCHEMA_KEYS);
+	const runtimeEnvVarNames = [
+		...ENV_SCHEMA_FILE_PATHS.flatMap((path) =>
+			extractSchemaKeyNames(readFileSync(join(repoRoot, path), 'utf8')).filter(
+				(name) => !derivedOnly.has(name),
+			),
+		),
+		...EXTRA_RUNTIME_ENV_VAR_NAMES,
+	];
 	const globalEnvVarNames = extractGlobalEnvVarNames(
 		readFileSync(join(repoRoot, 'turbo.json'), 'utf8'),
 	);
@@ -85,14 +131,12 @@ async function runAudit(): Promise<void> {
 
 	if (missing.length === 0) {
 		console.log(
-			`[audit:turbo-env] ok: every runtime variable read by ${ENV_FILE_PATHS.length} env.ts file(s) is declared in turbo.json's globalEnv.`,
+			`[audit:turbo-env] ok: every runtime variable read by ${ENV_SCHEMA_FILE_PATHS.length} environment-schema.ts file(s) is declared in turbo.json's globalEnv.`,
 		);
 		return;
 	}
 
-	console.error(
-		'[audit:turbo-env] FAIL: variables read by env.ts but missing from turbo.json globalEnv:',
-	);
+	console.error('[audit:turbo-env] FAIL: variables env.ts reads but turbo.json globalEnv omits:');
 	for (const name of missing) {
 		console.error(`  - ${name}`);
 	}

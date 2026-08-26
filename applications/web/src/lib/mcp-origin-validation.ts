@@ -41,7 +41,7 @@ export function parseAllowedOrigins(rawAllowedOrigins: string | undefined): Set<
 }
 
 function currentAllowedOrigins(): Set<string> {
-	return parseAllowedOrigins(environment.MCP_ALLOWED_ORIGINS);
+	return parseAllowedOrigins(environment.mcpAllowedOrigins);
 }
 
 /**

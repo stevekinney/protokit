@@ -3,7 +3,7 @@ import pino from 'pino';
 import type { DestinationStream, LoggerOptions } from 'pino';
 import { environment } from './env.js';
 
-const isProduction = environment.NODE_ENV === 'production';
+const isProduction = environment.nodeEnv === 'production';
 
 /**
  * OBS-001 / S-14: `logger.ts` previously declared no redaction paths at
@@ -127,7 +127,7 @@ function redactSecretValues(serialized: string): string {
  */
 export function createLogger(options?: { destination?: DestinationStream }): pino.Logger {
 	const baseOptions: LoggerOptions = {
-		level: environment.LOG_LEVEL ?? 'info',
+		level: environment.logLevel ?? 'info',
 		redact: { paths: [...redactionPaths], censor: '[REDACTED]' },
 		hooks: { streamWrite: redactSecretValues },
 	};

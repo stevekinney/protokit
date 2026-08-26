@@ -22,9 +22,9 @@ import { drizzle } from 'drizzle-orm/neon-http';
  * already baselined or that has since been migrated normally.
  */
 async function main() {
-	const databaseUrl = environment.DATABASE_URL_UNPOOLED || environment.DATABASE_URL;
+	const databaseUrl = environment.databaseUrlUnpooled || environment.databaseUrl;
 
-	applyLocalProxyFetchEndpoint(environment.DATABASE_LOCAL_PROXY_URL);
+	applyLocalProxyFetchEndpoint(environment.databaseLocalProxyUrl);
 
 	const sql = neon(databaseUrl);
 	const database = drizzle(sql);

@@ -17,9 +17,9 @@ import type { AuthInfo } from '@modelcontextprotocol/server';
 
 mock.module('@web/env', () => ({
 	environment: {
-		MCP_ENABLE_UI_EXTENSION: false,
-		MCP_CONFORMANCE_MODE: false,
-		PROTOKIT_TUNNEL_ACTIVE: false,
+		mcpEnableUiExtension: false,
+		mcpConformanceMode: false,
+		protokitTunnelActive: false,
 	},
 }));
 

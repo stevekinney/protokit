@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 
 mock.module('@web/env', () => ({
 	environment: {
-		MCP_ALLOWED_ORIGINS: 'http://localhost:3000',
-		MCP_CONFORMANCE_MODE: false,
-		MCP_ENABLE_UI_EXTENSION: true,
-		BASE_URL: undefined,
+		mcpAllowedOrigins: 'http://localhost:3000',
+		mcpConformanceMode: false,
+		mcpEnableUiExtension: true,
+		baseUrl: undefined,
 	},
 }));
 

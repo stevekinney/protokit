@@ -8,7 +8,7 @@ import * as schema from './schema.js';
  * from `./index.js`. That singleton is convenient for this application, but
  * unusable by a sibling app: importing anything from `./index.js` -- even
  * just `schema` off the same module -- eagerly runs `./env.js`'s
- * `createEnv` validation against the *importing* process's environment
+ * environment resolution against the *importing* process's environment
  * variables, which is exactly the coupling a sibling app must not inherit.
  *
  * This factory takes an already-constructed Neon client instead of a
@@ -16,7 +16,7 @@ import * as schema from './schema.js';
  * drivers below, and because leaving `neon(...)`/`new Pool(...)`
  * construction (SSL, pooling, auth tokens) to the caller is exactly the
  * flexibility a sibling app needs. It intentionally does not read
- * `environment.DATABASE_LOCAL_PROXY_URL` or call
+ * `environment.databaseLocalProxyUrl` or call
  * `applyLocalProxyFetchEndpoint` itself -- a caller that needs the local
  * proxy override calls that export directly before constructing its own
  * client, the same way `index.test.ts` and `migrate.ts` already do.

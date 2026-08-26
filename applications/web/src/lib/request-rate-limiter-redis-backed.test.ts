@@ -15,11 +15,11 @@ const realRedisUrl = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
 
 mock.module('@web/env', () => ({
 	environment: {
-		NODE_ENV: 'test',
-		REDIS_URL: realRedisUrl,
-		RATE_LIMIT_REGISTER_MAX: 3,
-		RATE_LIMIT_REGISTER_WINDOW_SECONDS: 60,
-		RATE_LIMIT_KEY_NAMESPACE: `redis-backed-rate-limiter-test-${process.pid}`,
+		nodeEnv: 'test',
+		redisUrl: realRedisUrl,
+		rateLimitRegisterMax: 3,
+		rateLimitRegisterWindowSeconds: 60,
+		rateLimitKeyNamespace: `redis-backed-rate-limiter-test-${process.pid}`,
 	},
 }));
 

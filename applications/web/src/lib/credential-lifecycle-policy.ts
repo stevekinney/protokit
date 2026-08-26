@@ -36,7 +36,7 @@ export type CredentialLifecyclePolicyRow = {
 export const credentialLifecyclePolicy: readonly CredentialLifecyclePolicyRow[] = [
 	{
 		credential: 'Browser session cookie',
-		maxLifetimeMilliseconds: null, // resolved from environment.SESSION_TIME_TO_LIVE_SECONDS at runtime; see the policy test.
+		maxLifetimeMilliseconds: null, // resolved from environment.sessionTimeToLiveSeconds at runtime; see the policy test.
 		rotationProcedure:
 			'None — a session is a bearer credential re-issued on every sign-in, not rotated in place.',
 		revocationPath:
@@ -64,7 +64,7 @@ export const credentialLifecyclePolicy: readonly CredentialLifecyclePolicyRow[] 
 	},
 	{
 		credential: 'OAuth access token',
-		maxLifetimeMilliseconds: null, // resolved from environment.MCP_TOKEN_TTL_SECONDS at runtime; see the policy test.
+		maxLifetimeMilliseconds: null, // resolved from environment.mcpTokenTtlSeconds at runtime; see the policy test.
 		rotationProcedure:
 			'Re-minted alongside every refresh-token rotation (POST /oauth/token, grant_type=refresh_token); the prior access token is revoked in the same request.',
 		revocationPath:
@@ -74,7 +74,7 @@ export const credentialLifecyclePolicy: readonly CredentialLifecyclePolicyRow[] 
 	},
 	{
 		credential: 'OAuth refresh token',
-		maxLifetimeMilliseconds: null, // resolved from environment.MCP_REFRESH_TOKEN_TTL_SECONDS at runtime; see the policy test.
+		maxLifetimeMilliseconds: null, // resolved from environment.mcpRefreshTokenTtlSeconds at runtime; see the policy test.
 		rotationProcedure:
 			'Single-use rotation on every POST /oauth/token grant_type=refresh_token — the presented token is atomically revoked and a new one issued in the same family (oauth_refresh_tokens.familyId).',
 		revocationPath:

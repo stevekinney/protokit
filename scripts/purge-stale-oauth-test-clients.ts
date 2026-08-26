@@ -87,7 +87,7 @@ export async function purgeStaleOauthTestClients(): Promise<number> {
 }
 
 async function main(): Promise<void> {
-	if (!isLocalTestDatabase(databaseEnvironment.DATABASE_URL)) {
+	if (!isLocalTestDatabase(databaseEnvironment.databaseUrl)) {
 		console.error(
 			'[purge-stale-oauth-test-clients] refusing to run: DATABASE_URL does not name the local ' +
 				'`protokit_test` fixture database. This script only ever cleans up after the local test ' +
