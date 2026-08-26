@@ -206,6 +206,43 @@ describe('awaitActiveCleanupSweep', () => {
 		expect(awaited).toBe(true);
 	});
 
+	it('keeps tracking the original in-flight sweep across ticks skipped by the overlap guard', async () => {
+		// Regression: a skipped tick used to unconditionally overwrite
+		// `activeSweep` with its own immediately-resolved promise, so this
+		// would resolve while the original sweep was still issuing database
+		// mutations.
+		let releaseSweep: (() => void) | undefined;
+		let sweepFinished = false;
+		const slowSweep = () =>
+			new Promise<void>((resolve) => {
+				releaseSweep = () => {
+					sweepFinished = true;
+					resolve();
+				};
+			});
+
+		// A short interval so multiple ticks fire -- and get skipped by the
+		// overlap guard -- while the first sweep is still unresolved.
+		startScheduledCleanup(20, slowSweep, async () => true);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		stopScheduledCleanup();
+
+		let awaited = false;
+		const waiting = awaitActiveCleanupSweep().then(() => {
+			awaited = true;
+		});
+
+		await Promise.resolve();
+		expect(awaited).toBe(false);
+		expect(sweepFinished).toBe(false);
+
+		releaseSweep?.();
+		await waiting;
+
+		expect(sweepFinished).toBe(true);
+		expect(awaited).toBe(true);
+	});
+
 	it('a failing sweep still lets disposal proceed rather than rejecting', async () => {
 		startScheduledCleanup(
 			20,
