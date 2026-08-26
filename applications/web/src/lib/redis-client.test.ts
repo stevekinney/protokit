@@ -38,6 +38,22 @@ describe('redis-client against a real, reachable Redis', () => {
 		expect(await isRedisHealthy()).toBe(true);
 	});
 
+	it('a disconnect racing an in-flight subscriber startup closes it instead of orphaning it', async () => {
+		// The regression: `subscriberClient` is assigned only inside the lazy
+		// initializer, so a disconnect arriving before that assignment used to
+		// see `null`, no-op, and leave the still-connecting subscriber open
+		// forever. Starting the connect and immediately disconnecting without
+		// awaiting the startup is exactly the shape a fast-failing mount
+		// produces, since `subscribeToGrantRevocations` begins this
+		// fire-and-forget at module evaluation.
+		const startup = getRedisSubscriberClient();
+
+		await disconnectRedisSubscriberClient();
+
+		const subscriber = await startup;
+		expect(subscriber.isOpen).toBe(false);
+	});
+
 	it('getRedisClient connects and returns an open client', async () => {
 		const client = await getRedisClient();
 		expect(client.isOpen).toBe(true);

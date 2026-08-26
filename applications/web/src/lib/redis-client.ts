@@ -70,7 +70,23 @@ export const getRedisClient = createLazyRedisClient(async () => {
 
 let subscriberClient: RedisClient | null = null;
 
-export const getRedisSubscriberClient = createLazyRedisClient(async () => {
+/**
+ * The most recent subscriber startup, retained so
+ * `disconnectRedisSubscriberClient` can wait for an in-flight one.
+ *
+ * Review finding (P2): `subscriberClient` is only assigned *inside* the
+ * initializer below, after `await getRedisClient()` resolves. A disconnect
+ * arriving while that await is still pending therefore saw `null`, did
+ * nothing, and returned -- and the pending task then went on to duplicate
+ * and connect a client nobody was left holding, leaking an open subscriber
+ * for the life of the process. `subscribeToGrantRevocations` starts this
+ * fire-and-forget at module evaluation, so the window is real and is widest
+ * exactly when startup fails fast (a synchronous invariant failure is
+ * microseconds behind the module evaluation that began the connect).
+ */
+let subscriberStartup: Promise<RedisClient> | null = null;
+
+const connectSubscriberClient = createLazyRedisClient(async () => {
 	const mainClient = await getRedisClient();
 	subscriberClient = mainClient.duplicate();
 
@@ -82,8 +98,24 @@ export const getRedisSubscriberClient = createLazyRedisClient(async () => {
 	return subscriberClient;
 });
 
+export function getRedisSubscriberClient(): Promise<RedisClient> {
+	const startup = connectSubscriberClient();
+	subscriberStartup = startup;
+	return startup;
+}
+
 export async function disconnectRedisSubscriberClient(): Promise<void> {
 	if (!isRedisConfigured()) return;
+
+	// Settle any in-flight startup first, so a subscriber that connects
+	// moments from now is closed rather than orphaned. A failed startup is
+	// swallowed deliberately: there is then nothing to close, and disconnect
+	// is not the place to surface a connection error a caller never asked
+	// for.
+	if (subscriberStartup) {
+		await subscriberStartup.catch(() => undefined);
+		subscriberStartup = null;
+	}
 
 	if (subscriberClient?.isOpen) {
 		await subscriberClient.quit();
