@@ -4,6 +4,7 @@
 	"private": true,
 	"type": "module",
 	"exports": {
+		"./application-mount": "./src/application-mount.ts",
 		"./environment-schema": "./src/environment-schema.ts",
 		"./lib/production-startup-requirements": "./src/lib/production-startup-requirements.ts",
 		"./lib/redis-probe": "./src/lib/redis-probe.ts",

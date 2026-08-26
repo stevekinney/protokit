@@ -349,15 +349,22 @@ function dispatchWithoutSession(context: RequestContext): Response | Promise<Res
 
 export async function handleApplicationRequest(
 	request: Request,
-	input?: { clientAddress?: string },
+	input?: { clientAddress?: string; serveStaticAssets?: boolean },
 ): Promise<Response> {
 	const requestId = randomUUID();
 	const requestUrl = new URL(request.url);
 	const startTime = Date.now();
 
-	const staticFileResponse = await serveStaticFile(requestUrl.pathname);
-	if (staticFileResponse) {
-		return withSecurityHeaders(staticFileResponse, requestUrl.pathname);
+	// A host embedding this application (see
+	// `application-mount.ts`) already serves `/assets/*` and `/favicon.png`
+	// itself and never wants those paths reaching this dispatcher at all.
+	// Defaulting to `true` keeps every existing caller -- `server.ts` and
+	// every test that omits this field -- behaving exactly as before.
+	if (input?.serveStaticAssets ?? true) {
+		const staticFileResponse = await serveStaticFile(requestUrl.pathname);
+		if (staticFileResponse) {
+			return withSecurityHeaders(staticFileResponse, requestUrl.pathname);
+		}
 	}
 
 	const networkIdentity = getRequestClientIdentifier({
