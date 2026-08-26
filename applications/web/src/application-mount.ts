@@ -1,10 +1,15 @@
 import { logger } from '@template/mcp/logger';
+import { jsonResponse } from '@web/lib/http-response';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';
 import { loadAssetManifest, type AssetManifest } from '@web/lib/asset-manifest';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { getRedisClient, isRedisConfigured } from '@web/lib/redis-client';
-import { startScheduledCleanup, stopScheduledCleanup } from '@web/lib/scheduled-cleanup';
+import {
+	awaitActiveCleanupSweep,
+	startScheduledCleanup,
+	stopScheduledCleanup,
+} from '@web/lib/scheduled-cleanup';
 import { assertProductionStartupInvariants } from '@web/lib/startup-invariants';
 
 /**
@@ -176,6 +181,11 @@ export async function createApplicationMount(
 	async function runDisposal(): Promise<void> {
 		mountState = 'disposed';
 		stopScheduledCleanup();
+		// Clearing the interval only stops future ticks. A sweep already
+		// running is a detached task still issuing database mutations, and
+		// resolving `dispose()` out from under it would let the host tear down
+		// connections mid-write.
+		await awaitActiveCleanupSweep();
 		await releaseBackgroundState();
 	}
 
@@ -183,6 +193,20 @@ export async function createApplicationMount(
 		assetManifest,
 
 		handleRequest(request, input) {
+			// A stale routing hook calling into a disposed mount would otherwise
+			// dispatch normally: an `/mcp` request would build a fresh cached
+			// handler whose eviction sweep is permanently stopped, and any
+			// Redis-backed path would reopen a client that the already-settled
+			// disposal promise will never close again.
+			if (mountState === 'disposed') {
+				return Promise.resolve(
+					jsonResponse(
+						{ error: 'service_unavailable', error_description: 'This mount has been disposed.' },
+						{ status: 503 },
+					),
+				);
+			}
+
 			return handleApplicationRequest(request, {
 				clientAddress: input?.clientAddress,
 				serveStaticAssets,

@@ -128,12 +128,18 @@ mock.module('@web/lib/asset-manifest', () => ({
 	}),
 }));
 
+let activeSweepGate: Promise<void> | null = null;
+
 mock.module('@web/lib/scheduled-cleanup', () => ({
 	startScheduledCleanup: (intervalMs: number) => {
 		lifecycleCalls.push(`startScheduledCleanup:${intervalMs}`);
 	},
 	stopScheduledCleanup: () => {
 		lifecycleCalls.push('stopScheduledCleanup');
+	},
+	awaitActiveCleanupSweep: async () => {
+		lifecycleCalls.push('awaitActiveCleanupSweep');
+		if (activeSweepGate) await activeSweepGate;
 	},
 	isScheduledCleanupRunning: () => false,
 }));
@@ -173,6 +179,7 @@ describe('createApplicationMount', () => {
 		redisConfigured = false;
 		redisQuitError = null;
 		redisQuitCalls.length = 0;
+		activeSweepGate = null;
 		// A process supports exactly one mount by design; without this reset
 		// every test after the first would be refused as a second live mount.
 		applicationMountTestHooks.resetMountState();
@@ -276,7 +283,11 @@ describe('createApplicationMount', () => {
 
 			await mount.dispose();
 
-			expect(lifecycleCalls).toEqual(['stopScheduledCleanup', 'shutdownMcpTransports']);
+			expect(lifecycleCalls).toEqual([
+				'stopScheduledCleanup',
+				'awaitActiveCleanupSweep',
+				'shutdownMcpTransports',
+			]);
 		});
 
 		it('closes the Redis client when Redis is configured', async () => {
@@ -300,7 +311,11 @@ describe('createApplicationMount', () => {
 			await mount.dispose();
 
 			expect(redisQuitCalls).toEqual(['quit']);
-			expect(lifecycleCalls).toEqual(['stopScheduledCleanup', 'shutdownMcpTransports']);
+			expect(lifecycleCalls).toEqual([
+				'stopScheduledCleanup',
+				'awaitActiveCleanupSweep',
+				'shutdownMcpTransports',
+			]);
 		});
 
 		it('is idempotent: a second dispose does no further teardown work', async () => {
@@ -409,6 +424,50 @@ describe('createApplicationMount', () => {
 		});
 	});
 
+	describe('post-disposal behaviour', () => {
+		it('waits for an in-flight cleanup sweep before closing transports', async () => {
+			// Ordering is the point: the sweep must be awaited between stopping
+			// the interval and releasing the resources the sweep is using.
+			let releaseSweep: (() => void) | undefined;
+			activeSweepGate = new Promise<void>((resolve) => {
+				releaseSweep = resolve;
+			});
+			const mount = await createApplicationMount();
+			lifecycleCalls.length = 0;
+
+			let settled = false;
+			const disposal = mount.dispose().then(() => {
+				settled = true;
+			});
+
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			expect(lifecycleCalls).not.toContain('shutdownMcpTransports');
+
+			releaseSweep?.();
+			await disposal;
+
+			expect(lifecycleCalls).toEqual([
+				'stopScheduledCleanup',
+				'awaitActiveCleanupSweep',
+				'shutdownMcpTransports',
+			]);
+		});
+
+		it('refuses requests after disposal instead of rebuilding torn-down state', async () => {
+			const mount = await createApplicationMount();
+			await mount.dispose();
+
+			const response = await mount.handleRequest(new Request('https://app.example.com/health'));
+
+			expect(response.status).toBe(503);
+			expect(await response.json()).toEqual({
+				error: 'service_unavailable',
+				error_description: 'This mount has been disposed.',
+			});
+		});
+	});
+
 	describe('static assets', () => {
 		it('exposes the resolved asset manifest so a host knows what to publish', async () => {
 			const mount = await createApplicationMount();
@@ -427,6 +486,18 @@ describe('createApplicationMount', () => {
 			);
 			expect(response.status).toBe(200);
 			expect(response.headers.get('content-type')).toContain('image');
+
+			await mount.dispose();
+		});
+
+		it('opting in also serves robots.txt, which the standalone server publishes', async () => {
+			// Without this the crawl policy keeping bots out of /oauth/, /mcp,
+			// /auth/, and /health silently disappears in an embedded deployment.
+			const mount = await createApplicationMount({ serveStaticAssets: true });
+
+			const response = await mount.handleRequest(new Request('https://app.example.com/robots.txt'));
+			expect(response.status).toBe(200);
+			expect(await response.text()).toContain('Disallow: /oauth/');
 
 			await mount.dispose();
 		});

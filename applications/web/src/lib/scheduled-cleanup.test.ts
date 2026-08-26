@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
 	deleteAsPrimaryKeyBatches,
 	isScheduledCleanupRunning,
+	awaitActiveCleanupSweep,
 	startScheduledCleanup,
 	stopScheduledCleanup,
 } from '@web/lib/scheduled-cleanup';
@@ -161,6 +162,65 @@ describe('deleteAsPrimaryKeyBatches', () => {
  * Redis/the real globally shared lease key is never touched) to prove the
  * new local `sweepInProgress` guard deterministically, with real timers.
  */
+describe('awaitActiveCleanupSweep', () => {
+	afterEach(() => {
+		stopScheduledCleanup();
+	});
+
+	it('resolves immediately when no sweep is in flight', async () => {
+		await awaitActiveCleanupSweep();
+		expect(isScheduledCleanupRunning()).toBe(false);
+	});
+
+	it('waits for a sweep that is already running before resolving', async () => {
+		// The regression it guards: `stopScheduledCleanup` clears future ticks
+		// only, so a caller that stopped the interval and immediately tore down
+		// its database connections could do so under a sweep still writing.
+		let releaseSweep: (() => void) | undefined;
+		let sweepFinished = false;
+		const slowSweep = () =>
+			new Promise<void>((resolve) => {
+				releaseSweep = () => {
+					sweepFinished = true;
+					resolve();
+				};
+			});
+
+		startScheduledCleanup(20, slowSweep, async () => true);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		stopScheduledCleanup();
+
+		let awaited = false;
+		const waiting = awaitActiveCleanupSweep().then(() => {
+			awaited = true;
+		});
+
+		await Promise.resolve();
+		expect(awaited).toBe(false);
+		expect(sweepFinished).toBe(false);
+
+		releaseSweep?.();
+		await waiting;
+
+		expect(sweepFinished).toBe(true);
+		expect(awaited).toBe(true);
+	});
+
+	it('a failing sweep still lets disposal proceed rather than rejecting', async () => {
+		startScheduledCleanup(
+			20,
+			async () => {
+				throw new Error('sweep exploded');
+			},
+			async () => true,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		stopScheduledCleanup();
+
+		await awaitActiveCleanupSweep();
+	});
+});
+
 describe('startScheduledCleanup overlap guard', () => {
 	// Drain every sweep this test left in flight before stopping the
 	// interval. Without this, a sweep started after the test's own
