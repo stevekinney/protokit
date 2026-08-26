@@ -46,6 +46,10 @@ describe('isAddressInCidr', () => {
 	it('never matches across address families', () => {
 		expect(isAddressInCidr('2001:db8::1', '10.0.0.0/8')).toBe(false);
 	});
+
+	it('rejects an address that is neither valid IPv4 nor IPv6', () => {
+		expect(isAddressInCidr('not-an-ip-address', '10.0.0.0/8')).toBe(false);
+	});
 });
 
 describe('isValidCidr', () => {

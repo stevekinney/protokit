@@ -62,6 +62,17 @@ function buildAuthInfo(userId: string): AuthInfo {
 		resource: new URL('http://localhost:3000/mcp'),
 		extra: {
 			userId,
+			// OPEN-12: the profile now travels with the auth context, fetched
+			// in the same round trip as the token lookup rather than as a
+			// second one inside the per-request server factory. A caller that
+			// omits it is treated as having bypassed the HTTP boundary.
+			userProfile: {
+				id: userId,
+				email: `${userId}@example.com`,
+				name: `Load Test User ${userId}`,
+				image: null,
+				role: 'user',
+			},
 			oauthClientId: 'load-test-client',
 			scopes: grantedScopes,
 			resource: 'http://localhost:3000/mcp',

@@ -175,7 +175,7 @@ export function scanDocumentationContentsForViolations(
  */
 const REPO_PATH_EXTENSIONS = [
 	'.ts',
-	'.tsx',
+	'.svelte',
 	'.md',
 	'.json',
 	'.yml',
@@ -194,7 +194,20 @@ const REPO_ROOT_DIRECTORY_PREFIXES = [
 ];
 
 export function extractReferencedFilePaths(fileContents: string): string[] {
-	const backtickTokens = fileContents.match(/`([^`]+)`/g) ?? [];
+	// Fenced blocks are removed before pairing inline backticks. A ``` fence is
+	// three backticks, which throws the parity of a naive `` `...` `` scan off
+	// for the entire rest of the file -- so in any document containing a fenced
+	// block, every path mentioned after the first fence was silently invisible
+	// to this gate. That was not a small blind spot: it covered ARCHITECTURE.md,
+	// README.md, and CLAUDE.md completely, each extracting zero paths. Removing
+	// fences first takes this audit from 15 recognized paths across the whole
+	// repository to 101.
+	//
+	// Dropping the fenced content entirely is also correct on its own terms: a
+	// path inside a code sample is illustrative and often deliberately does not
+	// exist yet.
+	const withoutFencedBlocks = fileContents.replace(/```[\s\S]*?```/g, '');
+	const backtickTokens = withoutFencedBlocks.match(/`([^`]+)`/g) ?? [];
 	const paths: string[] = [];
 	for (const token of backtickTokens) {
 		const inner = token.slice(1, -1);

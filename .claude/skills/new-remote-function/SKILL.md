@@ -44,9 +44,7 @@ export async function myRemoteFunction(rawInput: unknown) {
 	import { myRemoteFunction } from './+page.svelte.ts';
 
 	async function handleClick() {
-		const result = await myRemoteFunction({
-			/* input */
-		});
+		const result = await myRemoteFunction({/* input */});
 	}
 </script>
 ```

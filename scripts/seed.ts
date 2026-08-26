@@ -12,7 +12,7 @@ const DEVELOPMENT_USER_NAME = 'Development User';
 const SEED_CLIENT_NAME = 'Seed Test Client';
 // A fixed, well-known clientId (rather than the freely chosen, non-unique
 // `clientName`) so idempotency is keyed off the actual unique primary key.
-// Real client registrations never collide with this: DCR (`oauth-routes.tsx`)
+// Real client registrations never collide with this: DCR (`oauth-routes.ts`)
 // mints a bare `randomUUID()`, and a Client ID Metadata Document's clientId is
 // the HTTPS URL it was fetched from -- neither can ever equal this literal.
 export const SEED_CLIENT_ID = 'seed-client';

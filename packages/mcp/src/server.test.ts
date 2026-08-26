@@ -1,5 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { describe, it, expect } from 'bun:test';
+import { Client } from '@modelcontextprotocol/client';
+import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { areResourceSubscriptionsAuthorized, createMcpServer } from './server';
+import { getSupportedScopes } from './supported-scopes.js';
 
 describe('createMcpServer', () => {
 	it('returns a defined server instance', () => {
@@ -17,6 +21,44 @@ describe('createMcpServer', () => {
 			scopes: ['profile:read'],
 		});
 		expect(server).toBeDefined();
+	});
+
+	/**
+	 * The `isError`/"tool failure" logging branch in `registerToolDefinition`
+	 * (the `if (isError) { logger.warn(...) }` block) only fires for a
+	 * GRANTED-scope call whose handler itself returns `isError: true` --
+	 * distinct from the insufficient-scope path `scope-enforcement.test.ts`
+	 * already covers. `get_user_profile` returns
+	 * `createToolStructuredResponse(context.user, ...)`, which itself
+	 * returns `isError: true` when the generated summary exceeds
+	 * `tool-response.ts`'s 256KB bound -- a real, legitimate way to make a
+	 * production tool fail without mocking anything, just an oversized
+	 * profile name on the authenticated user this server was constructed
+	 * for.
+	 */
+	it('logs and records a tool_failure outcome when a granted-scope call returns isError from its own handler', async () => {
+		const userId = randomUUID();
+		const server = createMcpServer({
+			userId,
+			user: {
+				id: userId,
+				email: 'test@example.com',
+				name: 'x'.repeat(300 * 1024),
+				image: null,
+				role: 'user',
+			},
+			enableUiExtension: false,
+			enableConformanceMode: false,
+			scopes: getSupportedScopes(),
+		});
+		const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+		const client = new Client({ name: 'tool-failure-client', version: '1.0.0' });
+		await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+		const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
+		expect(result.isError).toBe(true);
+
+		await client.close();
 	});
 });
 

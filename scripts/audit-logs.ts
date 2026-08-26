@@ -16,7 +16,7 @@ import { join } from 'node:path';
 
 const SOURCE_ROOTS = ['applications/web/src', 'packages/mcp/src', 'packages/database/src'];
 
-const TEXT_FILE_EXTENSIONS = new Set(['.ts', '.tsx']);
+const TEXT_FILE_EXTENSIONS = new Set(['.ts', '.svelte']);
 
 // Identifier fragments that indicate a variable is credential-shaped.
 // Deliberately conservative (word-bounded, case-insensitive) to keep the
@@ -68,7 +68,7 @@ export function collectScanTargets(rootDirectory: string): string[] {
 		const sourceRootPath = join(rootDirectory, sourceRoot);
 		if (!existsSync(sourceRootPath)) continue;
 		for (const filePath of listFilesRecursively(sourceRootPath)) {
-			if (/\.test\.tsx?$/.test(filePath)) continue;
+			if (/\.test\.ts$/.test(filePath)) continue;
 			const extension = filePath.slice(filePath.lastIndexOf('.'));
 			if (!TEXT_FILE_EXTENSIONS.has(extension)) continue;
 			targets.push(filePath);

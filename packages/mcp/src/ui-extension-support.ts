@@ -12,7 +12,7 @@ import { allResources } from './resources/index.js';
  * even if the flag is turned on by mistake.
  *
  * This is the single source of truth for that predicate. `server.ts`'s
- * real `/mcp` capabilities and `oauth-routes.tsx`'s authorization-server
+ * real `/mcp` capabilities and `oauth-routes.ts`'s authorization-server
  * metadata `extensions` field both call this function rather than each
  * re-deriving their own copy of it, so a client can never discover UI
  * extension support in OAuth metadata and then receive server capabilities

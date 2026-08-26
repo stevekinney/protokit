@@ -80,4 +80,35 @@ describe('hasValidLocalhostRebindingHeaders', () => {
 		const headers = new Headers({ origin: 'null' });
 		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
 	});
+
+	it('treats an empty first host value (e.g. a leading comma) as absent', () => {
+		// `hostHeader.split(',')[0].trim()` produces an empty string when the
+		// header's first comma-separated value is blank -- must fall through
+		// to "no host to validate" rather than rejecting the request.
+		const headers = new Headers({ host: ',localhost' });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
+	});
+
+	it('accepts a bracketed IPv6 host header with no port', () => {
+		const headers = new Headers({ host: '[::1]' });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
+	});
+
+	it('accepts a bracketed IPv6 host header with a port', () => {
+		const headers = new Headers({ host: '[::1]:3000' });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
+	});
+
+	it('rejects a non-localhost bracketed IPv6-shaped host header', () => {
+		const headers = new Headers({ host: '[dead::beef]:3000' });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
+	});
+
+	it('treats a malformed origin header that URL cannot parse as absent', () => {
+		// `new URL(originHeader)` throws for a non-absolute-URL string; the
+		// catch branch must treat that the same as "no origin to validate"
+		// rather than rejecting the request outright.
+		const headers = new Headers({ origin: 'not-a-valid-url' });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
+	});
 });

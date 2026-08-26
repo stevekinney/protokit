@@ -21,7 +21,7 @@
  * instead of maintaining a second copy that could drift.
  */
 
-/** DATA-001 acceptance criterion 5 / S-18: a confidential OAuth client secret's maximum lifetime before `authenticateOauthClient` rejects it outright. Enforced in `applications/web/src/routes/oauth-routes.tsx`. */
+/** DATA-001 acceptance criterion 5 / S-18: a confidential OAuth client secret's maximum lifetime before `authenticateOauthClient` rejects it outright. Enforced in `applications/web/src/routes/oauth-routes.ts`. */
 export const OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS = 180 * 24 * 60 * 60 * 1000;
 
 export type CredentialLifecyclePolicyRow = {

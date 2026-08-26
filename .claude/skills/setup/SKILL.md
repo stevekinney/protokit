@@ -1,6 +1,6 @@
 # Skill: Setup
 
-Provision and configure all services for the Bun + React MCP template. This skill orchestrates each phase with intelligent fallback: CLI tools first, then Neon MCP tools, then manual guidance.
+Provision and configure all services for the Bun + Svelte MCP template. This skill orchestrates each phase with intelligent fallback: CLI tools first, then Neon MCP tools, then manual guidance.
 
 The standalone script at `scripts/setup.ts` remains available for terminal use. This skill replaces the thin command wrapper with Claude-driven orchestration.
 

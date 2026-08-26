@@ -39,6 +39,7 @@
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { detectStreamBuffering } from '@web/deployed-validation-support';
+import { runHarnessMain } from '@web/connector-smoke-support';
 
 /**
  * Review finding (P2, `deployed-oauth.ts:387`): a bearer token handed to
@@ -191,5 +192,5 @@ async function main(): Promise<void> {
 // unit test the pure `parseArguments` above) ran the real `main()` against
 // `process.argv`, which `process.exit(1)`s the whole test process.
 if (import.meta.main) {
-	await main();
+	await runHarnessMain('deployed-streaming', main);
 }

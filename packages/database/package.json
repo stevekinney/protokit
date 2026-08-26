@@ -10,7 +10,8 @@
 		"./migrate": "./src/migrate.ts",
 		"./baseline": "./src/baseline.ts",
 		"./environment-schema": "./src/environment-schema.ts",
-		"./local-proxy": "./src/local-proxy.ts"
+		"./local-proxy": "./src/local-proxy.ts",
+		"./create-database-client": "./src/create-database-client.ts"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",

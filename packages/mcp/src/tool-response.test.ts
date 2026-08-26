@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
 	createToolErrorResponse,
 	createToolJsonResponse,
+	createToolStructuredResponse,
 	createToolTextResponse,
 } from './tool-response.js';
 
@@ -55,5 +56,32 @@ describe('createToolErrorResponse', () => {
 		const response = createToolErrorResponse(hugeMessage);
 		expect(response.isError).toBe(true);
 		expect(response.content[0].text).not.toBe(hugeMessage);
+	});
+});
+
+describe('createToolStructuredResponse', () => {
+	it('returns the summary as text content and the data as structuredContent when both are under the size limit', () => {
+		const data = { id: '1', name: 'Alice' };
+		const response = createToolStructuredResponse(data, 'Found user Alice');
+		expect(response.content[0].text).toBe('Found user Alice');
+		expect((response as { isError?: boolean }).isError).toBeUndefined();
+		expect((response as { structuredContent?: unknown }).structuredContent).toEqual(data);
+	});
+
+	it('replaces an oversized summary with a stable error response, never reaching structuredContent', () => {
+		const hugeSummary = 'x'.repeat(300 * 1024);
+		const response = createToolStructuredResponse({ id: '1' }, hugeSummary);
+		expect((response as { isError?: boolean }).isError).toBe(true);
+		expect(response.content[0].text).not.toBe(hugeSummary);
+		expect(response.content[0].text).toContain('exceeded');
+		expect((response as { structuredContent?: unknown }).structuredContent).toBeUndefined();
+	});
+
+	it('replaces an oversized structured payload with a stable error response even when the summary is small', () => {
+		const hugeArray = Array.from({ length: 50_000 }, (_, index) => ({ index, value: 'padding' }));
+		const response = createToolStructuredResponse(hugeArray, 'a small summary');
+		expect((response as { isError?: boolean }).isError).toBe(true);
+		expect(response.content[0].text).toContain('exceeded');
+		expect((response as { structuredContent?: unknown }).structuredContent).toBeUndefined();
 	});
 });

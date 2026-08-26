@@ -179,6 +179,45 @@ describe('collectProductionStartupFailures — .localtest.me Redis host', () => 
 	});
 });
 
+describe('collectProductionStartupFailures — unparseable URLs', () => {
+	it('rejects a DATABASE_URL that could not be parsed as a URL at all', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			databaseUrl: 'not a url',
+		});
+		expect(
+			failures.some(
+				(failure) => failure.includes('DATABASE_URL') && failure.includes('could not be parsed'),
+			),
+		).toBe(true);
+	});
+
+	it('rejects a DATABASE_URL_UNPOOLED that could not be parsed as a URL at all', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			databaseUrlUnpooled: 'not a url',
+		});
+		expect(
+			failures.some(
+				(failure) =>
+					failure.includes('DATABASE_URL_UNPOOLED') && failure.includes('could not be parsed'),
+			),
+		).toBe(true);
+	});
+
+	it('rejects a REDIS_URL that could not be parsed as a URL at all', () => {
+		const failures = collectProductionStartupFailures({
+			...validConfiguration(),
+			redisUrl: 'not a url',
+		});
+		expect(
+			failures.some(
+				(failure) => failure.includes('REDIS_URL') && failure.includes('could not be parsed'),
+			),
+		).toBe(true);
+	});
+});
+
 describe('collectProductionStartupFailures — non-Postgres DATABASE_URL scheme', () => {
 	it('rejects a well-formed, non-loopback, non-Postgres DATABASE_URL', () => {
 		const failures = collectProductionStartupFailures({
