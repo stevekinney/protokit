@@ -138,16 +138,31 @@ mock.module('@web/lib/scheduled-cleanup', () => ({
 	isScheduledCleanupRunning: () => false,
 }));
 
+// `mock.module` patches the shared registry for the whole test process, so
+// the concurrency test cannot swap in a hanging shutdown of its own without
+// stranding every later test on it. The gate is mutable state on the one
+// shared mock instead, reset in `beforeEach`.
+let holdShutdown = false;
+let releaseShutdown: (() => void) | null = null;
+let shutdownCalls = 0;
+
 mock.module('@web/lib/mcp-handler', () => ({
 	shutdownMcpTransports: async () => {
+		shutdownCalls += 1;
 		lifecycleCalls.push('shutdownMcpTransports');
+		if (holdShutdown) {
+			await new Promise<void>((resolve) => {
+				releaseShutdown = resolve;
+			});
+		}
 	},
 	handleMcpRequest: async () => new Response(null, { status: 500 }),
 	publishUserResourceUpdate: () => {},
 	shouldEnableConformanceMode: () => false,
 }));
 
-const { createApplicationMount } = await import('@web/application-mount');
+const { createApplicationMount, applicationMountTestHooks } =
+	await import('@web/application-mount');
 const { handleApplicationRequest } = await import('@web/application');
 
 describe('createApplicationMount', () => {
@@ -158,6 +173,12 @@ describe('createApplicationMount', () => {
 		redisConfigured = false;
 		redisQuitError = null;
 		redisQuitCalls.length = 0;
+		// Disposal is permanent per process by design; every test below that
+		// disposes would otherwise poison the next one's mount.
+		applicationMountTestHooks.resetDisposedState();
+		holdShutdown = false;
+		releaseShutdown = null;
+		shutdownCalls = 0;
 	});
 
 	describe('startup lifecycle', () => {
@@ -282,6 +303,65 @@ describe('createApplicationMount', () => {
 			await mount.dispose();
 
 			expect(lifecycleCalls).toEqual([]);
+		});
+
+		it('coalesces concurrent dispose calls onto one teardown every caller awaits', async () => {
+			// The bug this guards: a boolean flipped before the first `await`
+			// lets the second caller resolve while teardown is still running, so
+			// a host awaiting it could terminate mid-drain. Both callers must
+			// await the same teardown, and it must run exactly once.
+			holdShutdown = true;
+			const mount = await createApplicationMount();
+
+			let firstSettled = false;
+			let secondSettled = false;
+			const first = mount.dispose().then(() => {
+				firstSettled = true;
+			});
+			const second = mount.dispose().then(() => {
+				secondSettled = true;
+			});
+
+			await Promise.resolve();
+			expect(firstSettled).toBe(false);
+			expect(secondSettled).toBe(false);
+
+			releaseShutdown?.();
+			await Promise.all([first, second]);
+
+			expect(firstSettled).toBe(true);
+			expect(secondSettled).toBe(true);
+			expect(shutdownCalls).toBe(1);
+		});
+
+		it('refuses to remount after disposal rather than silently losing background state', async () => {
+			const mount = await createApplicationMount();
+			await mount.dispose();
+
+			await expect(createApplicationMount()).rejects.toThrow('cannot be called after dispose()');
+		});
+	});
+
+	describe('static assets', () => {
+		it('exposes the resolved asset manifest so a host knows what to publish', async () => {
+			const mount = await createApplicationMount();
+
+			expect(mount.assetManifest.stylesheetPath).toBe('/assets/application-abc123.css');
+			expect(mount.assetManifest.clientBundlePath).toBe('/assets/client-abc123.js');
+
+			await mount.dispose();
+		});
+
+		it('opting in lets the mount serve the assets the host would otherwise have to copy', async () => {
+			const mount = await createApplicationMount({ serveStaticAssets: true });
+
+			const response = await mount.handleRequest(
+				new Request('https://app.example.com/favicon.png'),
+			);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('content-type')).toContain('image');
+
+			await mount.dispose();
 		});
 	});
 });

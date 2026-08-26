@@ -1,7 +1,7 @@
 import { logger } from '@template/mcp/logger';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';
-import { loadAssetManifest } from '@web/lib/asset-manifest';
+import { loadAssetManifest, type AssetManifest } from '@web/lib/asset-manifest';
 import { shutdownMcpTransports } from '@web/lib/mcp-handler';
 import { getRedisClient, isRedisConfigured } from '@web/lib/redis-client';
 import { startScheduledCleanup, stopScheduledCleanup } from '@web/lib/scheduled-cleanup';
@@ -22,11 +22,51 @@ export type ApplicationMount = {
 	 */
 	handleRequest(request: Request, input?: { clientAddress?: string }): Promise<Response>;
 	/**
-	 * Releases everything the mount started. Idempotent, so a host may call
-	 * it from more than one shutdown path without guarding.
+	 * The resolved asset manifest, so a host serving these files itself knows
+	 * the exact hashed paths the rendered HTML will reference. Without this a
+	 * host would have to re-read `public/assets/manifest.json` by hand to
+	 * discover what it is expected to publish.
+	 */
+	assetManifest: AssetManifest;
+	/**
+	 * Releases everything the mount started. Safe to call from more than one
+	 * shutdown path: concurrent callers all await the same teardown, and
+	 * repeat calls after it finishes are no-ops.
+	 *
+	 * Disposal is permanent for the process. See `createApplicationMount`.
 	 */
 	dispose(): Promise<void>;
 };
+
+export type ApplicationMountOptions = {
+	/**
+	 * Whether the mount should also serve this application's own generated
+	 * assets (`/assets/*`, `/favicon.png`). Defaults to `false`, because a
+	 * host normally publishes them through its own static pipeline.
+	 *
+	 * The default is not a safe thing to ignore: rendered HTML references the
+	 * hash-named files `build.ts` emits into `applications/web/public/assets`,
+	 * and a host's own static pipeline does not contain that directory
+	 * automatically. A host must therefore either copy those files into
+	 * whatever it serves at `/assets/*`, or set this to `true` and let the
+	 * mount serve them. Doing neither renders unstyled pages that never
+	 * hydrate -- with a 404 for each asset as the only clue.
+	 */
+	serveStaticAssets?: boolean;
+};
+
+/**
+ * Disposal tears down module-scoped state that only initializes once, at
+ * `mcp-handler.ts` module evaluation: `closeAll()` clears the user-handler
+ * idle-eviction timer, and disconnecting the Redis subscriber leaves
+ * `subscribeToGrantRevocations`'s `redisSubscriptionStarted` latch set, so
+ * it never re-subscribes. A second mount in the same process would
+ * therefore run with no idle eviction and no cross-replica grant
+ * revocation -- both silent. Rather than reach into those modules to make
+ * them restartable (they are shared with `server.ts`, which has no such
+ * need), disposal is permanent and remounting is refused outright.
+ */
+let disposedInThisProcess = false;
 
 /**
  * The seam a host application (a SvelteKit hook, a Bun server that owns its
@@ -68,41 +108,79 @@ export type ApplicationMount = {
  * in-flight requests before `dispose()` is the host's responsibility,
  * because only the host knows when its own server has stopped accepting
  * them.
+ *
+ * Disposal is permanent for the life of the process -- calling this again
+ * after `dispose()` throws rather than returning a mount whose background
+ * state is silently missing.
  */
-export async function createApplicationMount(): Promise<ApplicationMount> {
+export async function createApplicationMount(
+	options: ApplicationMountOptions = {},
+): Promise<ApplicationMount> {
+	if (disposedInThisProcess) {
+		throw new Error(
+			'createApplicationMount() cannot be called after dispose(): tearing the mount down ' +
+				'permanently clears module-scoped MCP transport state that only initializes once ' +
+				'per process. Start a new process instead.',
+		);
+	}
+
 	assertProductionStartupInvariants();
 
-	await loadAssetManifest();
+	const assetManifest = await loadAssetManifest();
 
 	startScheduledCleanup(environment.SCHEDULED_CLEANUP_INTERVAL_SECONDS * 1000);
 
-	let disposed = false;
+	const serveStaticAssets = options.serveStaticAssets ?? false;
+
+	// One shared promise, not a boolean: a boolean flipped before the first
+	// `await` lets a second concurrent caller observe "already disposed" and
+	// return while transport and Redis teardown is still running -- so a host
+	// awaiting that second call could terminate and drop active streams
+	// mid-drain. Every caller awaits this same teardown instead.
+	let disposal: Promise<void> | undefined;
+
+	async function runDisposal(): Promise<void> {
+		disposedInThisProcess = true;
+
+		stopScheduledCleanup();
+		await shutdownMcpTransports();
+
+		if (isRedisConfigured()) {
+			try {
+				const redisClient = await getRedisClient();
+				await redisClient.quit();
+			} catch (error) {
+				// Mirrors `server.ts`: Redis may already be disconnected, and a
+				// failure to close it must not prevent the rest of teardown.
+				logger.warn({ err: error }, 'Redis connection close failed during mount disposal');
+			}
+		}
+	}
 
 	return {
+		assetManifest,
+
 		handleRequest(request, input) {
 			return handleApplicationRequest(request, {
 				clientAddress: input?.clientAddress,
-				serveStaticAssets: false,
+				serveStaticAssets,
 			});
 		},
 
-		async dispose() {
-			if (disposed) return;
-			disposed = true;
-
-			stopScheduledCleanup();
-			await shutdownMcpTransports();
-
-			if (isRedisConfigured()) {
-				try {
-					const redisClient = await getRedisClient();
-					await redisClient.quit();
-				} catch (error) {
-					// Mirrors `server.ts`: Redis may already be disconnected, and a
-					// failure to close it must not prevent the rest of teardown.
-					logger.warn({ err: error }, 'Redis connection close failed during mount disposal');
-				}
-			}
+		dispose() {
+			disposal ??= runDisposal();
+			return disposal;
 		},
 	};
 }
+
+/**
+ * Test seam: disposal is deliberately permanent per process, which a test
+ * file exercising more than one mount would otherwise trip over on its
+ * second `createApplicationMount()`. Never call this from application code.
+ */
+export const applicationMountTestHooks = {
+	resetDisposedState(): void {
+		disposedInThisProcess = false;
+	},
+};

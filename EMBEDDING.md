@@ -35,8 +35,9 @@ The caveat that does survive: any sibling application reading `user_sessions` di
 `applications/web/src/application.ts` exports `handleApplicationRequest(request, input?)`, which by default also serves this server's own static assets (`/assets/*` and `/favicon.png`) from its own build output. A host already has its own static-asset story and does not want this server competing for those paths. `applications/web/src/application-mount.ts` exports the seam built for exactly this, published as `@template/web/application-mount`:
 
 ```ts
-const mount = await createApplicationMount();
+const mount = await createApplicationMount({ serveStaticAssets: false });
 // mount.handleRequest(request, { clientAddress }) => Promise<Response>
+// mount.assetManifest => { stylesheetPath, clientBundlePath, clientSourceMapPath }
 // mount.dispose() => Promise<void>
 ```
 
@@ -48,9 +49,23 @@ It is an async lifecycle rather than a handler factory, and that distinction is 
 
 `createApplicationMount()` performs all three, in that order, and fails fast: if the invariant check throws, no timer has been started and no manifest loaded.
 
-`dispose()` mirrors `server.ts`'s graceful shutdown for the parts a host cannot reach itself—it stops the cleanup interval, calls `shutdownMcpTransports()` (a `subscriptions/listen` response stays open until it does), and closes the Redis client. It is idempotent. A host that restarts without calling it drops active MCP streams instead of draining them.
+`dispose()` mirrors `server.ts`'s graceful shutdown for the parts a host cannot reach itself—it stops the cleanup interval, calls `shutdownMcpTransports()` (a `subscriptions/listen` response stays open until it does), and closes the Redis client. Concurrent callers all await the same teardown rather than the second one returning early while the first is still draining, so a host may safely call it from more than one shutdown path. A host that restarts without calling it drops active MCP streams instead of draining them.
+
+Disposal is permanent for the life of the process, and calling `createApplicationMount()` again after it throws. This is deliberate: tearing the mount down clears module-scoped state in `applications/web/src/lib/mcp-handler.ts` that only initializes once per process—the user-handler idle-eviction timer, and the Redis subscription behind cross-replica grant revocation, whose latch stays set after the subscriber disconnects. A second mount would run without either, silently, so it is refused instead.
 
 The host keeps ownership of its own socket: the mount never binds a port, never installs a signal handler, and never calls `process.exit`. Draining in-flight requests before `dispose()` is the host's job, since only the host knows when its server stopped accepting them.
+
+### Serving the generated assets
+
+Turning off this server's static-asset serving does not make the assets unnecessary—the HTML it renders still references the hash-named files `applications/web/src/build.ts` emits into `applications/web/public/assets`. A host's own static pipeline does not contain that directory automatically, so a host that neither copies those files nor asks the mount to serve them gets a 404 for every asset, unstyled pages, and no hydration.
+
+There are two supported answers. Either copy the built contents of `applications/web/public/assets` into whatever the host serves at `/assets/*` (and `favicon.png` at the root) as part of its own build, using `mount.assetManifest` to know the exact hashed paths the rendered HTML will ask for; or pass `serveStaticAssets: true` and let the mount serve them, which is the simpler option when the host has no strong opinion and no CDN in front.
+
+### A limitation worth knowing before you start
+
+`applications/web/package.json` publishes `./application-mount` as TypeScript source, and that source imports `@web/application`, `@web/env`, and other `@web/*` paths. That alias is defined only in `applications/web/tsconfig.json`, and a consuming project's resolver does not inherit path mappings from a dependency's tsconfig. There is no bundled entry point today, so importing `@template/web/application-mount` fails on its first internal import unless the host's own resolver is told how to resolve the alias—mapping `@web/*` to `applications/web/src/*` in the host's `tsconfig.json` `paths` and, for a Vite-based host, in `resolve.alias` as well.
+
+That is a real constraint, not a formality: it applies to a sibling application in this monorepo just as much as to an external host, because no root `tsconfig.json` defines the alias either. Publishing a bundled entry point with package-relative imports is the durable fix, and is the thing to do if this seam ever needs to be consumed outside this repository.
 
 `clientAddress` sits on `handleRequest`'s per-call input rather than on the factory, because it is per-request state a host only knows once a request arrives (`Bun.serve`'s `server.requestIP(request)`, a SvelteKit host's `event.getClientAddress()`). Passing it is what keeps rate-limiting identity and trusted-proxy handling correct; omitting it makes every caller look like one unknown client.
 
