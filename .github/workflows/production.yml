@@ -47,7 +47,7 @@ jobs:
 
       - name: Snapshot pre-migration database (rollback evidence)
         id: backup
-        uses: neondatabase/create-branch-action@ad7325f8b2fe61e29689926c29d153e8c98b7336 # v5.2.0
+        uses: neondatabase/create-branch-action@72ed4f69a12b6be9c16aebfad893f6a21e9aba8b # v6.4.0
         with:
           project_id: ${{ secrets.NEON_PROJECT_ID }}
           api_key: ${{ secrets.NEON_API_KEY }}

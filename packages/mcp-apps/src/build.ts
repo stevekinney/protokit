@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { sveltePlugin } from '@lostgradient/bun-plugin-svelte';
 import { createApplicationHtml } from './html-shell.js';
 
 const sourceDirectory = resolve(import.meta.dirname, 'applications');
@@ -23,7 +24,10 @@ if (applicationNames.length === 0) {
 let hasErrors = false;
 
 for (const applicationName of applicationNames) {
-	const entrypoint = join(sourceDirectory, applicationName, `${applicationName}.tsx`);
+	// Each application is a `{name}.ts` entry that mounts a `{name}.svelte`
+	// component. The entry is the mount call rather than the component itself
+	// because a client-compiled component does not mount itself.
+	const entrypoint = join(sourceDirectory, applicationName, `${applicationName}.ts`);
 
 	const result = await Bun.build({
 		entrypoints: [entrypoint],
@@ -31,6 +35,19 @@ for (const applicationName of applicationNames) {
 		minify: true,
 		sourcemap: 'none',
 		splitting: false,
+		// Required for any component library that ships its source behind the
+		// `svelte` export condition; the plugin cannot add the condition itself.
+		conditions: ['svelte'],
+		// `'external'` so component styles come back as a real CSS artifact that
+		// gets inlined into the single self-contained HTML document below,
+		// rather than being appended to the document at runtime by the bundle.
+		// `dev: false` is explicit rather than inherited. The plugin defaults it
+		// to `NODE_ENV !== 'production'`, and a dev-compiled bundle expects
+		// Svelte's *development* runtime, which `esm-env` only resolves through
+		// the `development` export condition. This is a production artifact, so
+		// it wants neither -- and the mismatch surfaces as a runtime failure in
+		// the app's iframe rather than a build error.
+		plugins: [sveltePlugin({ generate: 'client', css: 'external', dev: false })],
 	});
 
 	if (!result.success) {
@@ -51,7 +68,9 @@ for (const applicationName of applicationNames) {
 	}
 
 	const javascript = await javascriptOutput.text();
-	const html = createApplicationHtml({ title: applicationName, javascript });
+	const cssOutput = result.outputs.find((output) => output.path.endsWith('.css'));
+	const css = cssOutput ? await cssOutput.text() : undefined;
+	const html = createApplicationHtml({ title: applicationName, javascript, css });
 
 	await Bun.write(join(outputDirectory, `${applicationName}.html`), html);
 	await Bun.write(

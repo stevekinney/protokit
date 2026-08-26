@@ -258,3 +258,34 @@ export function printManualCompletionSteps(options: {
 	);
 	console.log('================================================================');
 }
+
+/**
+ * Runs a harness `main()` and converts anything it throws into the same
+ * one-readable-line-then-exit-1 shape these harnesses already use for a
+ * failed check.
+ *
+ * Found while writing the deployment runbook, by pointing each harness at a
+ * host that does not resolve — the first thing that actually happens in
+ * practice, on a typo'd hostname. `deployed-smoke.ts` handled it correctly;
+ * `deployed-oauth.ts` and `deployed-streaming.ts` printed a raw Bun stack
+ * trace (`ConnectionRefused` out of `fetchJson` here, `ERA_NEGOTIATION_FAILED`
+ * out of the MCP SDK's transport). An operator's first encounter with this
+ * tooling should not be a stack trace through `node_modules`.
+ *
+ * Deliberately shared rather than pasted into each entrypoint: the reason
+ * this was worth fixing at all is that one harness had the behavior and its
+ * siblings did not.
+ */
+export async function runHarnessMain(label: string, main: () => Promise<void>): Promise<void> {
+	try {
+		await main();
+	} catch (error) {
+		const description = error instanceof Error ? error.message : String(error);
+		console.error(`[${label}] failed: ${description}`);
+		console.error(
+			`[${label}] this usually means the host is unreachable, the URL is wrong, or the ` +
+				'deployment is not serving yet. Check the URL and try again.',
+		);
+		process.exit(1);
+	}
+}

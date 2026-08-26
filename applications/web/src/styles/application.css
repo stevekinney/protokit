@@ -1,20 +1,98 @@
-@import 'tailwindcss';
+/*
+ * Application-level layout, expressed in Cinder tokens.
+ *
+ * Cinder's foundation layer already sets the document defaults -- body
+ * background, text color, min-height, and the typographic baseline -- so this
+ * file carries only the page-level primitives this application needs on top
+ * of them.
+ *
+ * These rules are deliberately unlayered. Cinder's cascade lives inside
+ * `@layer cinder.*`, and unlayered CSS outranks every layer, so application
+ * rules win against component defaults without needing `!important` or a
+ * specificity fight.
+ *
+ * Component CSS is NOT imported here. `src/styles/style-entry.ts` collects it
+ * from the page components themselves so that pages which ship no JavaScript
+ * still get exactly the component styles they render. See `src/build.ts`.
+ */
 
-:root {
-	color-scheme: light;
+.page {
+	width: 100%;
+	max-width: var(--cinder-content-width-prose);
+	margin-inline: auto;
+	padding-inline: var(--cinder-space-6);
+	padding-block: var(--cinder-space-12) var(--cinder-space-16);
 }
 
-body {
+.stack {
+	display: flex;
+	flex-direction: column;
+	gap: var(--cinder-space-6);
+}
+
+.stack-tight {
+	display: flex;
+	flex-direction: column;
+	gap: var(--cinder-space-2);
+}
+
+.row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--cinder-space-3);
+}
+
+.row-between {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--cinder-space-3);
+}
+
+.eyebrow {
 	margin: 0;
-	min-height: 100vh;
-	background:
-		radial-gradient(circle at 15% 20%, rgb(125 211 252 / 18%), transparent 40%),
-		radial-gradient(circle at 85% 15%, rgb(59 130 246 / 16%), transparent 40%),
-		radial-gradient(circle at 20% 80%, rgb(16 185 129 / 14%), transparent 35%), #f8fafc;
-	font-family: 'Instrument Sans', 'Avenir Next', 'Segoe UI', system-ui, sans-serif;
-	color: #0f172a;
+	font-size: var(--cinder-text-xs);
+	font-weight: var(--cinder-font-semibold);
+	letter-spacing: 0.2em;
+	text-transform: uppercase;
+	color: var(--cinder-accent-text);
 }
 
-code {
-	font-family: 'JetBrains Mono', 'SF Mono', Consolas, ui-monospace, monospace;
+.muted {
+	color: var(--cinder-text);
+	opacity: var(--cinder-opacity-muted);
+}
+
+.endpoint {
+	display: block;
+	margin-top: var(--cinder-space-1);
+	font-size: var(--cinder-text-xs);
+	word-break: break-all;
+	color: var(--cinder-accent-text);
+}
+
+.connection-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.connection-list > li {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--cinder-space-3);
+	padding-block: var(--cinder-space-3);
+	border-top: 1px solid var(--cinder-border-muted);
+}
+
+.connection-list > li:first-child {
+	border-top: 0;
+}
+
+.inline-form {
+	display: inline;
 }

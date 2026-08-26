@@ -107,6 +107,20 @@ describe('checkPublicDnsResolution', () => {
 		const result = await checkPublicDnsResolution('empty.example.com', async () => []);
 		expect(result.problems.length).toBeGreaterThan(0);
 	});
+
+	it('uses the real dns.lookup default when no resolveHostname is injected', async () => {
+		// No third argument -- exercises the default parameter's own real
+		// `dns.lookup(name, { all: true, verbatim: true })` call, not a test
+		// fixture. `localhost` always resolves locally without a network
+		// round trip, and is itself non-public (loopback), so this also
+		// proves the real lookup's shape (`address`/`family`) flows correctly
+		// into the public-address check.
+		const result = await checkPublicDnsResolution('localhost');
+		expect(result.hostname).toBe('localhost');
+		expect(result.addresses.length).toBeGreaterThan(0);
+		expect(result.problems.length).toBeGreaterThan(0);
+		expect(result.problems[0]).toContain('non-public address');
+	});
 });
 
 describe('checkNoCrossHostRedirect', () => {

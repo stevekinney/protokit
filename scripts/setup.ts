@@ -135,7 +135,7 @@ async function setupGoogle() {
 	console.log('Configure your own credentials for both development and production.\n');
 
 	// `/auth/google/callback` (not `/api/auth/callback/google`) is what the router and both
-	// token-exchange call sites actually serve — `applications/web/src/application.tsx`'s route
+	// token-exchange call sites actually serve — `applications/web/src/application.ts`'s route
 	// table and `applications/web/src/lib/google-authentication.ts`'s `callbackUrl` at both the
 	// authorization-request and code-exchange steps. Google requires an exact registered redirect
 	// URI match, so printing any other path here hands the operator credentials that fail sign-in
@@ -819,6 +819,24 @@ async function setupGithubSecrets(neonProjectId?: string) {
 		setGithubSecret('DATABASE_URL', connectionString);
 		setGithubSecret('DATABASE_URL_UNPOOLED', directConnectionString);
 
+		// Review finding (P2): `MANAGED_GITHUB_SECRETS` (the single list `doctor`,
+		// `teardown`, and `rotate-secret` all read) has named this a managed
+		// secret since the base-url/Railway-deploy-job wiring landed, but this
+		// phase never pushed it -- so `gh secret list` never showed all six
+		// managed secrets after a full wizard run, contradicting
+		// `DEPLOYMENT-RUNBOOK.md`'s documented "it worked" check. The value
+		// already exists in `.env.local` by this point: `setupSessionConfiguration`
+		// runs before this phase in `runFullSetup`'s own order.
+		const sessionSigningSecret = getEnvironmentValue('SESSION_SIGNING_SECRET');
+		if (!sessionSigningSecret) {
+			console.error(
+				'SESSION_SIGNING_SECRET is missing from .env.local. Run the session phase first: ' +
+					'bun scripts/setup.ts session',
+			);
+			return;
+		}
+		setGithubSecret('SESSION_SIGNING_SECRET', sessionSigningSecret);
+
 		// `NEON-API-KEY-P1` (round 4 review): `.github/workflows/production.yml` passes
 		// NEON_API_KEY to `neondatabase/create-branch-action` before every migration (the
 		// mandatory rollback-branch snapshot), not only the PR-validation workflow. Skipping it
@@ -887,7 +905,7 @@ async function runInitialMigration() {
 }
 
 async function runFullSetup() {
-	console.log('\n=== Bun + React MCP Template Setup ===\n');
+	console.log('\n=== Bun + Svelte MCP Template Setup ===\n');
 
 	console.log('Checking prerequisites...');
 	checkPrerequisites(['neonctl']);

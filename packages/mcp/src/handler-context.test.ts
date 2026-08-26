@@ -103,6 +103,16 @@ describe('parseSampledText', () => {
 		const result = { unexpected: 'data' };
 		expect(parseSampledText(result)).toBe('{"unexpected":"data"}');
 	});
+
+	it('falls back to stringifyUnknown when array content has a non-string text field', () => {
+		const result = { content: [{ text: 42 }] };
+		expect(parseSampledText(result)).toBe('{"content":[{"text":42}]}');
+	});
+
+	it('falls back to stringifyUnknown when object content has a non-string text field', () => {
+		const result = { content: { text: 42 } };
+		expect(parseSampledText(result)).toBe('{"content":{"text":42}}');
+	});
 });
 
 describe('assertSamplingSupport', () => {

@@ -11,9 +11,17 @@ test.describe('hydration', () => {
 		expect(errors).toHaveLength(0);
 	});
 
-	test('client bundle is requested', async ({ page }) => {
+	test('client bundle is requested', async ({ page, request }) => {
+		// The bundle's filename is content-hashed by `src/build.ts`, so the name
+		// is read from the asset manifest rather than hardcoded. Hardcoding
+		// `/assets/client.js` only ever matched the stable names the dev server
+		// writes, and failed against any real build.
+		const manifest = await (await request.get('/assets/manifest.json')).json();
+		const clientBundlePath: string = manifest.clientBundlePath;
+		expect(clientBundlePath).toMatch(/^\/assets\/client.*\.js$/);
+
 		const clientBundleRequested = page.waitForResponse(
-			(response) => response.url().includes('/assets/client.js') && response.status() === 200,
+			(response) => response.url().endsWith(clientBundlePath) && response.status() === 200,
 		);
 
 		await page.goto('/');

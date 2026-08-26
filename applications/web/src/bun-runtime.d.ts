@@ -116,9 +116,24 @@ declare namespace Bun {
 		logs: Array<string>;
 		outputs: Array<Blob>;
 	};
+
+	/**
+	 * Minimal shape of `Bun.Glob` -- only what `style-entry.test.ts` uses to
+	 * enumerate page components on disk. Real `scanSync` also accepts a bare
+	 * pattern string and has an async `scan` counterpart; neither is used here.
+	 */
+	type GlobScanOptions = {
+		cwd?: string;
+	};
+}
+
+declare class Glob {
+	constructor(pattern: string);
+	scanSync(options?: Bun.GlobScanOptions | string): Iterable<string>;
 }
 
 declare const Bun: {
+	Glob: typeof Glob;
 	serve: (options: Bun.ServeOptions) => Bun.Server;
 	spawn: (command: string[], options?: Record<string, unknown>) => Bun.SpawnedProcess;
 	spawnSync: (command: string[], options?: Record<string, unknown>) => Bun.SpawnSyncResult;

@@ -26,7 +26,7 @@ const { handleApplicationRequest } = await import('@web/application');
  * client, so a party holding another client's refresh token could burn it
  * even though its own request was then rejected.
  *
- * `oauth-routes.test.tsx` proves each individual response-shape branch
+ * `oauth-routes.test.ts` proves each individual response-shape branch
  * against a mocked database (which cannot evaluate a real `WHERE`
  * predicate, so it cannot prove atomicity or cross-client binding by
  * itself); this file proves the real predicate holds against a real
@@ -432,7 +432,7 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 	// Round 12 review (P2): `handleOauthTokenRefreshGrant`'s old-access-token
 	// revoke after a successful rotation is best-effort (logged and
 	// swallowed, not thrown -- see the comment above that `try`/`catch` in
-	// `oauth-routes.tsx`). If that update fails, an ancestor refresh-token
+	// `oauth-routes.ts`). If that update fails, an ancestor refresh-token
 	// row ends up revoked while its paired access token stays live. This
 	// seeds exactly that end state directly (rather than trying to force the
 	// best-effort update to fail over HTTP) and proves a later replay's

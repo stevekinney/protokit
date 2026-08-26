@@ -202,4 +202,22 @@ describe('redirectUriMatchesRegistered', () => {
 			),
 		).toBe(false);
 	});
+
+	it('rejects a requested URI that passes the validator but is not parseable by URL()', () => {
+		// `fragmentAndUserinfoFree` is caller-supplied, so it can in
+		// principle accept a string `new URL()` itself rejects. That must
+		// fall through the `catch` around `new URL(requestedUri)` and
+		// return false rather than throw.
+		const alwaysValid = () => true;
+		expect(
+			redirectUriMatchesRegistered('not a url at all', ['http://localhost/cb'], alwaysValid),
+		).toBe(false);
+	});
+
+	it('skips a registered candidate that passes the validator but is not parseable by URL()', () => {
+		const alwaysValid = () => true;
+		expect(
+			redirectUriMatchesRegistered('http://localhost/cb', ['not a url at all'], alwaysValid),
+		).toBe(false);
+	});
 });

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import { getEventListeners } from 'node:events';
-import { runWithStandardizedTimeout } from './long-running-operation-support.js';
+import {
+	emitRequestProgress,
+	runWithStandardizedTimeout,
+} from './long-running-operation-support.js';
 
 describe('runWithStandardizedTimeout', () => {
 	it('resolves with the operation result when it finishes before the timeout', async () => {
@@ -168,5 +171,95 @@ describe('runWithStandardizedTimeout', () => {
 		}
 
 		expect(getEventListeners(sharedController.signal, 'abort').length).toBe(0);
+	});
+});
+
+describe('emitRequestProgress', () => {
+	it('does nothing when no sendNotification is provided', async () => {
+		// No assertion target other than "does not throw" -- there is
+		// nothing to observe when the notifier itself is absent.
+		await expect(
+			emitRequestProgress({ progressToken: 'token-1', progress: 50 }),
+		).resolves.toBeUndefined();
+	});
+
+	it('does nothing when no progressToken is provided, even with a sendNotification', async () => {
+		const calls: unknown[] = [];
+		await emitRequestProgress({
+			sendNotification: async (notification) => {
+				calls.push(notification);
+			},
+			progress: 50,
+		});
+		expect(calls).toHaveLength(0);
+	});
+
+	it('sends a notifications/progress notification with progressToken and progress when both are present', async () => {
+		const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+		await emitRequestProgress({
+			sendNotification: async (notification) => {
+				calls.push(notification);
+			},
+			progressToken: 'token-2',
+			progress: 10,
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.method).toBe('notifications/progress');
+		expect(calls[0]?.params).toEqual({ progressToken: 'token-2', progress: 10 });
+	});
+
+	it('includes total in the notification params when provided', async () => {
+		const calls: Array<{ params: Record<string, unknown> }> = [];
+		await emitRequestProgress({
+			sendNotification: async (notification) => {
+				calls.push(notification as { params: Record<string, unknown> });
+			},
+			progressToken: 'token-3',
+			progress: 25,
+			total: 100,
+		});
+		expect(calls[0]?.params).toEqual({ progressToken: 'token-3', progress: 25, total: 100 });
+	});
+
+	it('omits total from the notification params when not provided', async () => {
+		const calls: Array<{ params: Record<string, unknown> }> = [];
+		await emitRequestProgress({
+			sendNotification: async (notification) => {
+				calls.push(notification as { params: Record<string, unknown> });
+			},
+			progressToken: 'token-4',
+			progress: 25,
+		});
+		expect(calls[0]?.params).not.toHaveProperty('total');
+	});
+
+	it('includes message in the notification params when provided', async () => {
+		const calls: Array<{ params: Record<string, unknown> }> = [];
+		await emitRequestProgress({
+			sendNotification: async (notification) => {
+				calls.push(notification as { params: Record<string, unknown> });
+			},
+			progressToken: 'token-5',
+			progress: 25,
+			message: 'still working',
+		});
+		expect(calls[0]?.params).toEqual({
+			progressToken: 'token-5',
+			progress: 25,
+			message: 'still working',
+		});
+	});
+
+	it('omits message from the notification params when not provided or empty', async () => {
+		const calls: Array<{ params: Record<string, unknown> }> = [];
+		await emitRequestProgress({
+			sendNotification: async (notification) => {
+				calls.push(notification as { params: Record<string, unknown> });
+			},
+			progressToken: 'token-6',
+			progress: 25,
+			message: '',
+		});
+		expect(calls[0]?.params).not.toHaveProperty('message');
 	});
 });

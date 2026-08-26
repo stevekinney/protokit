@@ -196,4 +196,15 @@ describe('boundRequestBody', () => {
 		const bounded = boundRequestBody(request, 10);
 		expect(bounded).toBe(request);
 	});
+
+	it('forwards cancellation from the wrapped stream to the underlying reader', async () => {
+		// The consumer (e.g. the MCP SDK's fetch-shaped handler) cancelling
+		// the wrapped body's stream -- distinct from this module's own
+		// overflow-triggered `reader.cancel()` -- must be forwarded to the
+		// underlying reader via the `ReadableStream`'s `cancel` callback.
+		const request = chunkedRequest('http://localhost/x', ['aaaaa', 'bbbbb', 'ccccc']);
+		const bounded = boundRequestBody(request, 1024);
+		expect(bounded.body).not.toBeNull();
+		expect(await bounded.body?.cancel('consumer no longer needs this body')).toBeUndefined();
+	});
 });

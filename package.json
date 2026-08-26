@@ -34,14 +34,14 @@
 		"test:trusted-proxy": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/trusted-proxy.test.ts applications/web/src/lib/canonicalize-ip-address.test.ts applications/web/src/lib/request-client-identifier.test.ts",
 		"test:request-boundaries": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/bounded-request-body.test.ts applications/web/src/lib/pkce-validation.test.ts applications/web/src/lib/reject-duplicate-parameters.test.ts applications/web/src/lib/exact-content-type.test.ts applications/web/src/resolve-public-file.test.ts",
 		"test:resource-exhaustion": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/resource-exhaustion.test.ts",
-		"test:authorization-transaction": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/authorization-transaction.integration.test.ts applications/web/src/views/oauth-authorize-page.test.tsx applications/web/src/lib/client-name-validation.test.ts",
-		"test:csrf": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/csrf-protection.test.ts applications/web/src/routes/google-authentication-routes.test.tsx applications/web/src/oauth-authorization-csrf.integration.test.ts",
+		"test:authorization-transaction": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/authorization-transaction.integration.test.ts applications/web/src/views/oauth-authorize-page.test.ts applications/web/src/lib/client-name-validation.test.ts",
+		"test:csrf": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/csrf-protection.test.ts applications/web/src/routes/google-authentication-routes.test.ts applications/web/src/oauth-authorization-csrf.integration.test.ts",
 		"test:private-cache": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/private-cache-headers.integration.test.ts",
 		"test:oauth:interop": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate applications/web/src/oauth-mcp-resource-binding.integration.test.ts applications/web/src/routes/oauth-discovery.test.ts applications/web/src/oauth-connector-registration.integration.test.ts applications/web/src/oauth-token-rotation-revocation.integration.test.ts",
 		"test:connector:codex": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun applications/web/src/connector-smoke-codex.ts",
 		"test:connector:claude-code": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun applications/web/src/connector-smoke-claude-code.ts",
 		"test:connector:inspector": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun applications/web/src/connector-smoke-inspector.ts",
-		"test:google-oauth-interop": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate applications/web/src/lib/google-authentication.test.ts applications/web/src/lib/google-outbound-fetch.test.ts applications/web/src/lib/google-oauth-single-use-store.test.ts applications/web/src/lib/google-id-token.test.ts applications/web/src/routes/google-authentication-routes.test.tsx applications/web/src/google-oauth-interop.integration.test.ts",
+		"test:google-oauth-interop": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate applications/web/src/lib/google-authentication.test.ts applications/web/src/lib/google-outbound-fetch.test.ts applications/web/src/lib/google-oauth-single-use-store.test.ts applications/web/src/lib/google-id-token.test.ts applications/web/src/routes/google-authentication-routes.test.ts applications/web/src/google-oauth-interop.integration.test.ts",
 		"test:google-oauth-concurrency": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate applications/web/src/google-oauth-concurrency.integration.test.ts",
 		"test:browser-security": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/browser-security-headers.test.ts applications/web/src/lib/content-security-policy.test.ts applications/web/src/lib/session-authentication.test.ts",
 		"test:operational-endpoints": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/routes/health-routes.test.ts applications/web/src/routes/metrics-routes.test.ts applications/web/src/lib/bearer-credential-authentication.test.ts applications/web/src/lib/coalesced-probe-cache.test.ts applications/web/src/lib/pre-session-routing.test.ts",
@@ -51,7 +51,7 @@
 		"test:workflow-prompt-injection": "bun test ./.github/tests/workflow-prompt-injection.test.ts",
 		"test:production-migration-gate": "bun test ./.github/tests/production-migration-gate.test.ts",
 		"test:container-smoke": "bun scripts/test-container-smoke.ts",
-		"test:observability": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test --isolate applications/web/src/lib/mcp-handler.test.ts applications/web/src/routes/mcp-routes.test.ts applications/web/src/routes/oauth-routes.test.tsx && NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test packages/mcp/src/redaction.test.ts packages/mcp/src/env.test.ts packages/mcp/src/environment-schema.test.ts packages/mcp/src/metrics.test.ts packages/mcp/src/prompts/summarize.test.ts packages/mcp/src/prompts/summarize-diagnostics.test.ts",
+		"test:observability": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test --isolate applications/web/src/lib/mcp-handler.test.ts applications/web/src/routes/mcp-routes.test.ts applications/web/src/routes/oauth-routes.test.ts && NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test packages/mcp/src/redaction.test.ts packages/mcp/src/env.test.ts packages/mcp/src/environment-schema.test.ts packages/mcp/src/metrics.test.ts packages/mcp/src/prompts/summarize.test.ts packages/mcp/src/prompts/summarize-diagnostics.test.ts",
 		"audit:production-content": "NODE_ENV=production bun scripts/audit-production-content.ts",
 		"audit:documentation": "bun scripts/audit-documentation.ts",
 		"audit:turbo-env": "bun scripts/audit-turbo-env.ts",
@@ -61,12 +61,12 @@
 		"audit:runtime-image": "bun scripts/audit-runtime-image.ts",
 		"audit:provenance": "bun scripts/audit-provenance.ts",
 		"audit:docker-context": "bun scripts/audit-docker-context.ts",
-		"test:scripts-security": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test scripts/utilities.test.ts scripts/setup.test.ts scripts/seed.test.ts scripts/audit-docker-context.test.ts scripts/rotate-secret.test.ts scripts/environment-file.test.ts",
+		"test:scripts-security": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test scripts/utilities.test.ts scripts/setup.test.ts scripts/seed.test.ts scripts/audit-docker-context.test.ts scripts/rotate-secret.test.ts scripts/environment-file.test.ts scripts/purge-stale-oauth-test-clients.test.ts scripts/assert-coverage-complete.test.ts scripts/assert-no-unexpected-skips.test.ts scripts/audit-documentation.test.ts scripts/audit-logs.test.ts scripts/audit-production-content.test.ts scripts/audit-turbo-env.test.ts scripts/test-documentation-commands.test.ts scripts/wait-for-http.test.ts",
 		"test:credential-rotation": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test scripts/rotate-secret.integration.test.ts scripts/seed.integration.test.ts",
-		"test:credential-lifecycle": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/credential-lifecycle-policy.test.ts applications/web/src/lib/consent-inventory.integration.test.ts applications/web/src/routes/account-connections-routes.test.tsx applications/web/src/components/home-page.test.tsx",
+		"test:credential-lifecycle": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/credential-lifecycle-policy.test.ts applications/web/src/lib/consent-inventory.integration.test.ts applications/web/src/routes/account-connections-routes.test.ts applications/web/src/components/home-page.test.ts",
 		"test:account-deletion": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/account-deletion.integration.test.ts",
 		"test:cleanup-scale": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun test applications/web/src/lib/scheduled-cleanup.test.ts applications/web/src/lib/scheduled-cleanup.integration.test.ts applications/web/src/lib/scheduled-cleanup-compensation-retention.integration.test.ts",
-		"test:signing-key-rotation": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/session-signing-secret.test.ts applications/web/src/lib/csrf-protection.test.ts scripts/rotate-secret.test.ts applications/web/src/routes/oauth-routes.test.tsx",
+		"test:signing-key-rotation": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/session-signing-secret.test.ts applications/web/src/lib/csrf-protection.test.ts scripts/rotate-secret.test.ts applications/web/src/routes/oauth-routes.test.ts",
 		"test:infrastructure:up": "docker compose -f docker-compose.test.yml up -d --build --wait",
 		"test:infrastructure:down": "docker compose -f docker-compose.test.yml down -v",
 		"test:infrastructure:migrate": "DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql bun scripts/migrate.ts",
@@ -75,8 +75,8 @@
 		"test:deployed-smoke": "bun applications/web/src/deployed-smoke.ts",
 		"test:deployed-streaming": "bun applications/web/src/deployed-streaming.ts",
 		"test:deployed-oauth": "bun applications/web/src/deployed-oauth.ts",
-		"test:integration": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate applications/web/src/application.integration.test.ts applications/web/src/google-oauth-concurrency.integration.test.ts applications/web/src/google-oauth-interop.integration.test.ts applications/web/src/graceful-shutdown.integration.test.ts applications/web/src/lib/account-deletion.integration.test.ts applications/web/src/lib/authorization-transaction.integration.test.ts applications/web/src/lib/consent-inventory.integration.test.ts applications/web/src/lib/mcp-grant-revocation-channel.integration.test.ts applications/web/src/lib/scheduled-cleanup.integration.test.ts applications/web/src/mcp-boundary-controls.integration.test.ts applications/web/src/mcp-stream-idle-timeout.integration.test.ts applications/web/src/multi-replica.integration.test.ts applications/web/src/oauth-authorization-csrf.integration.test.ts applications/web/src/oauth-connector-registration.integration.test.ts applications/web/src/oauth-mcp-resource-binding.integration.test.ts applications/web/src/oauth-token-rotation-revocation.integration.test.ts applications/web/src/private-cache-headers.integration.test.ts applications/web/src/routes/oauth-routes.integration.test.tsx scripts/rotate-secret.integration.test.ts scripts/seed.integration.test.ts",
-		"test:coverage": "bun scripts/assert-coverage-complete.ts",
+		"test:integration": "bun turbo build --filter=@template/web && NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate applications/web/src/application.integration.test.ts applications/web/src/google-oauth-concurrency.integration.test.ts applications/web/src/google-oauth-interop.integration.test.ts applications/web/src/graceful-shutdown.integration.test.ts applications/web/src/lib/account-deletion.integration.test.ts applications/web/src/lib/authorization-transaction.integration.test.ts applications/web/src/lib/consent-inventory.integration.test.ts applications/web/src/lib/mcp-grant-revocation-channel.integration.test.ts applications/web/src/lib/scheduled-cleanup.integration.test.ts applications/web/src/mcp-boundary-controls.integration.test.ts applications/web/src/mcp-stream-idle-timeout.integration.test.ts applications/web/src/multi-replica.integration.test.ts applications/web/src/oauth-authorization-csrf.integration.test.ts applications/web/src/oauth-connector-registration.integration.test.ts applications/web/src/oauth-mcp-resource-binding.integration.test.ts applications/web/src/oauth-token-rotation-revocation.integration.test.ts applications/web/src/private-cache-headers.integration.test.ts applications/web/src/routes/oauth-routes.integration.test.ts applications/web/src/test-support/registration-cleanup.integration.test.ts scripts/rotate-secret.integration.test.ts scripts/seed.integration.test.ts",
+		"test:coverage": "bun turbo build --filter=@template/web && bun scripts/assert-coverage-complete.ts",
 		"prepare": "husky"
 	},
 	"dependencies": {
@@ -92,25 +92,29 @@
 		"@modelcontextprotocol/inspector": "2.3.0",
 		"drizzle-orm": "^0.45.2",
 		"eslint": "^10.8.1",
+		"eslint-plugin-svelte": "^3.23.0",
 		"globals": "^17.11.0",
 		"husky": "^9.1.7",
 		"lint-staged": "^17.3.0",
 		"prettier": "^3.9.6",
+		"prettier-plugin-svelte": "^4.1.1",
+		"svelte-eslint-parser": "^1.8.1",
 		"turbo": "^2.10.11",
 		"typescript": "6.0.3",
 		"typescript-eslint": "^8.67.0"
 	},
 	"lint-staged": {
-		"*.{js,ts,tsx,json,css,html,md}": [
+		"*.{js,ts,svelte,json,css,html,md}": [
 			"prettier --write"
 		],
-		"*.{js,ts,tsx}": [
+		"*.{js,ts,svelte}": [
 			"eslint --fix"
 		]
 	},
 	"packageManager": "bun@1.3.14",
 	"overrides": {
 		"zod": "^4.0.0",
+		"@lostgradient/cinder": "0.24.8",
 		"hono": "4.13.3",
 		"@hono/node-server": "1.19.17",
 		"ip-address": "10.5.0",
