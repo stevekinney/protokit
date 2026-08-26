@@ -173,9 +173,9 @@ describe('createApplicationMount', () => {
 		redisConfigured = false;
 		redisQuitError = null;
 		redisQuitCalls.length = 0;
-		// Disposal is permanent per process by design; every test below that
-		// disposes would otherwise poison the next one's mount.
-		applicationMountTestHooks.resetDisposedState();
+		// A process supports exactly one mount by design; without this reset
+		// every test after the first would be refused as a second live mount.
+		applicationMountTestHooks.resetMountState();
 		holdShutdown = false;
 		releaseShutdown = null;
 		shutdownCalls = 0;
@@ -198,13 +198,21 @@ describe('createApplicationMount', () => {
 		it('refuses to mount when the production invariants fail, before starting anything', async () => {
 			// Fail-fast ordering matters: a mount that started the cleanup
 			// interval and then threw would leave a live timer behind in a
-			// process that is about to be considered un-started.
+			// process that is about to be considered un-started. The teardown
+			// that follows the failure releases the background state
+			// `mcp-handler.ts` started at import; what must NOT appear here is
+			// `loadAssetManifest` or `startScheduledCleanup`.
 			assertInvariantsError = new Error('Production startup invariants failed');
 
 			await expect(createApplicationMount()).rejects.toThrow(
 				'Production startup invariants failed',
 			);
-			expect(lifecycleCalls).toEqual(['assertProductionStartupInvariants']);
+			expect(lifecycleCalls).toEqual([
+				'assertProductionStartupInvariants',
+				'shutdownMcpTransports',
+			]);
+			expect(lifecycleCalls).not.toContain('loadAssetManifest');
+			expect(lifecycleCalls.some((call) => call.startsWith('startScheduledCleanup'))).toBe(false);
 		});
 	});
 
@@ -338,6 +346,65 @@ describe('createApplicationMount', () => {
 			const mount = await createApplicationMount();
 			await mount.dispose();
 
+			await expect(createApplicationMount()).rejects.toThrow('cannot be called after dispose()');
+		});
+	});
+
+	describe('single-mount invariant', () => {
+		it('refuses a second live mount rather than sharing module-scoped state', async () => {
+			const mount = await createApplicationMount();
+
+			await expect(createApplicationMount()).rejects.toThrow(
+				'cannot be called while another mount is live',
+			);
+
+			await mount.dispose();
+		});
+
+		it('refuses two concurrent mounts, not just sequential ones', async () => {
+			// The claim is claimed synchronously before the first `await`, so
+			// two callers racing the factory cannot both receive a handle over
+			// the same timer, handler cache, and Redis client.
+			const results = await Promise.allSettled([
+				createApplicationMount(),
+				createApplicationMount(),
+			]);
+
+			const fulfilled = results.filter((r) => r.status === 'fulfilled');
+			const rejected = results.filter((r) => r.status === 'rejected');
+			expect(fulfilled).toHaveLength(1);
+			expect(rejected).toHaveLength(1);
+
+			const mount = (
+				fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof createApplicationMount>>>
+			).value;
+			await mount.dispose();
+		});
+
+		it('releases background state when startup fails, instead of orphaning it', async () => {
+			// Importing this module already started the MCP sweep and the
+			// grant-revocation subscription, so a host that catches a failed
+			// mount and keeps running must not be left holding them with no
+			// handle to release them.
+			assertInvariantsError = new Error('Production startup invariants failed');
+			redisConfigured = true;
+
+			await expect(createApplicationMount()).rejects.toThrow(
+				'Production startup invariants failed',
+			);
+
+			expect(lifecycleCalls).toEqual([
+				'assertProductionStartupInvariants',
+				'shutdownMcpTransports',
+			]);
+			expect(redisQuitCalls).toEqual(['quit']);
+		});
+
+		it('a failed mount is not retryable, because its background state is gone', async () => {
+			assertInvariantsError = new Error('Production startup invariants failed');
+			await expect(createApplicationMount()).rejects.toThrow();
+
+			assertInvariantsError = null;
 			await expect(createApplicationMount()).rejects.toThrow('cannot be called after dispose()');
 		});
 	});

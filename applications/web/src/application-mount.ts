@@ -56,17 +56,27 @@ export type ApplicationMountOptions = {
 };
 
 /**
- * Disposal tears down module-scoped state that only initializes once, at
- * `mcp-handler.ts` module evaluation: `closeAll()` clears the user-handler
- * idle-eviction timer, and disconnecting the Redis subscriber leaves
- * `subscribeToGrantRevocations`'s `redisSubscriptionStarted` latch set, so
- * it never re-subscribes. A second mount in the same process would
- * therefore run with no idle eviction and no cross-replica grant
- * revocation -- both silent. Rather than reach into those modules to make
- * them restartable (they are shared with `server.ts`, which has no such
- * need), disposal is permanent and remounting is refused outright.
+ * One mount per process, tracked as an explicit state machine rather than a
+ * pair of booleans, because both illegal transitions are silent failures
+ * rather than loud ones.
+ *
+ * Two *live* mounts would share one set of module-scoped resources -- the
+ * cleanup timer, the MCP user-handler cache, the grant-revocation
+ * subscriber, the Redis client -- while handing out two independently
+ * disposable handles. Disposing either would tear those down under the
+ * other, which keeps serving requests with no idle eviction and no
+ * cross-replica revocation.
+ *
+ * Remounting after disposal is equally broken: `closeAll()` clears the
+ * user-handler idle-eviction timer for good, and `subscribeToGrantRevocations`
+ * early-returns forever because its `redisSubscriptionStarted` latch stays
+ * set once the subscriber disconnects. Rather than reach into those modules
+ * to make them restartable -- they are shared with `server.ts`, which has no
+ * such need -- both transitions are refused outright.
  */
-let disposedInThisProcess = false;
+type MountState = 'none' | 'live' | 'disposed';
+
+let mountState: MountState = 'none';
 
 /**
  * The seam a host application (a SvelteKit hook, a Bun server that owns its
@@ -109,26 +119,50 @@ let disposedInThisProcess = false;
  * because only the host knows when its own server has stopped accepting
  * them.
  *
- * Disposal is permanent for the life of the process -- calling this again
- * after `dispose()` throws rather than returning a mount whose background
- * state is silently missing.
+ * Exactly one mount may exist per process. Calling this while a mount is
+ * live, or after one has been disposed, throws rather than returning a
+ * handle whose background state is shared or silently missing. If startup
+ * fails, the background state `mcp-handler.ts` established at import is
+ * released before the rejection propagates.
  */
 export async function createApplicationMount(
 	options: ApplicationMountOptions = {},
 ): Promise<ApplicationMount> {
-	if (disposedInThisProcess) {
+	if (mountState === 'disposed') {
 		throw new Error(
 			'createApplicationMount() cannot be called after dispose(): tearing the mount down ' +
 				'permanently clears module-scoped MCP transport state that only initializes once ' +
 				'per process. Start a new process instead.',
 		);
 	}
+	if (mountState === 'live') {
+		throw new Error(
+			'createApplicationMount() cannot be called while another mount is live: both mounts ' +
+				'would share one cleanup timer, MCP handler cache, grant-revocation subscriber, and ' +
+				'Redis client, so disposing either would break the other. Reuse the existing mount.',
+		);
+	}
 
-	assertProductionStartupInvariants();
+	// Claimed synchronously, before the first `await`, so two concurrent
+	// callers cannot both pass the checks above and each receive a handle.
+	mountState = 'live';
 
-	const assetManifest = await loadAssetManifest();
-
-	startScheduledCleanup(environment.SCHEDULED_CLEANUP_INTERVAL_SECONDS * 1000);
+	let assetManifest: AssetManifest;
+	try {
+		assertProductionStartupInvariants();
+		assetManifest = await loadAssetManifest();
+		startScheduledCleanup(environment.SCHEDULED_CLEANUP_INTERVAL_SECONDS * 1000);
+	} catch (error) {
+		// Importing this module already evaluated `mcp-handler.ts`, which starts
+		// the user-handler sweep and subscribes to grant revocations at module
+		// scope -- so by the time startup fails, background state exists with no
+		// handle to release it. A host that catches this rejection and keeps
+		// running its own application would otherwise leak a timer and a Redis
+		// subscriber for the life of the process.
+		await releaseBackgroundState();
+		mountState = 'disposed';
+		throw error;
+	}
 
 	const serveStaticAssets = options.serveStaticAssets ?? false;
 
@@ -140,21 +174,9 @@ export async function createApplicationMount(
 	let disposal: Promise<void> | undefined;
 
 	async function runDisposal(): Promise<void> {
-		disposedInThisProcess = true;
-
+		mountState = 'disposed';
 		stopScheduledCleanup();
-		await shutdownMcpTransports();
-
-		if (isRedisConfigured()) {
-			try {
-				const redisClient = await getRedisClient();
-				await redisClient.quit();
-			} catch (error) {
-				// Mirrors `server.ts`: Redis may already be disconnected, and a
-				// failure to close it must not prevent the rest of teardown.
-				logger.warn({ err: error }, 'Redis connection close failed during mount disposal');
-			}
-		}
+		await releaseBackgroundState();
 	}
 
 	return {
@@ -175,12 +197,33 @@ export async function createApplicationMount(
 }
 
 /**
- * Test seam: disposal is deliberately permanent per process, which a test
- * file exercising more than one mount would otherwise trip over on its
- * second `createApplicationMount()`. Never call this from application code.
+ * Closes the transport and Redis resources `mcp-handler.ts` established at
+ * module evaluation. Shared by ordinary disposal and by the failed-startup
+ * path, so a mount that never became usable releases exactly what a
+ * disposed one does.
+ */
+async function releaseBackgroundState(): Promise<void> {
+	await shutdownMcpTransports();
+
+	if (isRedisConfigured()) {
+		try {
+			const redisClient = await getRedisClient();
+			await redisClient.quit();
+		} catch (error) {
+			// Mirrors `server.ts`: Redis may already be disconnected, and a
+			// failure to close it must not prevent the rest of teardown.
+			logger.warn({ err: error }, 'Redis connection close failed during mount disposal');
+		}
+	}
+}
+
+/**
+ * Test seam: a process supports exactly one mount, ever, which a test file
+ * exercising several would otherwise trip over on its second
+ * `createApplicationMount()`. Never call this from application code.
  */
 export const applicationMountTestHooks = {
-	resetDisposedState(): void {
-		disposedInThisProcess = false;
+	resetMountState(): void {
+		mountState = 'none';
 	},
 };
