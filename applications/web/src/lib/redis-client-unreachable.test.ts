@@ -12,7 +12,7 @@ import { describe, expect, it, mock } from 'bun:test';
  * `redis-client.test.ts` owns that path in a separate process.
  */
 mock.module('@web/env', () => ({
-	environment: { REDIS_URL: 'redis://127.0.0.1:9' },
+	environment: { redisUrl: 'redis://127.0.0.1:9' },
 }));
 
 const { getRedisClient } = await import('@web/lib/redis-client');

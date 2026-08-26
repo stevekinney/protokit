@@ -6,7 +6,7 @@ import { parseCookies, serializeCookie } from '@web/lib/cookies';
 import { hashCredential } from '@web/lib/hash-credential';
 import type { ApplicationUser } from '@web/types/user';
 
-const SESSION_TIME_TO_LIVE_SECONDS = environment.SESSION_TIME_TO_LIVE_SECONDS;
+const SESSION_TIME_TO_LIVE_SECONDS = environment.sessionTimeToLiveSeconds;
 
 export type { ApplicationUser };
 
@@ -29,15 +29,15 @@ export type SessionHydrationResult = {
  * works.
  */
 function getSessionCookieName(): string {
-	if (environment.NODE_ENV === 'production') {
-		return `__Host-${environment.SESSION_COOKIE_NAME}`;
+	if (environment.nodeEnv === 'production') {
+		return `__Host-${environment.sessionCookieName}`;
 	}
 
-	return environment.SESSION_COOKIE_NAME;
+	return environment.sessionCookieName;
 }
 
 function getSecureCookieFlag(url: URL): boolean {
-	if (environment.NODE_ENV === 'production') {
+	if (environment.nodeEnv === 'production') {
 		return true;
 	}
 

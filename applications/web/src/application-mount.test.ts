@@ -25,9 +25,9 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
  */
 
 const mockEnvironment: Record<string, unknown> = {
-	NODE_ENV: 'test',
-	MCP_ALLOWED_ORIGINS: 'http://localhost:3000',
-	BASE_URL: 'https://app.example.com',
+	nodeEnv: 'test',
+	mcpAllowedOrigins: 'http://localhost:3000',
+	baseUrl: 'https://app.example.com',
 };
 
 mock.module('@web/env', () => ({ environment: mockEnvironment }));
@@ -190,7 +190,7 @@ describe('createApplicationMount', () => {
 
 	describe('startup lifecycle', () => {
 		it('runs the production invariant check, loads the asset manifest, and starts cleanup', async () => {
-			mockEnvironment.SCHEDULED_CLEANUP_INTERVAL_SECONDS = 3600;
+			mockEnvironment.scheduledCleanupIntervalSeconds = 3600;
 			const mount = await createApplicationMount();
 
 			expect(lifecycleCalls).toEqual([

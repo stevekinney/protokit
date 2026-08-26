@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const mockEnvironment: Record<string, unknown> = {
-	NODE_ENV: 'development',
-	PROTOKIT_TUNNEL_ACTIVE: false,
+	nodeEnv: 'development',
+	protokitTunnelActive: false,
 };
 
 let mockExistingUsers: Array<{ id: string }> = [];
@@ -85,16 +85,16 @@ describe('handleDevelopmentLogin', () => {
 	});
 
 	it('creates a session when NODE_ENV is development and no tunnel is active', async () => {
-		mockEnvironment.NODE_ENV = 'development';
-		mockEnvironment.PROTOKIT_TUNNEL_ACTIVE = false;
+		mockEnvironment.nodeEnv = 'development';
+		mockEnvironment.protokitTunnelActive = false;
 		const response = await handleDevelopmentLogin(createContext());
 		expect(response.status).toBe(302);
 		expect(response.headers.get('set-cookie')).toContain('application_session=');
 	});
 
 	it('reuses the existing development user instead of inserting a new one', async () => {
-		mockEnvironment.NODE_ENV = 'development';
-		mockEnvironment.PROTOKIT_TUNNEL_ACTIVE = false;
+		mockEnvironment.nodeEnv = 'development';
+		mockEnvironment.protokitTunnelActive = false;
 		mockExistingUsers = [{ id: 'existing-dev-user-id' }];
 		const response = await handleDevelopmentLogin(createContext());
 		expect(response.status).toBe(302);
@@ -102,8 +102,8 @@ describe('handleDevelopmentLogin', () => {
 	});
 
 	it('returns 429 with Retry-After when the session-creation rate limit is exceeded', async () => {
-		mockEnvironment.NODE_ENV = 'development';
-		mockEnvironment.PROTOKIT_TUNNEL_ACTIVE = false;
+		mockEnvironment.nodeEnv = 'development';
+		mockEnvironment.protokitTunnelActive = false;
 		mockRateLimitAllowed = false;
 		mockRateLimitRetryAfterSeconds = 17;
 		const response = await handleDevelopmentLogin(createContext());
@@ -112,8 +112,8 @@ describe('handleDevelopmentLogin', () => {
 	});
 
 	it('returns 500 and logs when session creation throws', async () => {
-		mockEnvironment.NODE_ENV = 'development';
-		mockEnvironment.PROTOKIT_TUNNEL_ACTIVE = false;
+		mockEnvironment.nodeEnv = 'development';
+		mockEnvironment.protokitTunnelActive = false;
 		mockCreateSessionShouldThrow = true;
 		const response = await handleDevelopmentLogin(createContext());
 		expect(response.status).toBe(500);
@@ -126,22 +126,22 @@ describe('handleDevelopmentLogin', () => {
 	});
 
 	it('returns 404 in production regardless of tunnel state', async () => {
-		mockEnvironment.NODE_ENV = 'production';
-		mockEnvironment.PROTOKIT_TUNNEL_ACTIVE = false;
+		mockEnvironment.nodeEnv = 'production';
+		mockEnvironment.protokitTunnelActive = false;
 		const response = await handleDevelopmentLogin(createContext());
 		expect(response.status).toBe(404);
 	});
 
 	it('returns 404 in test', async () => {
-		mockEnvironment.NODE_ENV = 'test';
-		mockEnvironment.PROTOKIT_TUNNEL_ACTIVE = false;
+		mockEnvironment.nodeEnv = 'test';
+		mockEnvironment.protokitTunnelActive = false;
 		const response = await handleDevelopmentLogin(createContext());
 		expect(response.status).toBe(404);
 	});
 
 	it('returns 404 in development when a tunnel is active, even though NODE_ENV allows it', async () => {
-		mockEnvironment.NODE_ENV = 'development';
-		mockEnvironment.PROTOKIT_TUNNEL_ACTIVE = true;
+		mockEnvironment.nodeEnv = 'development';
+		mockEnvironment.protokitTunnelActive = true;
 		const response = await handleDevelopmentLogin(createContext());
 		expect(response.status).toBe(404);
 	});

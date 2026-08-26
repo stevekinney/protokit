@@ -12,9 +12,9 @@ import { describe, expect, it, mock } from 'bun:test';
  */
 mock.module('@web/env', () => ({
 	environment: {
-		NODE_ENV: 'production',
-		RATE_LIMIT_REGISTER_MAX: 3,
-		RATE_LIMIT_REGISTER_WINDOW_SECONDS: 60,
+		nodeEnv: 'production',
+		rateLimitRegisterMax: 3,
+		rateLimitRegisterWindowSeconds: 60,
 	},
 }));
 

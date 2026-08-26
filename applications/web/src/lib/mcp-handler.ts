@@ -107,10 +107,10 @@ function createUserHandlerEntry(userId: string): {
 				userId: requestAuthExtra.userId,
 				user: requestAuthExtra.userProfile,
 				requestId: requestAuthExtra.requestId,
-				enableUiExtension: environment.MCP_ENABLE_UI_EXTENSION,
+				enableUiExtension: environment.mcpEnableUiExtension,
 				enableConformanceMode: shouldEnableConformanceMode({
-					conformanceModeConfigured: environment.MCP_CONFORMANCE_MODE,
-					tunnelActive: environment.PROTOKIT_TUNNEL_ACTIVE,
+					conformanceModeConfigured: environment.mcpConformanceMode,
+					tunnelActive: environment.protokitTunnelActive,
 				}),
 				era: ctx.era,
 				publishResourceUpdate: async (uri) => {

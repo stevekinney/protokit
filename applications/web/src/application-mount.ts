@@ -156,7 +156,7 @@ export async function createApplicationMount(
 	try {
 		assertProductionStartupInvariants();
 		assetManifest = await loadAssetManifest();
-		startScheduledCleanup(environment.SCHEDULED_CLEANUP_INTERVAL_SECONDS * 1000);
+		startScheduledCleanup(environment.scheduledCleanupIntervalSeconds * 1000);
 	} catch (error) {
 		// Importing this module already evaluated `mcp-handler.ts`, which starts
 		// the user-handler sweep and subscribes to grant revocations at module

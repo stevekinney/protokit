@@ -18,24 +18,24 @@ import {
 // these tests build a plain object and pass it directly — no global mocking,
 // nothing to leak.
 const mockEnvironment: ProductionStartupInvariantSource['environment'] = {
-	NODE_ENV: 'development',
-	BASE_URL: undefined,
-	REDIS_URL: undefined,
-	GOOGLE_CLIENT_ID: undefined,
-	GOOGLE_CLIENT_SECRET: undefined,
-	TRUSTED_PROXY_CIDRS: undefined,
-	TRUSTED_PROXY_HEADER: undefined,
-	TRUSTED_PROXY_HOP_COUNT: 1,
-	NODE_TLS_REJECT_UNAUTHORIZED: undefined,
-	SESSION_SIGNING_SECRET: undefined,
-	MCP_CONFORMANCE_MODE: false,
-	MCP_ALLOWED_ORIGINS: 'http://localhost:3000',
+	nodeEnv: 'development',
+	baseUrl: undefined,
+	redisUrl: undefined,
+	googleClientId: undefined,
+	googleClientSecret: undefined,
+	trustedProxyCidrs: undefined,
+	trustedProxyHeader: undefined,
+	trustedProxyHopCount: 1,
+	nodeTlsRejectUnauthorized: undefined,
+	sessionSigningSecret: undefined,
+	mcpConformanceMode: false,
+	mcpAllowedOrigins: 'http://localhost:3000',
 };
 const mockDatabaseEnvironment: ProductionStartupInvariantSource['databaseEnvironment'] = {
-	DATABASE_URL:
+	databaseUrl:
 		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full',
-	DATABASE_URL_UNPOOLED: undefined,
-	DATABASE_LOCAL_PROXY_URL: undefined,
+	databaseUrlUnpooled: undefined,
+	databaseLocalProxyUrl: undefined,
 };
 let redisConfigured = false;
 
@@ -49,34 +49,34 @@ function invoke(): void {
 
 /** A fully valid production configuration. Tests mutate one field away from this. */
 function resetToValidProductionConfiguration(): void {
-	mockEnvironment.NODE_ENV = 'production';
-	mockEnvironment.BASE_URL = 'https://app.example.com';
-	mockEnvironment.REDIS_URL = 'rediss://production-redis.example.com:6380';
-	mockEnvironment.GOOGLE_CLIENT_ID = 'client-id';
-	mockEnvironment.GOOGLE_CLIENT_SECRET = 'client-secret';
-	mockEnvironment.TRUSTED_PROXY_CIDRS = '10.0.0.0/8';
-	mockEnvironment.TRUSTED_PROXY_HEADER = 'x-forwarded-for';
-	mockEnvironment.NODE_TLS_REJECT_UNAUTHORIZED = undefined;
-	mockEnvironment.SESSION_SIGNING_SECRET = 'a'.repeat(32);
-	mockEnvironment.MCP_CONFORMANCE_MODE = false;
+	mockEnvironment.nodeEnv = 'production';
+	mockEnvironment.baseUrl = 'https://app.example.com';
+	mockEnvironment.redisUrl = 'rediss://production-redis.example.com:6380';
+	mockEnvironment.googleClientId = 'client-id';
+	mockEnvironment.googleClientSecret = 'client-secret';
+	mockEnvironment.trustedProxyCidrs = '10.0.0.0/8';
+	mockEnvironment.trustedProxyHeader = 'x-forwarded-for';
+	mockEnvironment.nodeTlsRejectUnauthorized = undefined;
+	mockEnvironment.sessionSigningSecret = 'a'.repeat(32);
+	mockEnvironment.mcpConformanceMode = false;
 	redisConfigured = true;
-	mockDatabaseEnvironment.DATABASE_URL =
+	mockDatabaseEnvironment.databaseUrl =
 		'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full';
-	mockDatabaseEnvironment.DATABASE_URL_UNPOOLED = undefined;
-	mockDatabaseEnvironment.DATABASE_LOCAL_PROXY_URL = undefined;
+	mockDatabaseEnvironment.databaseUrlUnpooled = undefined;
+	mockDatabaseEnvironment.databaseLocalProxyUrl = undefined;
 }
 
 describe('assertProductionStartupInvariants', () => {
 	it('does nothing outside production, even with a fully invalid configuration', () => {
-		mockEnvironment.NODE_ENV = 'development';
-		mockEnvironment.BASE_URL = undefined;
+		mockEnvironment.nodeEnv = 'development';
+		mockEnvironment.baseUrl = undefined;
 		redisConfigured = false;
 		expect(() => invoke()).not.toThrow();
 	});
 
 	it('does nothing in test, even with a fully invalid configuration', () => {
-		mockEnvironment.NODE_ENV = 'test';
-		mockEnvironment.BASE_URL = undefined;
+		mockEnvironment.nodeEnv = 'test';
+		mockEnvironment.baseUrl = undefined;
 		redisConfigured = false;
 		expect(() => invoke()).not.toThrow();
 	});
@@ -94,102 +94,102 @@ describe('assertProductionStartupInvariants', () => {
 
 	it('throws in production when REDIS_URL is not the encrypted rediss:// scheme', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.REDIS_URL = 'redis://production-redis.example.com:6379';
+		mockEnvironment.redisUrl = 'redis://production-redis.example.com:6379';
 		expect(() => invoke()).toThrow(/rediss:\/\//);
 	});
 
 	it('throws in production when REDIS_URL points at a loopback host', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.REDIS_URL = 'rediss://localhost:6380';
+		mockEnvironment.redisUrl = 'rediss://localhost:6380';
 		expect(() => invoke()).toThrow(/local host/);
 	});
 
 	it('throws in production when REDIS_URL uses placeholder credentials', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.REDIS_URL = 'rediss://test:test@production-redis.example.com:6380';
+		mockEnvironment.redisUrl = 'rediss://test:test@production-redis.example.com:6380';
 		expect(() => invoke()).toThrow(/placeholder credentials/);
 	});
 
 	it('throws in production when BASE_URL is not set', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.BASE_URL = undefined;
+		mockEnvironment.baseUrl = undefined;
 		expect(() => invoke()).toThrow(/BASE_URL is not set/);
 	});
 
 	it('throws in production when BASE_URL is not https', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.BASE_URL = 'http://app.example.com';
+		mockEnvironment.baseUrl = 'http://app.example.com';
 		expect(() => invoke()).toThrow(/must use https/);
 	});
 
 	it('throws in production when DATABASE_URL has no encrypted, verified transport', () => {
 		resetToValidProductionConfiguration();
-		mockDatabaseEnvironment.DATABASE_URL =
+		mockDatabaseEnvironment.databaseUrl =
 			'postgresql://produser:realsecret@production-host.example.com:5432/app';
 		expect(() => invoke()).toThrow(/sslmode=verify-full/);
 	});
 
 	it('throws in production when DATABASE_URL only encrypts (sslmode=require) without verifying the certificate', () => {
 		resetToValidProductionConfiguration();
-		mockDatabaseEnvironment.DATABASE_URL =
+		mockDatabaseEnvironment.databaseUrl =
 			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=require';
 		expect(() => invoke()).toThrow(/sslmode=verify-full/);
 	});
 
 	it('throws in production when DATABASE_URL verifies the CA but not the hostname (sslmode=verify-ca)', () => {
 		resetToValidProductionConfiguration();
-		mockDatabaseEnvironment.DATABASE_URL =
+		mockDatabaseEnvironment.databaseUrl =
 			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-ca';
 		expect(() => invoke()).toThrow(/sslmode=verify-full/);
 	});
 
 	it('throws in production when NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate validation process-wide', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+		mockEnvironment.nodeTlsRejectUnauthorized = '0';
 		expect(() => invoke()).toThrow(/NODE_TLS_REJECT_UNAUTHORIZED=0/);
 	});
 
 	it('throws in production when SESSION_SIGNING_SECRET is not set, matching resolveSessionSigningSecrets()', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.SESSION_SIGNING_SECRET = undefined;
+		mockEnvironment.sessionSigningSecret = undefined;
 		expect(() => invoke()).toThrow(/SESSION_SIGNING_SECRET is not set/);
 	});
 
 	it('throws in production when DATABASE_URL points at a local host', () => {
 		resetToValidProductionConfiguration();
-		mockDatabaseEnvironment.DATABASE_URL =
+		mockDatabaseEnvironment.databaseUrl =
 			'postgresql://produser:realsecret@localhost:5432/app?sslmode=verify-full';
 		expect(() => invoke()).toThrow(/local host/);
 	});
 
 	it('throws in production when DATABASE_URL uses placeholder credentials', () => {
 		resetToValidProductionConfiguration();
-		mockDatabaseEnvironment.DATABASE_URL =
+		mockDatabaseEnvironment.databaseUrl =
 			'postgresql://user:password@production-host.example.com:5432/app?sslmode=verify-full';
 		expect(() => invoke()).toThrow(/placeholder credentials/);
 	});
 
 	it('throws in production when DATABASE_LOCAL_PROXY_URL is set', () => {
 		resetToValidProductionConfiguration();
-		mockDatabaseEnvironment.DATABASE_LOCAL_PROXY_URL = 'http://db.localtest.me:4444/sql';
+		mockDatabaseEnvironment.databaseLocalProxyUrl = 'http://db.localtest.me:4444/sql';
 		expect(() => invoke()).toThrow(/DATABASE_LOCAL_PROXY_URL is set/);
 	});
 
 	it('throws in production when TRUSTED_PROXY_CIDRS is not set', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.TRUSTED_PROXY_CIDRS = undefined;
+		mockEnvironment.trustedProxyCidrs = undefined;
 		expect(() => invoke()).toThrow(/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/);
 	});
 
 	it('throws in production when TRUSTED_PROXY_HEADER is not set', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.TRUSTED_PROXY_HEADER = undefined;
+		mockEnvironment.trustedProxyHeader = undefined;
 		expect(() => invoke()).toThrow(/TRUSTED_PROXY_CIDRS and TRUSTED_PROXY_HEADER are not both set/);
 	});
 
 	it('throws in production when Google credentials are partially configured', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.GOOGLE_CLIENT_SECRET = undefined;
+		mockEnvironment.googleClientSecret = undefined;
 		expect(() => invoke()).toThrow(/GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set/);
 	});
 
@@ -203,21 +203,21 @@ describe('assertProductionStartupInvariants', () => {
 	// outright, not merely required to agree with each other.
 	it('throws in production when Google credentials are both absent', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.GOOGLE_CLIENT_ID = undefined;
-		mockEnvironment.GOOGLE_CLIENT_SECRET = undefined;
+		mockEnvironment.googleClientId = undefined;
+		mockEnvironment.googleClientSecret = undefined;
 		expect(() => invoke()).toThrow(/GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be set/);
 	});
 
 	it('throws in production when MCP_CONFORMANCE_MODE is true (review round 4: this bypasses shouldEnableConformanceMode entirely, since that predicate only checks PROTOKIT_TUNNEL_ACTIVE, never NODE_ENV)', () => {
 		resetToValidProductionConfiguration();
-		mockEnvironment.MCP_CONFORMANCE_MODE = true;
+		mockEnvironment.mcpConformanceMode = true;
 		expect(() => invoke()).toThrow(/MCP_CONFORMANCE_MODE is true/);
 	});
 
 	it('reports every failing setting in one error, not just the first', () => {
 		resetToValidProductionConfiguration();
 		redisConfigured = false;
-		mockEnvironment.BASE_URL = undefined;
+		mockEnvironment.baseUrl = undefined;
 		try {
 			invoke();
 			throw new Error('expected assertProductionStartupInvariants to throw');

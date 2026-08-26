@@ -129,7 +129,7 @@ async function probeDependencies(): Promise<DependencySnapshot> {
 // a bare `const`) only so `resetHealthReadinessCacheForTests` can discard it
 // between test cases — nothing in production code ever reassigns it.
 let getCachedDependencySnapshot = createCoalescedProbe({
-	ttlMs: (environment.HEALTH_READINESS_CACHE_TTL_SECONDS ?? 2) * 1000,
+	ttlMs: (environment.healthReadinessCacheTtlSeconds ?? 2) * 1000,
 	probe: probeDependencies,
 });
 
@@ -142,7 +142,7 @@ let getCachedDependencySnapshot = createCoalescedProbe({
 export function resetHealthReadinessCacheForTests(): void {
 	resetOutstandingDatabaseProbeForTests();
 	getCachedDependencySnapshot = createCoalescedProbe({
-		ttlMs: (environment.HEALTH_READINESS_CACHE_TTL_SECONDS ?? 2) * 1000,
+		ttlMs: (environment.healthReadinessCacheTtlSeconds ?? 2) * 1000,
 		probe: probeDependencies,
 	});
 }
@@ -160,7 +160,7 @@ export async function handleHealthReadinessGet(context: RequestContext): Promise
 	if (
 		isPlaintextTransport({
 			request: context.request,
-			isProduction: environment.NODE_ENV === 'production',
+			isProduction: environment.nodeEnv === 'production',
 			socketAddress: context.clientAddress,
 			trustedProxyConfiguration: getTrustedProxyConfiguration(),
 		})
@@ -181,7 +181,7 @@ export async function handleHealthReadinessGet(context: RequestContext): Promise
 	// the disabled-endpoint case return before the rate limiter -- which
 	// only a CONFIGURED endpoint needs -- ever runs.
 	const credentialResult = checkBearerCredential({
-		configuredKey: environment.HEALTH_READINESS_API_KEY,
+		configuredKey: environment.healthReadinessApiKey,
 		authorizationHeader: context.request.headers.get('authorization'),
 	});
 
@@ -226,7 +226,7 @@ export async function handleHealthReadinessGet(context: RequestContext): Promise
 				// exactly the surface an operator uses to detect that kind of
 				// misconfiguration, so it must report the same predicate the
 				// server actually advertises on, not a raw configuration input.
-				ui: environment.MCP_ENABLE_UI_EXTENSION && hasRegisteredUiExtensionResource(),
+				ui: environment.mcpEnableUiExtension && hasRegisteredUiExtensionResource(),
 			},
 			dependencies: snapshot.dependencies,
 		},

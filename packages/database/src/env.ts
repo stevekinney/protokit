@@ -1,4 +1,5 @@
-import { createEnv } from '@t3-oss/env-core';
+import { environmentalist } from '@lostgradient/environmentalist';
+import { z } from 'zod';
 
 import { databaseServerEnvironmentSchema } from './environment-schema.js';
 
@@ -11,12 +12,44 @@ if (process.env.SKIP_ENV_VALIDATION) {
 	);
 }
 
-export const environment = createEnv({
-	server: databaseServerEnvironmentSchema,
-	runtimeEnv: {
-		DATABASE_URL: process.env.DATABASE_URL,
-		DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,
-		DATABASE_LOCAL_PROXY_URL: process.env.DATABASE_LOCAL_PROXY_URL,
-	},
-	emptyStringAsUndefined: true,
+// CONFIG-001 / BUG-001: Environmentalist's `env` source claims any variable
+// where `value !== undefined`, so an empty string (which Railway and other
+// hosts can set) passes straight through — and for a numeric field its
+// coercion does `Number('')`, which is `0`, not `NaN`, silently bypassing
+// `.default()` entirely rather than failing loudly. `@t3-oss/env-core`'s
+// `emptyStringAsUndefined: true` used to prevent exactly this; there is no
+// equivalent option here, so it is reproduced by hand: strip empty-string
+// entries before handing the environment to the resolver so an unset-but-
+// present variable falls through to the schema default, same as before.
+//
+// `Object.entries(process.env)` — a dynamic read of the whole object, not a
+// static member access — is also what keeps this file's NODE_ENV read alive
+// at runtime rather than getting constant-folded into the built artifact by
+// Bun's bundler; see `applications/web/src/build.ts` for the load-bearing
+// assertion this depends on.
+const env: Record<string, string> = Object.fromEntries(
+	Object.entries(process.env).filter(
+		(entry): entry is [string, string] => entry[1] !== undefined && entry[1] !== '',
+	),
+);
+
+export const environment = environmentalist.sync({
+	name: 'protokit-database',
+	schema: z.object(databaseServerEnvironmentSchema),
+	env,
+	// This is a server process, not a CLI or an app with project config
+	// files/home dotfiles to honor — restrict resolution to the real
+	// environment plus schema defaults, matching `@t3-oss/env-core`'s
+	// behavior exactly and avoiding the trust boundary of loading a
+	// `.ts`/`.js` config file or a user's home directory at boot.
+	exclude: [
+		'flags',
+		'search-params',
+		'dotenv',
+		'project-config',
+		'package-json',
+		'user-dotfile',
+		'xdg-config',
+		'home-config',
+	],
 });

@@ -12,7 +12,7 @@ process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-c
 process.env.SESSION_SIGNING_SECRET =
 	process.env.SESSION_SIGNING_SECRET ?? 'development-session-secret-with-at-least-32-characters';
 process.env.MCP_ALLOWED_ORIGINS = process.env.MCP_ALLOWED_ORIGINS ?? 'http://localhost:3000';
-// `@t3-oss/env-core` validates `process.env` once, at import time — set
+// `env.ts` validates `process.env` once, at import time — set
 // `BASE_URL` before `@web/application` (and therefore `@web/env`) is first
 // imported, matching `oauth-discovery.test.ts`'s established convention.
 process.env.BASE_URL = 'https://canonical.example.com';

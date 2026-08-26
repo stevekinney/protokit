@@ -2,10 +2,10 @@ import { describe, expect, it } from 'bun:test';
 
 /**
  * CONFIG-001 / BUG-001: `env.ts` refuses `SKIP_ENV_VALIDATION` outright, at
- * module load, before `createEnv(...)` ever runs. The check runs
+ * module load, before `environmentalist.sync(...)` ever runs. The check runs
  * imperatively against the real `process.env`, so it can only be proven by
  * actually loading the module with that variable set -- not by
- * constructing a schema-only test around a mocked `t3-env` runtime.
+ * constructing a schema-only test around a mocked Environmentalist runtime.
  *
  * Proven via a real subprocess (`Bun.spawn`), matching the identical
  * pattern and rationale already established in
@@ -16,7 +16,7 @@ import { describe, expect, it } from 'bun:test';
  * re-instantiations of that file; a fresh query-string reimport instead
  * resets/overwrites its counters, wiping out the coverage this
  * application's ~20+ other test files already recorded for the real
- * `createEnv(...)` path (confirmed by an earlier version of this file
+ * `environmentalist.sync(...)` path (confirmed by an earlier version of this file
  * regressing `src/env.ts` from 61/64 lines covered to 6/64 for the entire
  * suite run). A real subprocess cannot regress an already-covered line --
  * it is invisible to the parent process's coverage instrumentation -- but
@@ -27,7 +27,7 @@ import { describe, expect, it } from 'bun:test';
  * documented note on its own sibling guard.
  */
 describe('SKIP_ENV_VALIDATION guard', () => {
-	it('throws immediately when SKIP_ENV_VALIDATION is set, before createEnv runs', async () => {
+	it('throws immediately when SKIP_ENV_VALIDATION is set, before environmentalist.sync runs', async () => {
 		const proc = Bun.spawn(['bun', '-e', "await import('./env.ts')"], {
 			cwd: import.meta.dir,
 			env: { ...process.env, SKIP_ENV_VALIDATION: 'true' },

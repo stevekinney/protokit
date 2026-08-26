@@ -170,22 +170,30 @@ if (!serverBuildResult.success) {
 	process.exit(1);
 }
 
-// Bun's bundler constant-folds `process.env.NODE_ENV` at build time. That made
-// the shipped server read whichever value happened to be set on the *build*
+// Bun's bundler constant-folds a static `process.env.NODE_ENV` (or
+// `process.env["NODE_ENV"]`) member access at build time. That made the
+// shipped server read whichever value happened to be set on the *build*
 // machine — "production" inside the Docker builder stage, "development" for a
 // local build — so CONFIG-001's fail-closed startup invariants could never
-// observe the real runtime value, and the image could not be booted in any other
-// mode. `env.ts` reads `process.env['NODE_ENV']` instead, which Bun leaves alone.
+// observe the real runtime value, and the image could not be booted in any
+// other mode. `env.ts` never names `NODE_ENV` as a static property access at
+// all: it resolves the whole environment through `@lostgradient/environmentalist`,
+// which reads variables by enumerating `Object.entries(process.env)` — a
+// dynamic read of the object Bun's bundler has no static property name to
+// fold.
 //
-// That is a subtle property to preserve by convention alone, so assert it here:
-// a future edit that reverts to the dot form fails the build rather than quietly
-// shipping an artifact whose environment is frozen at build time.
+// That is a subtle property to preserve by convention alone, so assert it
+// here: a future edit that reads `environment.nodeEnv` from a schema wired up
+// through a literal `process.env.NODE_ENV`/`process.env["NODE_ENV"]` access
+// instead of the resolver's dynamic enumeration fails the build rather than
+// quietly shipping an artifact whose environment is frozen at build time.
 const serverBundleSource = await Bun.file('dist/server.js').text();
-if (!serverBundleSource.includes(`process.env["NODE_ENV"]`)) {
+if (!serverBundleSource.includes('Object.entries(process.env)')) {
 	console.error(
-		'Build aborted: dist/server.js contains no runtime read of NODE_ENV, which means the\n' +
-			'bundler inlined it at build time. Read it as `process.env["NODE_ENV"]` (bracket\n' +
-			'literal) rather than `process.env.NODE_ENV` so the value stays configurable at runtime.',
+		'Build aborted: dist/server.js contains no runtime enumeration of process.env, which\n' +
+			'means NODE_ENV (and every other setting) may have been inlined at build time.\n' +
+			"Resolve the environment through env.ts's `environmentalist.sync(...)` call so the\n" +
+			'value stays configurable at runtime.',
 	);
 	process.exit(1);
 }

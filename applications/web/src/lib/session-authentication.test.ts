@@ -5,9 +5,9 @@ let updateCalled = false;
 const mockSelectResult: unknown[] = [];
 
 const mockEnvironment = {
-	SESSION_COOKIE_NAME: 'test_session',
-	SESSION_TIME_TO_LIVE_SECONDS: 3600,
-	NODE_ENV: 'test' as 'test' | 'production',
+	sessionCookieName: 'test_session',
+	sessionTimeToLiveSeconds: 3600,
+	nodeEnv: 'test' as 'test' | 'production',
 };
 
 mock.module('@web/env', () => ({
@@ -180,7 +180,7 @@ describe('createExpiredSessionCookie', () => {
 
 describe('session cookie name in production', () => {
 	it('uses the __Host- prefix, Secure, and Path=/ with no Domain', async () => {
-		mockEnvironment.NODE_ENV = 'production';
+		mockEnvironment.nodeEnv = 'production';
 		try {
 			const cookie = createExpiredSessionCookie(new Request('https://app.example.com/'));
 			expect(cookie.startsWith('__Host-test_session=')).toBe(true);
@@ -188,7 +188,7 @@ describe('session cookie name in production', () => {
 			expect(cookie).toContain('Path=/');
 			expect(cookie).not.toContain('Domain=');
 		} finally {
-			mockEnvironment.NODE_ENV = 'test';
+			mockEnvironment.nodeEnv = 'test';
 		}
 	});
 

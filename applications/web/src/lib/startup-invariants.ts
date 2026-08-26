@@ -3,7 +3,7 @@ import { environment } from '@web/env';
 import { collectProductionStartupFailures } from '@web/lib/production-startup-requirements';
 import { isRedisConfigured } from '@web/lib/redis-client';
 
-/** Strips the `readonly` `@t3-oss/env-core` puts on every field so tests can build a plain, mutable fixture object instead of satisfying — or globally mocking — the full environment schema. */
+/** Strips the `readonly` Environmentalist puts on every field so tests can build a plain, mutable fixture object instead of satisfying — or globally mocking — the full environment schema. */
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
 /**
@@ -14,27 +14,24 @@ type Writable<T> = { -readonly [K in keyof T]: T[K] };
 type StartupWebEnvironment = Writable<
 	Pick<
 		typeof environment,
-		| 'NODE_ENV'
-		| 'BASE_URL'
-		| 'REDIS_URL'
-		| 'GOOGLE_CLIENT_ID'
-		| 'GOOGLE_CLIENT_SECRET'
-		| 'TRUSTED_PROXY_CIDRS'
-		| 'TRUSTED_PROXY_HEADER'
-		| 'TRUSTED_PROXY_HOP_COUNT'
-		| 'NODE_TLS_REJECT_UNAUTHORIZED'
-		| 'SESSION_SIGNING_SECRET'
-		| 'MCP_CONFORMANCE_MODE'
-		| 'MCP_ALLOWED_ORIGINS'
+		| 'nodeEnv'
+		| 'baseUrl'
+		| 'redisUrl'
+		| 'googleClientId'
+		| 'googleClientSecret'
+		| 'trustedProxyCidrs'
+		| 'trustedProxyHeader'
+		| 'trustedProxyHopCount'
+		| 'nodeTlsRejectUnauthorized'
+		| 'sessionSigningSecret'
+		| 'mcpConformanceMode'
+		| 'mcpAllowedOrigins'
 	>
 >;
 
 /** The slice of `@template/database/env`'s `environment` this module reads. */
 type StartupDatabaseEnvironment = Writable<
-	Pick<
-		typeof databaseEnvironment,
-		'DATABASE_URL' | 'DATABASE_URL_UNPOOLED' | 'DATABASE_LOCAL_PROXY_URL'
-	>
+	Pick<typeof databaseEnvironment, 'databaseUrl' | 'databaseUrlUnpooled' | 'databaseLocalProxyUrl'>
 >;
 
 export interface ProductionStartupInvariantSource {
@@ -79,25 +76,25 @@ const liveProductionStartupInvariantSource: ProductionStartupInvariantSource = {
 export function assertProductionStartupInvariants(
 	source: ProductionStartupInvariantSource = liveProductionStartupInvariantSource,
 ): void {
-	if (source.environment.NODE_ENV !== 'production') return;
+	if (source.environment.nodeEnv !== 'production') return;
 
 	const failures = collectProductionStartupFailures({
-		nodeEnvironment: source.environment.NODE_ENV,
-		baseUrl: source.environment.BASE_URL,
-		redisUrl: source.environment.REDIS_URL,
+		nodeEnvironment: source.environment.nodeEnv,
+		baseUrl: source.environment.baseUrl,
+		redisUrl: source.environment.redisUrl,
 		isRedisConfigured: source.isRedisConfigured(),
-		databaseUrl: source.databaseEnvironment.DATABASE_URL,
-		databaseUrlUnpooled: source.databaseEnvironment.DATABASE_URL_UNPOOLED,
-		databaseLocalProxyUrl: source.databaseEnvironment.DATABASE_LOCAL_PROXY_URL,
-		googleClientId: source.environment.GOOGLE_CLIENT_ID,
-		googleClientSecret: source.environment.GOOGLE_CLIENT_SECRET,
-		trustedProxyCidrs: source.environment.TRUSTED_PROXY_CIDRS,
-		trustedProxyHeader: source.environment.TRUSTED_PROXY_HEADER,
-		trustedProxyHopCount: source.environment.TRUSTED_PROXY_HOP_COUNT?.toString(),
-		nodeTlsRejectUnauthorized: source.environment.NODE_TLS_REJECT_UNAUTHORIZED,
-		sessionSigningSecret: source.environment.SESSION_SIGNING_SECRET,
-		mcpConformanceModeConfigured: source.environment.MCP_CONFORMANCE_MODE,
-		mcpAllowedOrigins: source.environment.MCP_ALLOWED_ORIGINS,
+		databaseUrl: source.databaseEnvironment.databaseUrl,
+		databaseUrlUnpooled: source.databaseEnvironment.databaseUrlUnpooled,
+		databaseLocalProxyUrl: source.databaseEnvironment.databaseLocalProxyUrl,
+		googleClientId: source.environment.googleClientId,
+		googleClientSecret: source.environment.googleClientSecret,
+		trustedProxyCidrs: source.environment.trustedProxyCidrs,
+		trustedProxyHeader: source.environment.trustedProxyHeader,
+		trustedProxyHopCount: source.environment.trustedProxyHopCount?.toString(),
+		nodeTlsRejectUnauthorized: source.environment.nodeTlsRejectUnauthorized,
+		sessionSigningSecret: source.environment.sessionSigningSecret,
+		mcpConformanceModeConfigured: source.environment.mcpConformanceMode,
+		mcpAllowedOrigins: source.environment.mcpAllowedOrigins,
 	});
 
 	if (failures.length > 0) {

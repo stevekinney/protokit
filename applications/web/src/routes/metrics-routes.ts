@@ -25,7 +25,7 @@ export async function handleMetricsGet(context: RequestContext): Promise<Respons
 	if (
 		isPlaintextTransport({
 			request: context.request,
-			isProduction: environment.NODE_ENV === 'production',
+			isProduction: environment.nodeEnv === 'production',
 			socketAddress: context.clientAddress,
 			trustedProxyConfiguration: getTrustedProxyConfiguration(),
 		})
@@ -49,7 +49,7 @@ export async function handleMetricsGet(context: RequestContext): Promise<Respons
 	// limiter -- which only a CONFIGURED endpoint needs, to protect against
 	// credential guessing -- ever runs.
 	const credentialResult = checkBearerCredential({
-		configuredKey: environment.METRICS_API_KEY,
+		configuredKey: environment.metricsApiKey,
 		authorizationHeader: context.request.headers.get('authorization'),
 	});
 

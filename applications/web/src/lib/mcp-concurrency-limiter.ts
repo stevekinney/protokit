@@ -120,7 +120,7 @@ export type McpConcurrencyLimiterDependencies = {
 
 const liveMcpConcurrencyLimiterDependencies: McpConcurrencyLimiterDependencies = {
 	get maximumConcurrent() {
-		return environment.RATE_LIMIT_MCP_CONCURRENT_MAX;
+		return environment.rateLimitMcpConcurrentMax;
 	},
 	isRedisConfigured,
 	getRedisClient,

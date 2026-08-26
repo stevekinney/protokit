@@ -17,7 +17,7 @@ import { describe, expect, it, mock } from 'bun:test';
  */
 mock.module('../env.js', () => ({
 	environment: {
-		LOG_CONTENT_DIAGNOSTICS_UNTIL: '2000-01-01T00:00:00Z',
+		logContentDiagnosticsUntil: '2000-01-01T00:00:00Z',
 	},
 }));
 

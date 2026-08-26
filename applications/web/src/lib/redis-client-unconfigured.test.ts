@@ -11,7 +11,7 @@ import { describe, expect, it, mock } from 'bun:test';
  * test file).
  */
 mock.module('@web/env', () => ({
-	environment: { REDIS_URL: undefined },
+	environment: { redisUrl: undefined },
 }));
 
 const { isRedisConfigured, isRedisHealthy, getRedisClient, disconnectRedisSubscriberClient } =

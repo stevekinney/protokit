@@ -75,10 +75,10 @@ function setEnvironment(overrides: Record<string, unknown>) {
 		delete mockEnvironment[key];
 	}
 	Object.assign(mockEnvironment, {
-		MCP_ENABLE_UI_EXTENSION: true,
-		NODE_ENV: 'test',
-		HEALTH_READINESS_API_KEY: 'readiness-key',
-		HEALTH_READINESS_CACHE_TTL_SECONDS: 2,
+		mcpEnableUiExtension: true,
+		nodeEnv: 'test',
+		healthReadinessApiKey: 'readiness-key',
+		healthReadinessCacheTtlSeconds: 2,
 		...overrides,
 	});
 }
@@ -120,12 +120,12 @@ describe('handleHealthReadinessGet', () => {
 	});
 
 	it('returns 404 when no readiness key is configured', async () => {
-		setEnvironment({ HEALTH_READINESS_API_KEY: undefined });
+		setEnvironment({ healthReadinessApiKey: undefined });
 		const response = await handleHealthReadinessGet(buildContext());
 		expect(response.status).toBe(404);
 	});
 
-	// Review finding (P2): a disabled endpoint (HEALTH_READINESS_API_KEY
+	// Review finding (P2): a disabled endpoint (healthReadinessApiKey
 	// unset) must return its promised 404 even when Redis -- which the rate
 	// limiter depends on -- is unavailable. Before the fix, the rate-limit
 	// check ran BEFORE the not-configured check, so this scenario threw
@@ -133,7 +133,7 @@ describe('handleHealthReadinessGet', () => {
 	// depends on infrastructure it has no other reason to need. See the
 	// identical regression test in `metrics-routes.test.ts`.
 	it('returns 404 when no readiness key is configured, even if the rate limiter would throw (Redis unavailable)', async () => {
-		setEnvironment({ HEALTH_READINESS_API_KEY: undefined });
+		setEnvironment({ healthReadinessApiKey: undefined });
 		mock.module('@web/lib/request-rate-limiter', () => ({
 			enforceHealthProbeRateLimit: async () => {
 				throw new Error('simulated Redis unavailable');
@@ -202,7 +202,7 @@ describe('handleHealthReadinessGet', () => {
 		const authorized = await handleHealthReadinessGet(buildContext());
 		expect(authorized.headers.get('Cache-Control')).toBe('no-store');
 
-		setEnvironment({ HEALTH_READINESS_API_KEY: undefined });
+		setEnvironment({ healthReadinessApiKey: undefined });
 		const notConfigured = await handleHealthReadinessGet(buildContext());
 		expect(notConfigured.headers.get('Cache-Control')).toBe('no-store');
 	});
@@ -211,14 +211,14 @@ describe('handleHealthReadinessGet', () => {
 		// This repository ships no `packages/mcp-apps` application today, so
 		// `hasRegisteredUiExtensionResource()` is always false in this real
 		// build -- matching what `/mcp` and OAuth metadata actually advertise.
-		setEnvironment({ MCP_ENABLE_UI_EXTENSION: true });
+		setEnvironment({ mcpEnableUiExtension: true });
 		const response = await handleHealthReadinessGet(buildContext());
 		const body = await response.json();
 		expect(body.extensions.ui).toBe(false);
 	});
 
 	it('reports extensions.ui as false when the flag itself is off, regardless of any registered resource', async () => {
-		setEnvironment({ MCP_ENABLE_UI_EXTENSION: false });
+		setEnvironment({ mcpEnableUiExtension: false });
 		const response = await handleHealthReadinessGet(buildContext());
 		const body = await response.json();
 		expect(body.extensions.ui).toBe(false);
@@ -284,7 +284,7 @@ describe('handleHealthReadinessGet', () => {
 		// the cached-result branch, straight back into `probeDependencies()`, without waiting
 		// for a real TTL window -- proving the bound holds across cache expiry, not just
 		// within one coalescing window.
-		setEnvironment({ HEALTH_READINESS_CACHE_TTL_SECONDS: 0 });
+		setEnvironment({ healthReadinessCacheTtlSeconds: 0 });
 		resetHealthReadinessCacheForTests();
 		mockDatabaseCallCount = 0;
 		mockDatabaseHang = true;
@@ -324,7 +324,7 @@ describe('handleHealthReadinessGet', () => {
 	});
 
 	it('rejects a request over plaintext transport in production', async () => {
-		setEnvironment({ NODE_ENV: 'production' });
+		setEnvironment({ nodeEnv: 'production' });
 		const response = await handleHealthReadinessGet(
 			buildContext({
 				request: new Request('http://app.example.com/health/ready', {

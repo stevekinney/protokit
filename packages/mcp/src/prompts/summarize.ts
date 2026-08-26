@@ -11,7 +11,7 @@ import { definePrompt } from '../types/primitives.js';
  * session does not silently outlive its intended window.
  */
 function contentDiagnosticsActive(): boolean {
-	const until = environment.LOG_CONTENT_DIAGNOSTICS_UNTIL;
+	const until = environment.logContentDiagnosticsUntil;
 	if (!until) return false;
 	return Date.now() < Date.parse(until);
 }
@@ -43,7 +43,7 @@ export const summarizePrompt = definePrompt({
 		try {
 			if (diagnosticsActive) {
 				requestLogger.warn(
-					{ diagnosticsUntil: environment.LOG_CONTENT_DIAGNOSTICS_UNTIL },
+					{ diagnosticsUntil: environment.logContentDiagnosticsUntil },
 					'Content diagnostics mode active: logging raw prompt topic',
 				);
 				// Round 10 review finding: `logger.ts`'s `topic`/`*.topic`

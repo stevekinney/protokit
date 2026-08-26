@@ -230,7 +230,7 @@ export function createMcpServer(context: {
 	scopes: readonly string[];
 }): McpServer {
 	const era = context.era ?? 'legacy';
-	const enableConformanceMode = context.enableConformanceMode ?? environment.MCP_CONFORMANCE_MODE;
+	const enableConformanceMode = context.enableConformanceMode ?? environment.mcpConformanceMode;
 	const experimentalCapabilities: Record<string, { version: string }> = {};
 	// CONTENT-001 / review finding: advertising the MCP Apps extension is not
 	// just gated on the `MCP_ENABLE_UI_EXTENSION` flag (which defaults off,
@@ -248,7 +248,7 @@ export function createMcpServer(context: {
 		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
 	}
 
-	const serverName = environment.MCP_SERVER_NAME ?? 'template-mcp-server';
+	const serverName = environment.mcpServerName ?? 'template-mcp-server';
 
 	const server = new McpServer(
 		{

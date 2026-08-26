@@ -25,7 +25,7 @@ import type { DestinationStream } from 'pino';
  */
 mock.module('../env.js', () => ({
 	environment: {
-		LOG_CONTENT_DIAGNOSTICS_UNTIL: '2099-01-01T00:00:00Z',
+		logContentDiagnosticsUntil: '2099-01-01T00:00:00Z',
 	},
 }));
 

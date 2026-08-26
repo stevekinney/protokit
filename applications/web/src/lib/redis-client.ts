@@ -6,7 +6,7 @@ import { probeRedisUrl } from '@web/lib/redis-probe';
 type RedisClient = RedisClientType;
 
 export function isRedisConfigured(): boolean {
-	return environment.REDIS_URL !== undefined;
+	return environment.redisUrl !== undefined;
 }
 
 function createLazyRedisClient(initialize: () => Promise<RedisClient>): () => Promise<RedisClient> {
@@ -43,7 +43,7 @@ export const getRedisClient = createLazyRedisClient(async () => {
 	}
 
 	const client = createClient({
-		url: environment.REDIS_URL,
+		url: environment.redisUrl,
 		socket: {
 			connectTimeout: 3000,
 			// node-redis's default reconnect strategy retries forever with no
@@ -130,7 +130,7 @@ export async function disconnectRedisSubscriberClient(): Promise<void> {
 // stay in `createCoalescedProbe`'s `inFlight` slot forever, since the coalescer only clears that
 // slot when the probe promise settles — see `redis-probe.ts` for the deadline itself.
 export async function isRedisHealthy(): Promise<boolean> {
-	const redisUrl = environment.REDIS_URL;
+	const redisUrl = environment.redisUrl;
 	if (redisUrl === undefined) return false;
 	return probeRedisUrl(redisUrl);
 }

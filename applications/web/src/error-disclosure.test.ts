@@ -12,11 +12,11 @@ import { describe, expect, it, mock } from 'bun:test';
  */
 
 const mockEnvironment: Record<string, unknown> = {
-	NODE_ENV: 'test',
-	MCP_ALLOWED_ORIGINS: 'http://localhost:3000',
-	BASE_URL: 'https://app.example.com',
-	METRICS_API_KEY: 'metrics-secret',
-	HEALTH_READINESS_API_KEY: 'readiness-secret',
+	nodeEnv: 'test',
+	mcpAllowedOrigins: 'http://localhost:3000',
+	baseUrl: 'https://app.example.com',
+	metricsApiKey: 'metrics-secret',
+	healthReadinessApiKey: 'readiness-secret',
 };
 
 mock.module('@web/env', () => ({ environment: mockEnvironment }));
@@ -123,13 +123,13 @@ describe('error responses disclose only a stable code, a generic description, an
 	}
 
 	it('metrics unconfigured still returns a generic not_found with a request id', async () => {
-		mockEnvironment.METRICS_API_KEY = undefined;
+		mockEnvironment.metricsApiKey = undefined;
 		const response = await handleApplicationRequest(new Request('https://app.example.com/metrics'));
 		expect(response.status).toBe(404);
 		expect(Boolean(response.headers.get('X-Request-Id'))).toBe(true);
 		const body = (await response.json()) as Record<string, unknown>;
 		expect(Object.keys(body)).toEqual(['error']);
-		mockEnvironment.METRICS_API_KEY = 'metrics-secret';
+		mockEnvironment.metricsApiKey = 'metrics-secret';
 	});
 
 	it('the internal-error catch-all never leaks the underlying error message', async () => {

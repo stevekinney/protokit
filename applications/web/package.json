@@ -25,9 +25,9 @@
 	},
 	"dependencies": {
 		"@lostgradient/cinder": "^0.24.8",
+		"@lostgradient/environmentalist": "^0.1.0",
 		"@modelcontextprotocol/core": "^2.0.0",
 		"@modelcontextprotocol/server": "^2.0.0",
-		"@t3-oss/env-core": "^0.13.11",
 		"@template/database": "workspace:*",
 		"@template/mcp": "workspace:*",
 		"drizzle-orm": "^0.45.2",

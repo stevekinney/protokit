@@ -6,7 +6,7 @@ import { neonConfig } from '@neondatabase/serverless';
  * of a plain Postgres container, instead of a real Neon project.
  *
  * This is exclusively for local development and the test suite. It must
- * never run against production: pass `environment.DATABASE_LOCAL_PROXY_URL`,
+ * never run against production: pass `environment.databaseLocalProxyUrl`,
  * which is only set in `.env.local` and the test environment, never in a
  * deployed environment. When `localProxyUrl` is `undefined` this function
  * does nothing at all, so `neonConfig.fetchEndpoint` keeps the Neon driver's

@@ -1,4 +1,5 @@
-import { createEnv } from '@t3-oss/env-core';
+import { environmentalist } from '@lostgradient/environmentalist';
+import { z } from 'zod';
 
 import { webServerEnvironmentSchema } from '@web/environment-schema';
 
@@ -13,66 +14,62 @@ if (process.env.SKIP_ENV_VALIDATION) {
 	);
 }
 
-export const environment = createEnv({
-	server: webServerEnvironmentSchema,
-	runtimeEnv: {
-		BASE_URL: process.env.BASE_URL,
-		SESSION_SIGNING_SECRET: process.env.SESSION_SIGNING_SECRET,
-		SESSION_SIGNING_SECRET_PREVIOUS: process.env.SESSION_SIGNING_SECRET_PREVIOUS,
-		GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
-		GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
-		SESSION_COOKIE_NAME: process.env.SESSION_COOKIE_NAME,
-		SESSION_TIME_TO_LIVE_SECONDS: process.env.SESSION_TIME_TO_LIVE_SECONDS,
-		REDIS_URL: process.env.REDIS_URL,
-		RATE_LIMIT_REGISTER_MAX: process.env.RATE_LIMIT_REGISTER_MAX,
-		RATE_LIMIT_REGISTER_WINDOW_SECONDS: process.env.RATE_LIMIT_REGISTER_WINDOW_SECONDS,
-		RATE_LIMIT_TOKEN_MAX: process.env.RATE_LIMIT_TOKEN_MAX,
-		RATE_LIMIT_TOKEN_WINDOW_SECONDS: process.env.RATE_LIMIT_TOKEN_WINDOW_SECONDS,
-		INSTANCE_IDENTIFIER: process.env.INSTANCE_IDENTIFIER,
-		RAILWAY_REPLICA_IDENTIFIER: process.env.RAILWAY_REPLICA_ID ?? process.env.RAILWAY_INSTANCE_ID,
-		HOSTNAME_IDENTIFIER: process.env.HOSTNAME,
-		MCP_ALLOWED_ORIGINS: process.env.MCP_ALLOWED_ORIGINS,
-		MCP_ENABLE_UI_EXTENSION: process.env.MCP_ENABLE_UI_EXTENSION,
-		MCP_CONFORMANCE_MODE: process.env.MCP_CONFORMANCE_MODE,
-		MCP_TOKEN_TTL_SECONDS: process.env.MCP_TOKEN_TTL_SECONDS,
-		MCP_REFRESH_TOKEN_TTL_SECONDS: process.env.MCP_REFRESH_TOKEN_TTL_SECONDS,
-		RATE_LIMIT_MCP_MAX: process.env.RATE_LIMIT_MCP_MAX,
-		RATE_LIMIT_MCP_WINDOW_SECONDS: process.env.RATE_LIMIT_MCP_WINDOW_SECONDS,
-		RATE_LIMIT_MCP_CONCURRENT_MAX: process.env.RATE_LIMIT_MCP_CONCURRENT_MAX,
-		RATE_LIMIT_AUTHORIZE_MAX: process.env.RATE_LIMIT_AUTHORIZE_MAX,
-		RATE_LIMIT_AUTHORIZE_WINDOW_SECONDS: process.env.RATE_LIMIT_AUTHORIZE_WINDOW_SECONDS,
-		RATE_LIMIT_GOOGLE_AUTH_MAX: process.env.RATE_LIMIT_GOOGLE_AUTH_MAX,
-		RATE_LIMIT_GOOGLE_AUTH_WINDOW_SECONDS: process.env.RATE_LIMIT_GOOGLE_AUTH_WINDOW_SECONDS,
-		RATE_LIMIT_REVOKE_MAX: process.env.RATE_LIMIT_REVOKE_MAX,
-		RATE_LIMIT_REVOKE_WINDOW_SECONDS: process.env.RATE_LIMIT_REVOKE_WINDOW_SECONDS,
-		RATE_LIMIT_HEALTH_MAX: process.env.RATE_LIMIT_HEALTH_MAX,
-		RATE_LIMIT_HEALTH_WINDOW_SECONDS: process.env.RATE_LIMIT_HEALTH_WINDOW_SECONDS,
-		RATE_LIMIT_FAILED_AUTH_MAX: process.env.RATE_LIMIT_FAILED_AUTH_MAX,
-		RATE_LIMIT_FAILED_AUTH_WINDOW_SECONDS: process.env.RATE_LIMIT_FAILED_AUTH_WINDOW_SECONDS,
-		RATE_LIMIT_SESSION_MAX: process.env.RATE_LIMIT_SESSION_MAX,
-		RATE_LIMIT_SESSION_WINDOW_SECONDS: process.env.RATE_LIMIT_SESSION_WINDOW_SECONDS,
-		RATE_LIMIT_KEY_NAMESPACE: process.env.RATE_LIMIT_KEY_NAMESPACE,
-		TRUSTED_PROXY_CIDRS: process.env.TRUSTED_PROXY_CIDRS,
-		TRUSTED_PROXY_HEADER: process.env.TRUSTED_PROXY_HEADER as
-			'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip' | undefined,
-		TRUSTED_PROXY_HOP_COUNT: process.env.TRUSTED_PROXY_HOP_COUNT,
-		METRICS_API_KEY: process.env.METRICS_API_KEY,
-		RATE_LIMIT_METRICS_MAX: process.env.RATE_LIMIT_METRICS_MAX,
-		RATE_LIMIT_METRICS_WINDOW_SECONDS: process.env.RATE_LIMIT_METRICS_WINDOW_SECONDS,
-		HEALTH_READINESS_API_KEY: process.env.HEALTH_READINESS_API_KEY,
-		HEALTH_READINESS_CACHE_TTL_SECONDS: process.env.HEALTH_READINESS_CACHE_TTL_SECONDS,
-		PORT: process.env.PORT,
-		SERVER_BIND_ADDRESS: process.env.SERVER_BIND_ADDRESS,
-		SUPPORT_CONTACT_EMAIL: process.env.SUPPORT_CONTACT_EMAIL,
-		// Read via a bracket literal, never `process.env.NODE_ENV`. Bun's bundler
-		// constant-folds the dot form at BUILD time — it baked "production" into the
-		// container image and "development" into a local build — so the shipped
-		// artifact could never observe the runtime value and CONFIG-001's fail-closed
-		// invariants were unable to fire. `build.ts` asserts this stays true.
-		NODE_ENV: process.env['NODE_ENV'] as 'development' | 'production' | 'test' | undefined,
-		PROTOKIT_TUNNEL_ACTIVE: process.env.PROTOKIT_TUNNEL_ACTIVE,
-		SCHEDULED_CLEANUP_INTERVAL_SECONDS: process.env.SCHEDULED_CLEANUP_INTERVAL_SECONDS,
-		NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
-	},
-	emptyStringAsUndefined: true,
+// CONFIG-001 / BUG-001: Environmentalist's `env` source claims any variable
+// where `value !== undefined`, so an empty string (which Railway and other
+// hosts can set) passes straight through — and for a numeric field its
+// coercion does `Number('')`, which is `0`, not `NaN`, silently bypassing
+// `.default()` entirely rather than failing loudly. `@t3-oss/env-core`'s
+// `emptyStringAsUndefined: true` used to prevent exactly this; there is no
+// equivalent option here, so it is reproduced by hand: strip empty-string
+// entries before handing the environment to the resolver so an unset-but-
+// present variable falls through to the schema default, same as before.
+//
+// `Object.entries(process.env)` — a dynamic read of the whole object, not a
+// static member access — is also what keeps this file's NODE_ENV read alive
+// at runtime rather than getting constant-folded into the built artifact by
+// Bun's bundler; `build.ts` asserts this stays true.
+const processEnv: Record<string, string> = Object.fromEntries(
+	Object.entries(process.env).filter(
+		(entry): entry is [string, string] => entry[1] !== undefined && entry[1] !== '',
+	),
+);
+
+// `RAILWAY_REPLICA_IDENTIFIER` and `HOSTNAME_IDENTIFIER` are not real
+// environment-variable names — they resolve from a choice between Railway's
+// two replica-identifying variables, or the generic `HOSTNAME` a bare-name
+// lookup would otherwise be too promiscuous to bind to directly.
+// Environmentalist derives one env-var spelling per canonical key with no
+// built-in fallback chain, so the choice happens here and is handed to the
+// resolver under the exact derived name it expects. Omit the key entirely
+// when no source value exists, rather than setting it to `undefined` — the
+// resolver's `env` source only accepts `Record<string, string>`, and an
+// absent key correctly falls through to the schema's `.optional()`.
+const railwayReplicaIdentifier = processEnv.RAILWAY_REPLICA_ID ?? processEnv.RAILWAY_INSTANCE_ID;
+const env: Record<string, string> = {
+	...processEnv,
+	...(railwayReplicaIdentifier !== undefined
+		? { RAILWAY_REPLICA_IDENTIFIER: railwayReplicaIdentifier }
+		: {}),
+	...(processEnv.HOSTNAME !== undefined ? { HOSTNAME_IDENTIFIER: processEnv.HOSTNAME } : {}),
+};
+
+export const environment = environmentalist.sync({
+	name: 'protokit-web',
+	schema: z.object(webServerEnvironmentSchema),
+	env,
+	// This is a server process, not a CLI or an app with project config
+	// files/home dotfiles to honor — restrict resolution to the real
+	// environment plus schema defaults, matching `@t3-oss/env-core`'s
+	// behavior exactly and avoiding the trust boundary of loading a
+	// `.ts`/`.js` config file or a user's home directory at boot.
+	exclude: [
+		'flags',
+		'search-params',
+		'dotenv',
+		'project-config',
+		'package-json',
+		'user-dotfile',
+		'xdg-config',
+		'home-config',
+	],
 });

@@ -37,18 +37,18 @@ describe('credentialLifecyclePolicy', () => {
 	});
 
 	it('the browser session cookie lifetime matches SESSION_TIME_TO_LIVE_SECONDS', () => {
-		expect(environment.SESSION_TIME_TO_LIVE_SECONDS * 1000).toBeGreaterThan(0);
+		expect(environment.sessionTimeToLiveSeconds * 1000).toBeGreaterThan(0);
 		// The row itself documents this as environment-resolved (`null` in the
 		// table) rather than a fixed constant -- asserted here so a reader
 		// confirming this claim finds a real, non-zero configured value.
 	});
 
 	it('the access token lifetime matches MCP_TOKEN_TTL_SECONDS', () => {
-		expect(environment.MCP_TOKEN_TTL_SECONDS).toBeGreaterThan(0);
+		expect(environment.mcpTokenTtlSeconds).toBeGreaterThan(0);
 	});
 
 	it('the refresh token lifetime matches MCP_REFRESH_TOKEN_TTL_SECONDS', () => {
-		expect(environment.MCP_REFRESH_TOKEN_TTL_SECONDS).toBeGreaterThan(0);
+		expect(environment.mcpRefreshTokenTtlSeconds).toBeGreaterThan(0);
 	});
 
 	it('the OAuth client secret lifetime is a real, bounded, non-zero value', () => {

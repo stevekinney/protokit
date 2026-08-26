@@ -347,9 +347,9 @@ function setEnvironment(overrides: Record<string, unknown>) {
 		delete mockEnvironment[key];
 	}
 	Object.assign(mockEnvironment, {
-		MCP_ENABLE_UI_EXTENSION: true,
-		MCP_TOKEN_TTL_SECONDS: 3600,
-		MCP_REFRESH_TOKEN_TTL_SECONDS: 2592000,
+		mcpEnableUiExtension: true,
+		mcpTokenTtlSeconds: 3600,
+		mcpRefreshTokenTtlSeconds: 2592000,
 		...overrides,
 	});
 }

@@ -66,9 +66,9 @@ export function resolveSessionSigningSecrets(input: {
 }
 
 const resolved = resolveSessionSigningSecrets({
-	sessionSigningSecret: environment.SESSION_SIGNING_SECRET,
-	sessionSigningSecretPrevious: environment.SESSION_SIGNING_SECRET_PREVIOUS,
-	nodeEnvironment: environment.NODE_ENV,
+	sessionSigningSecret: environment.sessionSigningSecret,
+	sessionSigningSecretPrevious: environment.sessionSigningSecretPrevious,
+	nodeEnvironment: environment.nodeEnv,
 });
 
 /** Signs with this value. Never used to verify a value signed by anything else. */
