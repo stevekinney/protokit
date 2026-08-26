@@ -23,9 +23,7 @@
 		"@modelcontextprotocol/node": "^2.0.0",
 		"@modelcontextprotocol/server": "^2.0.0",
 		"@t3-oss/env-core": "^0.13.11",
-		"@template/database": "workspace:*",
 		"@template/mcp-apps": "workspace:*",
-		"drizzle-orm": "^0.45.2",
 		"pino": "^10.3.1",
 		"zod": "^4.4.3"
 	},

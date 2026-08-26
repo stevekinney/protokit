@@ -351,6 +351,7 @@ let scheduledCleanupIntervalHandle: ReturnType<typeof setInterval> | null = null
  * (and in addition to) the cross-replica lease.
  */
 let sweepInProgress = false;
+let activeSweep: Promise<void> | null = null;
 
 // Namespaced the same way `request-rate-limiter.ts` namespaces its own
 // Redis keys: empty (unchanged key shape) in every real deployment, and set
@@ -447,13 +448,18 @@ export function startScheduledCleanup(
 		return;
 	}
 	scheduledCleanupIntervalHandle = setInterval(() => {
-		void (async () => {
-			if (sweepInProgress) {
-				cleanupLogger.info(
-					'This process is still running the previous scheduled cleanup sweep; skipping this tick',
-				);
-				return;
-			}
+		if (sweepInProgress) {
+			cleanupLogger.info(
+				'This process is still running the previous scheduled cleanup sweep; skipping this tick',
+			);
+			return;
+		}
+		// Retained (not merely `void`ed) so `awaitActiveCleanupSweep` can wait
+		// for a tick that is already issuing database mutations. Clearing the
+		// interval stops future ticks; it says nothing about the one running.
+		// Only assigned when a sweep actually starts -- a skipped tick must
+		// never overwrite the still-running sweep's promise.
+		activeSweep = (async () => {
 			sweepInProgress = true;
 			try {
 				const acquiredLease = await acquireLease(intervalMilliseconds);
@@ -468,6 +474,7 @@ export function startScheduledCleanup(
 				cleanupLogger.error({ err: error }, 'Scheduled cleanup sweep failed');
 			} finally {
 				sweepInProgress = false;
+				activeSweep = null;
 			}
 		})();
 	}, intervalMilliseconds);
@@ -481,6 +488,20 @@ export function stopScheduledCleanup(): void {
 		clearInterval(scheduledCleanupIntervalHandle);
 		scheduledCleanupIntervalHandle = null;
 	}
+}
+
+/**
+ * Resolves once any sweep that is currently mid-flight has finished.
+ *
+ * Review finding (P2): `stopScheduledCleanup` clears the interval, which
+ * only prevents *future* ticks. A sweep already running is a detached async
+ * task, so a caller that stopped the interval and immediately tore down its
+ * database or Redis connections could pull them out from under a sweep still
+ * issuing mutations. Disposal awaits this between the two.
+ */
+export async function awaitActiveCleanupSweep(): Promise<void> {
+	if (!activeSweep) return;
+	await activeSweep.catch(() => undefined);
 }
 
 export function isScheduledCleanupRunning(): boolean {

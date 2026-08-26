@@ -180,7 +180,17 @@ function renderHomePage(context: RequestContext): Promise<Response> {
 }
 
 async function serveStaticFile(pathname: string): Promise<Response | null> {
-	if (!pathname.startsWith('/assets/') && pathname !== '/favicon.png') {
+	// `/robots.txt` is here as well as in `server.ts`'s pre-built static
+	// routes: an embedding host that delegates static serving to the mount
+	// (`serveStaticAssets: true`) would otherwise 404 it, silently dropping
+	// the policy that keeps crawlers out of `/oauth/`, `/mcp`, `/auth/`, and
+	// `/health`. The standalone server still answers it from `static` before
+	// this ever runs, so nothing changes there.
+	if (
+		!pathname.startsWith('/assets/') &&
+		pathname !== '/favicon.png' &&
+		pathname !== '/robots.txt'
+	) {
 		return null;
 	}
 
@@ -349,15 +359,22 @@ function dispatchWithoutSession(context: RequestContext): Response | Promise<Res
 
 export async function handleApplicationRequest(
 	request: Request,
-	input?: { clientAddress?: string },
+	input?: { clientAddress?: string; serveStaticAssets?: boolean },
 ): Promise<Response> {
 	const requestId = randomUUID();
 	const requestUrl = new URL(request.url);
 	const startTime = Date.now();
 
-	const staticFileResponse = await serveStaticFile(requestUrl.pathname);
-	if (staticFileResponse) {
-		return withSecurityHeaders(staticFileResponse, requestUrl.pathname);
+	// A host embedding this application (see
+	// `application-mount.ts`) already serves `/assets/*` and `/favicon.png`
+	// itself and never wants those paths reaching this dispatcher at all.
+	// Defaulting to `true` keeps every existing caller -- `server.ts` and
+	// every test that omits this field -- behaving exactly as before.
+	if (input?.serveStaticAssets ?? true) {
+		const staticFileResponse = await serveStaticFile(requestUrl.pathname);
+		if (staticFileResponse) {
+			return withSecurityHeaders(staticFileResponse, requestUrl.pathname);
+		}
 	}
 
 	const networkIdentity = getRequestClientIdentifier({
