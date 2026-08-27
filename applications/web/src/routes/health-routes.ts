@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { database } from '@template/database';
 import { hasRegisteredUiExtensionResource } from '@template/mcp';
+import { templateRegistry } from '@template/mcp';
 import { environment } from '@web/env';
 import {
 	checkBearerCredential,
@@ -221,12 +222,12 @@ export async function handleHealthReadinessGet(context: RequestContext): Promise
 				// `true` by default -- so an operator with the flag on but no
 				// MCP App resource registered saw `extensions.ui: true` here
 				// while `/mcp`'s real capabilities and OAuth metadata both
-				// correctly suppressed it via `hasRegisteredUiExtensionResource()`
+				// correctly suppressed it via `hasRegisteredUiExtensionResource(templateRegistry)`
 				// (see `packages/mcp/src/ui-extension-support.ts`). Readiness is
 				// exactly the surface an operator uses to detect that kind of
 				// misconfiguration, so it must report the same predicate the
 				// server actually advertises on, not a raw configuration input.
-				ui: environment.mcpEnableUiExtension && hasRegisteredUiExtensionResource(),
+				ui: environment.mcpEnableUiExtension && hasRegisteredUiExtensionResource(templateRegistry),
 			},
 			dependencies: snapshot.dependencies,
 		},

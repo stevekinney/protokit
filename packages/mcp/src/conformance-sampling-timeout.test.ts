@@ -10,6 +10,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import { createMcpServer } from './server.js';
 import { getSupportedScopes } from './supported-scopes.js';
 import type { McpUserProfile } from './types/primitives.js';
+import { templateRegistry } from './template-registry.js';
 
 /**
  * TEST-001 (OPEN-10) regression test.
@@ -53,13 +54,16 @@ function conformanceUser(userId: string): McpUserProfile {
 const handler = createMcpHandler(
 	() => {
 		const userId = randomUUID();
-		return createMcpServer({
-			userId,
-			user: conformanceUser(userId),
-			enableUiExtension: false,
-			enableConformanceMode: true,
-			scopes: getSupportedScopes(),
-		});
+		return createMcpServer(
+			{
+				userId,
+				user: conformanceUser(userId),
+				enableUiExtension: false,
+				enableConformanceMode: true,
+				scopes: getSupportedScopes(templateRegistry),
+			},
+			templateRegistry,
+		);
 	},
 	{ legacy: 'stateless' },
 );

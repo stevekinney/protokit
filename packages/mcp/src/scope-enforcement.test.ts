@@ -5,6 +5,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import { createMcpServer } from './server.js';
 import { mcpScopes } from './scopes.js';
 import type { McpUserProfile } from './types/primitives.js';
+import { templateRegistry } from './template-registry.js';
 
 /**
  * AUTHZ-001: wire-level proof that a token's granted scopes actually gate
@@ -29,13 +30,16 @@ async function connectedClientWithScopes(scopes: readonly string[]): Promise<Cli
 	const handler = createMcpHandler(
 		() => {
 			const userId = randomUUID();
-			return createMcpServer({
-				userId,
-				user: scopeTestUser(userId),
-				enableUiExtension: false,
-				enableConformanceMode: false,
-				scopes,
-			});
+			return createMcpServer(
+				{
+					userId,
+					user: scopeTestUser(userId),
+					enableUiExtension: false,
+					enableConformanceMode: false,
+					scopes,
+				},
+				templateRegistry,
+			);
 		},
 		{ legacy: 'stateless' },
 	);
@@ -138,13 +142,16 @@ describe('conformance-only scope', () => {
 		const handler = createMcpHandler(
 			() => {
 				const userId = randomUUID();
-				return createMcpServer({
-					userId,
-					user: scopeTestUser(userId),
-					enableUiExtension: false,
-					enableConformanceMode: true,
-					scopes: mcpScopes,
-				});
+				return createMcpServer(
+					{
+						userId,
+						user: scopeTestUser(userId),
+						enableUiExtension: false,
+						enableConformanceMode: true,
+						scopes: mcpScopes,
+					},
+					templateRegistry,
+				);
 			},
 			{ legacy: 'stateless' },
 		);
@@ -165,13 +172,16 @@ describe('conformance-only scope', () => {
 		const handler = createMcpHandler(
 			() => {
 				const userId = randomUUID();
-				return createMcpServer({
-					userId,
-					user: scopeTestUser(userId),
-					enableUiExtension: false,
-					enableConformanceMode: true,
-					scopes: ['profile:read', 'prompts:read'],
-				});
+				return createMcpServer(
+					{
+						userId,
+						user: scopeTestUser(userId),
+						enableUiExtension: false,
+						enableConformanceMode: true,
+						scopes: ['profile:read', 'prompts:read'],
+					},
+					templateRegistry,
+				);
 			},
 			{ legacy: 'stateless' },
 		);

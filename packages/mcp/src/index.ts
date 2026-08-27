@@ -32,7 +32,7 @@ export {
 } from './handler-context.js';
 export { metricsCollector } from './metrics.js';
 export type { ToolMetricEntry, MetricsSnapshot } from './metrics.js';
-export { defineTool, definePrompt } from './types/primitives.js';
+export { defineTool, defineResource, definePrompt } from './types/primitives.js';
 export type {
 	McpToolDefinition,
 	McpToolAnnotations,
@@ -41,7 +41,10 @@ export type {
 	McpUserProfile,
 	McpContext,
 } from './types/primitives.js';
-export { mcpScopes, mcpScopeDescriptions, isMcpScope } from './scopes.js';
+export { mcpScopes, mcpScopeDescriptions, isMcpScope, templateScopeVocabulary } from './scopes.js';
+export { defineScopes } from './scope-vocabulary.js';
+export type { McpScopeVocabulary, McpRegistry } from './scope-vocabulary.js';
+export { templateRegistry } from './template-registry.js';
 export type { McpScope } from './scopes.js';
 export { getSupportedScopes } from './supported-scopes.js';
 export { hasRegisteredUiExtensionResource } from './ui-extension-support.js';

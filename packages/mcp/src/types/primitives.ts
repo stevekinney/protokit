@@ -4,7 +4,6 @@ import type {
 	GetPromptResult,
 	ReadResourceResult,
 } from '@modelcontextprotocol/server';
-import type { McpScope } from '../scopes.js';
 
 export type McpUserProfile = {
 	id: string;
@@ -81,6 +80,7 @@ export type McpToolAnnotations = {
 export type McpToolDefinition<
 	InputSchema extends z.ZodType = z.ZodType,
 	OutputSchema extends z.ZodType | undefined = z.ZodType | undefined,
+	Scope extends string = string,
 > = {
 	name: string;
 	title: string;
@@ -97,7 +97,7 @@ export type McpToolDefinition<
 	 * declares the scope that best describes what it does, rather than the
 	 * type system silently allowing "no scope check" to mean "public."
 	 */
-	requiredScope: McpScope;
+	requiredScope: Scope;
 	/** MCP Apps UI metadata (`_meta.ui.resourceUri`, `_meta.ui.visibility`). See the package `CLAUDE.md`. */
 	_meta?: Record<string, unknown>;
 	// Method shorthand (not an arrow-typed property) is deliberate: it keeps
@@ -130,25 +130,37 @@ export type McpToolDefinition<
 export function defineTool<
 	InputSchema extends z.ZodType,
 	OutputSchema extends z.ZodType | undefined = undefined,
+	Scope extends string = string,
 >(
-	definition: McpToolDefinition<InputSchema, OutputSchema>,
-): McpToolDefinition<InputSchema, OutputSchema> {
+	definition: McpToolDefinition<InputSchema, OutputSchema, Scope>,
+): McpToolDefinition<InputSchema, OutputSchema, Scope> {
 	return definition;
 }
 
-export type McpResourceDefinition = {
+export type McpResourceDefinition<Scope extends string = string> = {
 	name: string;
 	title: string;
 	uri: string;
 	description: string;
 	mimeType: string;
 	/** AUTHZ-001: see `McpToolDefinition.requiredScope` — same contract, checked before `resources/read` reaches `handler`. */
-	requiredScope: McpScope;
+	requiredScope: Scope;
 	handler(uri: URL, context: McpContext): Promise<ReadResourceResult>;
 };
 
+/**
+ * Identity helper matching `defineTool`, so a resource can be written
+ * against a vocabulary-bound definer rather than a bare type annotation.
+ */
+export function defineResource<Scope extends string = string>(
+	definition: McpResourceDefinition<Scope>,
+): McpResourceDefinition<Scope> {
+	return definition;
+}
+
 export type McpPromptDefinition<
 	Arguments extends Record<string, z.ZodType> | undefined = Record<string, z.ZodType> | undefined,
+	Scope extends string = string,
 > = {
 	name: string;
 	title: string;
@@ -158,7 +170,7 @@ export type McpPromptDefinition<
 	// to define the schema," not "intentionally none."
 	arguments: Arguments;
 	/** AUTHZ-001: see `McpToolDefinition.requiredScope` — same contract, checked before `prompts/get` reaches `handler`. */
-	requiredScope: McpScope;
+	requiredScope: Scope;
 	handler(
 		arguments_: Arguments extends Record<string, z.ZodType>
 			? { [Key in keyof Arguments]: z.infer<Arguments[Key]> }
@@ -167,8 +179,9 @@ export type McpPromptDefinition<
 	): Promise<GetPromptResult>;
 };
 
-export function definePrompt<Arguments extends Record<string, z.ZodType> | undefined>(
-	definition: McpPromptDefinition<Arguments>,
-): McpPromptDefinition<Arguments> {
+export function definePrompt<
+	Arguments extends Record<string, z.ZodType> | undefined,
+	Scope extends string = string,
+>(definition: McpPromptDefinition<Arguments, Scope>): McpPromptDefinition<Arguments, Scope> {
 	return definition;
 }

@@ -10,6 +10,7 @@ import { createTestContext } from './testing/context.js';
 import { getSupportedScopes } from './supported-scopes.js';
 import { mcpScopes } from './scopes.js';
 import type { McpUserProfile } from './types/primitives.js';
+import { templateRegistry } from './template-registry.js';
 
 /**
  * META-001: the registry contract that turns a metadata gap into a review
@@ -183,11 +184,11 @@ describe('getSupportedScopes', () => {
 		for (const resource of allResources) expected.add(resource.requiredScope);
 		for (const prompt of allPrompts) expected.add(prompt.requiredScope);
 
-		expect(getSupportedScopes()).toEqual([...expected].sort());
+		expect(getSupportedScopes(templateRegistry)).toEqual([...expected].sort());
 		// `list_audit_events` (`audit:read`) is a conformance-only fixture,
 		// never part of `allTools` — its scope must never be advertised to a
 		// real OAuth client.
-		expect(getSupportedScopes()).not.toContain('audit:read');
+		expect(getSupportedScopes(templateRegistry)).not.toContain('audit:read');
 	});
 });
 
@@ -205,13 +206,16 @@ describe('wire capabilities and list ordering', () => {
 	const handler = createMcpHandler(
 		() => {
 			const userId = randomUUID();
-			return createMcpServer({
-				userId,
-				user: conformanceUser(userId),
-				enableUiExtension: false,
-				enableConformanceMode: false,
-				scopes: getSupportedScopes(),
-			});
+			return createMcpServer(
+				{
+					userId,
+					user: conformanceUser(userId),
+					enableUiExtension: false,
+					enableConformanceMode: false,
+					scopes: getSupportedScopes(templateRegistry),
+				},
+				templateRegistry,
+			);
 		},
 		{ legacy: 'stateless' },
 	);
@@ -299,17 +303,20 @@ describe('MCP Apps capability advertisement', () => {
 		const handler = createMcpHandler(
 			() => {
 				const userId = randomUUID();
-				return createMcpServer({
-					userId,
-					user: conformanceUser(userId),
-					// CONTENT-001: the flag alone is not enough — `packages/mcp-apps`
-					// ships no application, so `allResources` has no
-					// `RESOURCE_MIME_TYPE` entry, and the capability must not appear
-					// on the wire regardless of this flag.
-					enableUiExtension: true,
-					enableConformanceMode: false,
-					scopes: getSupportedScopes(),
-				});
+				return createMcpServer(
+					{
+						userId,
+						user: conformanceUser(userId),
+						// CONTENT-001: the flag alone is not enough — `packages/mcp-apps`
+						// ships no application, so `allResources` has no
+						// `RESOURCE_MIME_TYPE` entry, and the capability must not appear
+						// on the wire regardless of this flag.
+						enableUiExtension: true,
+						enableConformanceMode: false,
+						scopes: getSupportedScopes(templateRegistry),
+					},
+					templateRegistry,
+				);
 			},
 			{ legacy: 'stateless' },
 		);

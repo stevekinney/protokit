@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { templateRegistry } from '@template/mcp';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -22,7 +23,7 @@ const { hasRegisteredUiExtensionResource } = await import('@template/mcp');
  * based solely on the flag, so a client could discover UI-extension support
  * in OAuth metadata and then receive server capabilities without it.
  *
- * Both call sites now share `hasRegisteredUiExtensionResource()` (see its
+ * Both call sites now share `hasRegisteredUiExtensionResource(templateRegistry)` (see its
  * doc comment in `packages/mcp/src/ui-extension-support.ts`), so this test
  * asserts the observable contract: with the flag on and no MCP App
  * registered (this repository's actual state -- `packages/mcp-apps` ships
@@ -53,7 +54,7 @@ describe('OAuth UI-extension metadata agrees with real MCP server capabilities',
 	it('this repository genuinely has no registered MCP App resource (sanity check for the rest of this file)', () => {
 		// If this ever becomes true (a real MCP App ships), the test below
 		// should start asserting the opposite -- see its own comment.
-		expect(hasRegisteredUiExtensionResource()).toBe(false);
+		expect(hasRegisteredUiExtensionResource(templateRegistry)).toBe(false);
 	});
 
 	it('does not advertise the UI extension in authorization server metadata when the flag is on but no MCP App resource is registered', async () => {

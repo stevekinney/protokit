@@ -6,6 +6,7 @@ import { createMcpServer } from './server.js';
 import { getSupportedScopes } from './supported-scopes.js';
 import { cancellableOperationTestHooks } from './conformance-fixture-registration.js';
 import type { McpUserProfile } from './types/primitives.js';
+import { templateRegistry } from './template-registry.js';
 
 /**
  * `!sendRequest` branches in `test_sampling` / `test_elicitation` /
@@ -65,14 +66,17 @@ async function connectedClient(options?: {
 	publishResourceUpdate?: (uri: string) => Promise<void>;
 }): Promise<Client> {
 	const userId = randomUUID();
-	const server = createMcpServer({
-		userId,
-		user: conformanceUser(userId),
-		enableUiExtension: false,
-		enableConformanceMode: true,
-		scopes: getSupportedScopes(),
-		publishResourceUpdate: options?.publishResourceUpdate,
-	});
+	const server = createMcpServer(
+		{
+			userId,
+			user: conformanceUser(userId),
+			enableUiExtension: false,
+			enableConformanceMode: true,
+			scopes: getSupportedScopes(templateRegistry),
+			publishResourceUpdate: options?.publishResourceUpdate,
+		},
+		templateRegistry,
+	);
 	const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 	const client = new Client(
 		{ name: 'conformance-fixtures-client', version: '1.0.0' },

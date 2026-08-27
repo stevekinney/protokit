@@ -1,9 +1,10 @@
 import { getSupportedScopes } from '@template/mcp';
+import { templateRegistry } from '@template/mcp';
 
 /**
  * AUTHZ-001: parses and validates an OAuth `scope` request parameter
  * against this server's own supported vocabulary (`@template/mcp`'s
- * production-registry-derived `getSupportedScopes()` — never the full
+ * production-registry-derived `getSupportedScopes(templateRegistry)` — never the full
  * `mcpScopes` vocabulary, which also contains the conformance-only
  * `audit:read` no real client can ever be granted).
  *
@@ -31,7 +32,7 @@ export function splitScopeString(scope: string): string[] {
 }
 
 export function parseRequestedScope(rawScope: string | null): ParsedScopeRequest {
-	const supportedScopes = getSupportedScopes();
+	const supportedScopes = getSupportedScopes(templateRegistry);
 
 	if (rawScope === null) {
 		return { ok: true, scopes: supportedScopes };
@@ -89,7 +90,7 @@ export function parseRefreshScopeRequest(rawScope: string | undefined): ParsedRe
 		return { ok: false, error: 'invalid_scope', unknownScopes: [] };
 	}
 
-	const supportedScopes = getSupportedScopes();
+	const supportedScopes = getSupportedScopes(templateRegistry);
 	const requestedScopes = splitScopeString(rawScope);
 	const unknownScopes = requestedScopes.filter((scope) => !supportedScopes.includes(scope));
 	if (unknownScopes.length > 0) {

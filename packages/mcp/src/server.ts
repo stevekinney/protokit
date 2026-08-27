@@ -1,8 +1,5 @@
 import { McpServer, ProtocolError } from '@modelcontextprotocol/server';
 import type { ServerCapabilities } from '@modelcontextprotocol/server';
-import { allTools, conformanceOnlyTools } from './tools/index.js';
-import { allResources } from './resources/index.js';
-import { allPrompts } from './prompts/index.js';
 // CONTENT-001: Bun's default loader for `.md` files renders them to HTML
 // (`<p>`, `<h2>`, `<ul>`/`<li>`, etc.) — confirmed empirically, not
 // documented behavior this codebase previously relied on correctly. MCP
@@ -26,7 +23,7 @@ import type {
 	McpToolDefinition,
 	McpUserProfile,
 } from './types/primitives.js';
-import type { McpScope } from './scopes.js';
+import type { McpRegistry } from './scope-vocabulary.js';
 
 // META-001 / S-20: a capability advertised here is a promise a connector is
 // entitled to rely on. `sampling` and `elicitation` are not even real server
@@ -115,11 +112,11 @@ const mcpInsufficientScopeErrorCode = -32003;
  * and prompts, which have no error-result shape of their own to carry a
  * `_meta` object on.
  */
-function insufficientScopeChallenge(requiredScope: McpScope): string {
+function insufficientScopeChallenge(requiredScope: string): string {
 	return `Bearer error="insufficient_scope", scope="${requiredScope}"`;
 }
 
-function hasRequiredScope(grantedScopes: readonly string[], requiredScope: McpScope): boolean {
+function hasRequiredScope(grantedScopes: readonly string[], requiredScope: string): boolean {
 	return grantedScopes.includes(requiredScope);
 }
 
@@ -156,7 +153,7 @@ function hasRequiredScope(grantedScopes: readonly string[], requiredScope: McpSc
  * This function is the reusable piece `createMcpServer` CAN own: the same
  * scope-lookup `assertRequiredScope` performs (grantedScopes vs. a
  * resource definition's `requiredScope`), applied per requested URI against
- * `allResources`, the single source of truth for which scope each resource
+ * the registry's resources, the single source of truth for which scope each resource
  * needs. `applications/web/src/lib/mcp-handler.ts` already peeks the
  * request body to detect a `subscriptions/listen` call before dispatch
  * (see `isSubscriptionsListenRequest`, added for an unrelated shutdown-
@@ -182,53 +179,57 @@ function hasRequiredScope(grantedScopes: readonly string[], requiredScope: McpSc
 export function areResourceSubscriptionsAuthorized(
 	uris: readonly string[],
 	scopes: readonly string[],
+	registry: McpRegistry,
 ): boolean {
 	return uris.every((uri) => {
-		const resource = allResources.find((definition) => definition.uri === uri);
+		const resource = registry.resources.find((definition) => definition.uri === uri);
 		return resource !== undefined && hasRequiredScope(scopes, resource.requiredScope);
 	});
 }
 
-export function createMcpServer(context: {
-	userId: string;
-	user: McpUserProfile;
-	/**
-	 * OBS-001: the HTTP-boundary request identifier, threaded through to
-	 * every tool/resource/prompt handler via `McpContext.requestId` so one
-	 * connector action can be traced end to end through logs. Undefined for
-	 * callers that build a server outside a real HTTP request (the
-	 * standalone conformance server, tests).
-	 */
-	requestId?: string;
-	enableUiExtension: boolean;
-	enableConformanceMode?: boolean;
-	/**
-	 * PROTO-002: which protocol era this particular `McpServer` instance
-	 * will serve. Drives whether `resources.subscribe` is advertised (only
-	 * ever true on `'modern'` — see `buildServerCapabilities`) — legacy
-	 * serving has no delivery path for a subscription push. Defaults to
-	 * `'legacy'` so existing callers (tests, the standalone conformance
-	 * server) that do not pass it keep today's unadvertised behavior.
-	 */
-	era?: 'legacy' | 'modern';
-	/**
-	 * PROTO-002 / S-11: publishes a `notifications/resources/updated` event
-	 * scoped to only this context's `userId` (see
-	 * `applications/web/src/lib/mcp-user-event-bus.ts`). Undefined when no
-	 * event bus is wired for this request (e.g. the standalone conformance
-	 * server) — `resources/subscribe` still acks, it just never delivers.
-	 */
-	publishResourceUpdate?: (uri: string) => Promise<void>;
-	/**
-	 * AUTHZ-001: the OAuth scopes the caller's access token actually carries
-	 * (`McpRequestAuthExtra.scopes`, verified against the database by the
-	 * HTTP boundary before this factory is ever called). Enforced here,
-	 * once, before any tool/resource/prompt handler runs — "missing scopes
-	 * fail before application data is read," per the roadmap's own wording
-	 * for this item.
-	 */
-	scopes: readonly string[];
-}): McpServer {
+export function createMcpServer(
+	context: {
+		userId: string;
+		user: McpUserProfile;
+		/**
+		 * OBS-001: the HTTP-boundary request identifier, threaded through to
+		 * every tool/resource/prompt handler via `McpContext.requestId` so one
+		 * connector action can be traced end to end through logs. Undefined for
+		 * callers that build a server outside a real HTTP request (the
+		 * standalone conformance server, tests).
+		 */
+		requestId?: string;
+		enableUiExtension: boolean;
+		enableConformanceMode?: boolean;
+		/**
+		 * PROTO-002: which protocol era this particular `McpServer` instance
+		 * will serve. Drives whether `resources.subscribe` is advertised (only
+		 * ever true on `'modern'` — see `buildServerCapabilities`) — legacy
+		 * serving has no delivery path for a subscription push. Defaults to
+		 * `'legacy'` so existing callers (tests, the standalone conformance
+		 * server) that do not pass it keep today's unadvertised behavior.
+		 */
+		era?: 'legacy' | 'modern';
+		/**
+		 * PROTO-002 / S-11: publishes a `notifications/resources/updated` event
+		 * scoped to only this context's `userId` (see
+		 * `applications/web/src/lib/mcp-user-event-bus.ts`). Undefined when no
+		 * event bus is wired for this request (e.g. the standalone conformance
+		 * server) — `resources/subscribe` still acks, it just never delivers.
+		 */
+		publishResourceUpdate?: (uri: string) => Promise<void>;
+		/**
+		 * AUTHZ-001: the OAuth scopes the caller's access token actually carries
+		 * (`McpRequestAuthExtra.scopes`, verified against the database by the
+		 * HTTP boundary before this factory is ever called). Enforced here,
+		 * once, before any tool/resource/prompt handler runs — "missing scopes
+		 * fail before application data is read," per the roadmap's own wording
+		 * for this item.
+		 */
+		scopes: readonly string[];
+	},
+	registry: McpRegistry,
+): McpServer {
 	const era = context.era ?? 'legacy';
 	const enableConformanceMode = context.enableConformanceMode ?? environment.mcpConformanceMode;
 	const experimentalCapabilities: Record<string, { version: string }> = {};
@@ -236,7 +237,7 @@ export function createMcpServer(context: {
 	// just gated on the `MCP_ENABLE_UI_EXTENSION` flag (which defaults off,
 	// but an operator can still set it) — it also requires at least one
 	// registered resource that is actually an MCP App (`RESOURCE_MIME_TYPE`).
-	// `hasRegisteredUiExtensionResource()` is the single source of truth for
+	// `hasRegisteredUiExtensionResource(registry)` is the single source of truth for
 	// that predicate, shared with `oauth-routes.ts`'s authorization-server
 	// metadata `extensions` field — see its own doc comment for why that
 	// sharing matters. `packages/mcp-apps` ships no application today, so
@@ -244,7 +245,7 @@ export function createMcpServer(context: {
 	// turned on by mistake, rather than only relying on the default. Once a
 	// real app + resource exists, this becomes true on its own with no
 	// further change needed here.
-	if (context.enableUiExtension && hasRegisteredUiExtensionResource()) {
+	if (context.enableUiExtension && hasRegisteredUiExtensionResource(registry)) {
 		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
 	}
 
@@ -342,7 +343,7 @@ export function createMcpServer(context: {
 		);
 	}
 
-	for (const tool of allTools) {
+	for (const tool of registry.tools) {
 		registerToolDefinition(tool);
 	}
 
@@ -368,7 +369,7 @@ export function createMcpServer(context: {
 		);
 	}
 
-	for (const resource of allResources) {
+	for (const resource of registry.resources) {
 		server.registerResource(
 			resource.name,
 			resource.uri,
@@ -380,7 +381,7 @@ export function createMcpServer(context: {
 		);
 	}
 
-	for (const prompt of allPrompts) {
+	for (const prompt of registry.prompts) {
 		server.registerPrompt(
 			prompt.name,
 			{
@@ -431,10 +432,10 @@ export function createMcpServer(context: {
 	if (enableConformanceMode) {
 		// CONTENT-001: synthetic/protocol-only fixtures (e.g. `list_audit_events`,
 		// which returns generated data and exists to exercise cursor pagination)
-		// are registered here rather than in `allTools`, so a production
+		// are registered here rather than in `registry.tools`, so a production
 		// deployment — which never sets `enableConformanceMode` — never
 		// advertises or serves them.
-		for (const tool of conformanceOnlyTools) {
+		for (const tool of registry.conformanceOnlyTools ?? []) {
 			registerToolDefinition(tool);
 		}
 		registerConformanceFixtures(server, context.publishResourceUpdate);

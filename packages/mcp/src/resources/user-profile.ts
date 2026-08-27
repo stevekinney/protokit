@@ -1,6 +1,6 @@
-import type { McpResourceDefinition } from '../types/primitives.js';
+import { defineResource } from '../scopes.js';
 
-export const userProfileResource: McpResourceDefinition = {
+export const userProfileResource = defineResource({
 	name: 'user_profile',
 	title: 'User Profile',
 	uri: 'user://profile',
@@ -18,4 +18,4 @@ export const userProfileResource: McpResourceDefinition = {
 			],
 		};
 	},
-};
+});

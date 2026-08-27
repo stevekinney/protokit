@@ -5,6 +5,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpServer } from './server.js';
 import { hasValidLocalhostRebindingHeaders } from './localhost-request-validation.js';
 import { mcpScopes } from './scopes.js';
+import { templateRegistry } from './template-registry.js';
 
 import type { McpUserProfile } from './types/primitives.js';
 
@@ -49,25 +50,28 @@ function convertIncomingHeaders(
 const mcpHttpHandler: ReturnType<typeof createMcpHandler> = createMcpHandler(
 	(requestContext) => {
 		const userId = randomUUID();
-		return createMcpServer({
-			userId,
-			user: createConformanceUser(userId),
-			enableUiExtension: true,
-			enableConformanceMode: true,
-			era: requestContext.era,
-			// PROTO-002: this standalone server is local/CI-only and every
-			// connection gets a throwaway random identity, so there is no real
-			// per-user boundary to enforce here the way `mcp-handler.ts` does
-			// in production (one event bus per authenticated user) — every
-			// conformance connection shares this single process-wide handler
-			// and bus, which is fine for exercising the wire protocol.
-			publishResourceUpdate: async (uri) => mcpHttpHandler.notify.resourceUpdated(uri),
-			// This standalone server exists to exercise every registered
-			// operation, including the conformance-only `list_audit_events`
-			// fixture (`audit:read`) — grant the entire vocabulary rather than
-			// only what production's OAuth flow would ever issue.
-			scopes: mcpScopes,
-		});
+		return createMcpServer(
+			{
+				userId,
+				user: createConformanceUser(userId),
+				enableUiExtension: true,
+				enableConformanceMode: true,
+				era: requestContext.era,
+				// PROTO-002: this standalone server is local/CI-only and every
+				// connection gets a throwaway random identity, so there is no real
+				// per-user boundary to enforce here the way `mcp-handler.ts` does
+				// in production (one event bus per authenticated user) — every
+				// conformance connection shares this single process-wide handler
+				// and bus, which is fine for exercising the wire protocol.
+				publishResourceUpdate: async (uri) => mcpHttpHandler.notify.resourceUpdated(uri),
+				// This standalone server exists to exercise every registered
+				// operation, including the conformance-only `list_audit_events`
+				// fixture (`audit:read`) — grant the entire vocabulary rather than
+				// only what production's OAuth flow would ever issue.
+				scopes: mcpScopes,
+			},
+			templateRegistry,
+		);
 	},
 	{ legacy: 'stateless' },
 );
