@@ -257,7 +257,7 @@ export function createMcpServer(
 			version: '0.1.0',
 		},
 		{
-			instructions,
+			instructions: registry.instructions ?? instructions,
 			capabilities: buildServerCapabilities({
 				enableConformanceMode,
 				experimentalCapabilities,

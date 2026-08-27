@@ -56,11 +56,48 @@ export type McpScopeVocabulary<Scope extends string> = {
  * being a runtime check or a blank line on someone's consent screen — the
  * failure is structural rather than something a test has to catch.
  */
+/**
+ * RFC 6749 section 3.3: `scope-token = 1*( %x21 / %x23-5B / %x5D-7E )` —
+ * printable ASCII excluding space, double quote, and backslash.
+ *
+ * This is validated rather than trusted because every one of those three
+ * exclusions is load-bearing downstream, not stylistic. `getSupportedScopes()`
+ * joins scopes with a space into `scopes_supported` and the `/mcp` 401
+ * challenge, so a scope containing a space parses back as *two* scopes while
+ * the primitive still requires the single original string — leaving that
+ * primitive impossible to authorize, with nothing anywhere reporting an
+ * error. A double quote or backslash escapes the quoted `scope="..."` value in
+ * the `WWW-Authenticate` challenge, and control characters corrupt it.
+ */
+const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
+
 export function defineScopes<const Descriptions extends Record<string, string>>(
 	descriptions: Descriptions,
 ): McpScopeVocabulary<Extract<keyof Descriptions, string>> {
 	type Scope = Extract<keyof Descriptions, string>;
 	const scopes = Object.keys(descriptions) as Scope[];
+
+	for (const scope of scopes) {
+		if (!SCOPE_TOKEN.test(scope)) {
+			throw new Error(
+				`Invalid OAuth scope token ${JSON.stringify(scope)}: a scope must match RFC 6749's ` +
+					'`scope-token` (printable ASCII, no space, double quote, or backslash). A scope ' +
+					'containing a space would be re-parsed as two scopes wherever scopes are ' +
+					'space-delimited, leaving the primitive that requires it impossible to authorize.',
+			);
+		}
+		// The type says `string`, which does not exclude the empty or
+		// whitespace-only string. Without this, the "declaring scopes through
+		// descriptions makes a blank consent line impossible" guarantee is only
+		// true of a *missing* description, not an empty one.
+		if (descriptions[scope].trim() === '') {
+			throw new Error(
+				`Scope ${JSON.stringify(scope)} has a blank description. The consent screen renders ` +
+					'this text verbatim, so a blank value shows the user an unexplained grant.',
+			);
+		}
+	}
+
 	const membership = new Set<string>(scopes);
 
 	return {
@@ -91,6 +128,21 @@ export function defineScopes<const Descriptions extends Record<string, string>>(
  * `requiredScope`, so they never participate in the scope vocabulary at all.
  */
 export type McpRegistry<Scope extends string = string> = {
+	/**
+	 * Natural-language server instructions, handed to the MCP client and fed
+	 * straight to a model. Optional only so this repository's own registry can
+	 * keep using the bundled `instructions.md`; **a consumer should always set
+	 * it.**
+	 *
+	 * Serving one registry's instructions alongside another's primitives is
+	 * worse than unhelpful. The bundled text names `get_user_profile`,
+	 * `user://profile`, and `summarize`, points at this template's OAuth
+	 * endpoints, and states that no operation is destructive. A consumer that
+	 * inherits it hands a model a description of tools that do not exist — and,
+	 * far more seriously, an assurance that its own mutating tools are
+	 * read-only.
+	 */
+	readonly instructions?: string;
 	readonly tools: readonly McpToolDefinition<z.ZodType, z.ZodType | undefined, Scope>[];
 	readonly resources: readonly McpResourceDefinition<Scope>[];
 	readonly prompts: readonly McpPromptDefinition<Record<string, z.ZodType> | undefined, Scope>[];

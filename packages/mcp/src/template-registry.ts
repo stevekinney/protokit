@@ -18,6 +18,9 @@ import { allPrompts } from './prompts/index.js';
  * default is worse than a missing one.
  */
 export const templateRegistry: McpRegistry<McpScope> = {
+	// Left unset so this registry keeps the bundled `instructions.md`, which
+	// describes exactly these primitives. A consumer sets `instructions` to its
+	// own text — see `McpRegistry`.
 	tools: allTools,
 	resources: allResources,
 	prompts: allPrompts,

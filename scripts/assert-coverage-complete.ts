@@ -88,6 +88,8 @@ export const WORKSPACES: readonly WorkspaceTarget[] = [
  * report at all" check.
  */
 export const NEVER_IMPORTABLE_FILES: ReadonlySet<string> = new Set([
+	// packages/mcp -- compile-time-only assertions.
+	'packages/mcp/src/type-assertions.ts', // Exists to be type-checked, not executed: it asserts the consumer-vocabulary binding via `@ts-expect-error` fixtures. It lives outside `*.test.ts` deliberately, because `packages/mcp/tsconfig.json` excludes test files from `typecheck` -- a type-level guarantee asserted only in a test file is never checked by the command that claims to check types. Nothing imports it and nothing should.
 	// applications/web -- real process entry points and build tooling.
 	'applications/web/src/server.ts', // Binds a real port and installs real SIGTERM/SIGINT/uncaughtException handlers at module load; no `import.meta.main` guard, by design (this *is* the process entry point).
 	'applications/web/src/build.ts', // Runs the real production `Bun.build` pipeline (writes to `dist/`) unconditionally at module load; no `export` worth importing for.

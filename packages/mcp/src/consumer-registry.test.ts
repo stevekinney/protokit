@@ -178,3 +178,76 @@ describe('the vocabulary itself', () => {
 		}
 	});
 });
+
+describe('defineScopes rejects what would break downstream', () => {
+	/**
+	 * Each of these is validated because it corrupts a space-delimited or
+	 * quoted context later, silently. A scope with a space becomes two scopes
+	 * in `scopes_supported` and in the 401 challenge, while the primitive still
+	 * requires the original single string — so that primitive can never be
+	 * authorized and nothing reports an error.
+	 */
+	it('rejects a scope containing a space', () => {
+		expect(() => defineScopes({ 'repositories read': 'Read repositories.' })).toThrow(
+			/scope token/i,
+		);
+	});
+
+	it('rejects a scope containing a double quote or backslash, which escape the challenge', () => {
+		expect(() => defineScopes({ 'repo"read': 'Read repositories.' })).toThrow(/scope token/i);
+		expect(() => defineScopes({ 'repo\\read': 'Read repositories.' })).toThrow(/scope token/i);
+	});
+
+	it('rejects a control character', () => {
+		expect(() => defineScopes({ 'repo\u0001read': 'Read repositories.' })).toThrow(/scope token/i);
+	});
+
+	it('rejects a blank or whitespace-only description', () => {
+		expect(() => defineScopes({ 'repositories:read': '' })).toThrow(/blank description/i);
+		expect(() => defineScopes({ 'repositories:read': '   ' })).toThrow(/blank description/i);
+	});
+
+	it('accepts an ordinary scope token', () => {
+		expect(() => defineScopes({ 'repositories:read': 'Read repositories.' })).not.toThrow();
+	});
+});
+
+describe('registry instructions', () => {
+	/**
+	 * Serving the bundled instructions alongside a consumer's primitives hands
+	 * a model a description of tools that do not exist, and an assurance that
+	 * the consumer's own mutating tools are read-only. The registry carries its
+	 * own text so that cannot happen silently.
+	 */
+	it('serves the consumer’s instructions rather than the bundled ones', async () => {
+		const withInstructions: McpRegistry<'repositories:read' | 'conformance:read'> = {
+			...consumerRegistry,
+			instructions: 'This server exposes echo_repository and nothing else.',
+		};
+		const handler = createMcpHandler(
+			() => {
+				const userId = randomUUID();
+				return createMcpServer(
+					{
+						userId,
+						user: consumerUser(userId),
+						enableUiExtension: false,
+						enableConformanceMode: false,
+						scopes: getSupportedScopes(withInstructions),
+					},
+					withInstructions,
+				);
+			},
+			{ legacy: 'stateless' },
+		);
+		const client = new Client({ name: 'instructions-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL('http://consumer.local/mcp'), {
+			fetch: (input, init) => handler.fetch(new Request(input, init)),
+		});
+		await client.connect(transport);
+
+		const served = client.getInstructions();
+		expect(served).toBe('This server exposes echo_repository and nothing else.');
+		expect(served).not.toContain('get_user_profile');
+	});
+});
