@@ -6,6 +6,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import { createMcpServer } from './server.js';
 import { getSupportedScopes } from './supported-scopes.js';
 import { defineScopes } from './scope-vocabulary.js';
+import { metricsCollector } from './metrics.js';
 import type { McpRegistry } from './scope-vocabulary.js';
 import type { McpUserProfile } from './types/primitives.js';
 
@@ -490,6 +491,45 @@ describe('server identity', () => {
 		});
 		await client.connect(transport);
 		expect(client.getServerVersion()).toEqual({ name: 'tribunal-mcp', version: '2.1.0' });
+	});
+});
+
+describe('the exposed scope list', () => {
+	/**
+	 * `readonly` is a compile-time claim only. A JavaScript consumer, or a
+	 * TypeScript one crossing an untyped boundary, can mutate the array — and
+	 * `mcpScopes` aliases it directly.
+	 */
+	it('cannot be mutated into disagreeing with isScope()', () => {
+		const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
+		expect(Object.isFrozen(vocabulary.scopes)).toBe(true);
+		expect(() => {
+			(vocabulary.scopes as string[]).push('smuggled:read');
+		}).toThrow(TypeError);
+		expect(vocabulary.scopes).toEqual(['repositories:read']);
+		expect(vocabulary.isScope('smuggled:read')).toBe(false);
+	});
+});
+
+describe('metrics for a tool with a reserved name', () => {
+	/**
+	 * Tool names are consumer-supplied and become object keys in the metrics
+	 * snapshot. On a plain object, `tools['__proto__'] = ...` invokes the
+	 * inherited setter instead of creating an own property, so the tool's
+	 * counts vanish and `/metrics` under-reports it to zero.
+	 */
+	it('records a tool named __proto__ rather than silently dropping it', () => {
+		metricsCollector.recordToolInvocation('__proto__', 5, false);
+		const snapshot = metricsCollector.snapshot();
+
+		// Reading the key back is NOT sufficient, and asserting only that is
+		// how this test first passed with the bug present: assigning an object
+		// to `__proto__` on a plain `{}` sets the prototype, and reading
+		// `__proto__` returns that same object — so the round-trip looks fine
+		// while nothing is an own property. What actually breaks is anything
+		// that enumerates or serializes, which is what `/metrics` does.
+		expect(Object.keys(snapshot.tools)).toContain('__proto__');
+		expect(JSON.parse(JSON.stringify(snapshot.tools))['__proto__']?.invocations).toBe(1);
 	});
 });
 

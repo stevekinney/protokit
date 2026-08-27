@@ -113,7 +113,14 @@ export function defineScopes<
 	},
 >(descriptions: Descriptions): McpScopeVocabulary<ScopeOf<Descriptions>> {
 	type Scope = ScopeOf<Descriptions>;
-	const scopes = Object.keys(descriptions) as Scope[];
+	// Frozen for the same reason as the descriptions and the registry: a
+	// statically `readonly` array is still mutable at runtime for a JavaScript
+	// consumer or a TypeScript one crossing an untyped boundary. A `push` or
+	// `splice` here would leave `scopes` disagreeing with the `membership` set
+	// and the frozen descriptions captured alongside it, so OAuth code
+	// iterating it could advertise a scope `isScope()` rejects, or omit one it
+	// accepts. `mcpScopes` aliases this array directly.
+	const scopes = Object.freeze(Object.keys(descriptions)) as readonly Scope[];
 
 	if (scopes.length === 0) {
 		throw new Error(
