@@ -57,11 +57,30 @@ function buildServerCapabilities(input: {
 	 * below), it just never receives an update.
 	 */
 	subscriptionsEnabled: boolean;
+	/**
+	 * Which primitive families the registry actually populates.
+	 *
+	 * A family must not be advertised when it is empty. `McpServer` installs a
+	 * family's discovery handlers the first time the corresponding `register*`
+	 * is called, so a registry with no resources registers none — and a client
+	 * that reads `resources` in the capabilities and issues `resources/list`
+	 * gets method-not-found. That was invisible while this package served only
+	 * its own registry, which has always had at least one of each; a consumer
+	 * supplying tools alone hits it immediately.
+	 */
+	families: { tools: boolean; resources: boolean; prompts: boolean };
 }): ServerCapabilities {
 	return {
-		tools: { listChanged: false },
-		resources: { listChanged: false, ...(input.subscriptionsEnabled ? { subscribe: true } : {}) },
-		prompts: { listChanged: false },
+		...(input.families.tools ? { tools: { listChanged: false } } : {}),
+		...(input.families.resources
+			? {
+					resources: {
+						listChanged: false,
+						...(input.subscriptionsEnabled ? { subscribe: true } : {}),
+					},
+				}
+			: {}),
+		...(input.families.prompts ? { prompts: { listChanged: false } } : {}),
 		experimental: input.experimentalCapabilities,
 		// Conformance fixtures (registered only in conformance mode, never in
 		// production) send `notifications/message` — the SDK throws
@@ -259,6 +278,13 @@ export function createMcpServer(
 		{
 			instructions: registry.instructions ?? instructions,
 			capabilities: buildServerCapabilities({
+				families: {
+					// Conformance-only tools register as tools too, so the tools
+					// family is present whenever either list is non-empty.
+					tools: registry.tools.length > 0 || (registry.conformanceOnlyTools?.length ?? 0) > 0,
+					resources: registry.resources.length > 0,
+					prompts: registry.prompts.length > 0,
+				},
 				enableConformanceMode,
 				experimentalCapabilities,
 				subscriptionsEnabled: era === 'modern' && context.publishResourceUpdate !== undefined,

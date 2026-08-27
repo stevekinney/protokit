@@ -100,3 +100,34 @@ const crossVocabularyRegistry: McpRegistry<'repositories:read' | 'conformance:re
 };
 
 void crossVocabularyRegistry;
+
+// `__proto__` is rejected where it is written. Without this, TypeScript would
+// infer it as a scope while `Object.keys()` omitted it — a primitive requiring
+// a scope the vocabulary cannot issue.
+defineScopes({
+	// @ts-expect-error - `__proto__` never becomes an own property in an object
+	// literal, so it cannot be a scope name.
+	__proto__: 'Read prototype metadata.',
+	'repositories:read': 'Read repository metadata.',
+});
+
+// A registry built through the vocabulary stays pinned to it.
+const boundRegistry = consumerVocabulary.defineRegistry({
+	tools: [],
+	resources: [],
+	prompts: [
+		// @ts-expect-error - a primitive from another vocabulary cannot enter a
+		// registry built by this one, even though the registry is inferred
+		// rather than hand-annotated.
+		otherVocabulary.definePrompt({
+			name: 'foreign-in-bound-registry',
+			title: 'Foreign',
+			description: 'Declared against a different vocabulary.',
+			arguments: undefined,
+			requiredScope: 'unrelated:read',
+			handler: async () => ({ messages: [] }),
+		}),
+	],
+});
+
+void boundRegistry;

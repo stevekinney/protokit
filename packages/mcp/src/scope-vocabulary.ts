@@ -45,6 +45,19 @@ export type McpScopeVocabulary<Scope extends string> = {
 	definePrompt<Arguments extends Record<string, z.ZodType> | undefined>(
 		definition: McpPromptDefinition<Arguments, Scope>,
 	): McpPromptDefinition<Arguments, Scope>;
+	/**
+	 * Builds a registry pinned to this vocabulary.
+	 *
+	 * Use this rather than writing an object literal and letting `McpRegistry`
+	 * default `Scope` to `string`. An inferred registry accepts a primitive
+	 * from an unbound definer or from a *different* vocabulary with no type
+	 * error, and `getSupportedScopes()` then advertises a scope this
+	 * vocabulary has no description for and whose `isScope()` returns false —
+	 * so the authorization layer cannot issue the scope the served primitive
+	 * requires. Annotating the registry by hand also prevents that, but only
+	 * if the author remembers to; this makes the binding the default path.
+	 */
+	defineRegistry(registry: McpRegistry<Scope>): McpRegistry<Scope>;
 };
 
 /**
@@ -71,11 +84,30 @@ export type McpScopeVocabulary<Scope extends string> = {
  */
 const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
 
-export function defineScopes<const Descriptions extends Record<string, string>>(
-	descriptions: Descriptions,
-): McpScopeVocabulary<Extract<keyof Descriptions, string>> {
+export function defineScopes<
+	const Descriptions extends Record<string, string> & {
+		/**
+		 * `__proto__` cannot be a scope name, and this rejects it where it is
+		 * written rather than letting it vanish. In an object literal the key
+		 * is special: it never becomes an own property, so `Object.keys()`
+		 * would return nothing while TypeScript still infers it as a member of
+		 * `Scope`. The bound definers would then accept primitives requiring a
+		 * scope that `scopes` omits and `isScope()` rejects — unauthorizable,
+		 * with no error anywhere. No runtime read can recover the key, so the
+		 * type is the only place this can be caught.
+		 */
+		__proto__?: never;
+	},
+>(descriptions: Descriptions): McpScopeVocabulary<Extract<keyof Descriptions, string>> {
 	type Scope = Extract<keyof Descriptions, string>;
 	const scopes = Object.keys(descriptions) as Scope[];
+
+	if (scopes.length === 0) {
+		throw new Error(
+			'defineScopes() was given no scopes. If the object literal looked non-empty, check for ' +
+				'a key that does not become an own property — `__proto__` is the one that does this.',
+		);
+	}
 
 	for (const scope of scopes) {
 		if (!SCOPE_TOKEN.test(scope)) {
@@ -109,6 +141,7 @@ export function defineScopes<const Descriptions extends Record<string, string>>(
 		defineTool: (definition) => definition,
 		defineResource: (definition) => definition,
 		definePrompt: (definition) => definition,
+		defineRegistry: (registry) => registry,
 	};
 }
 

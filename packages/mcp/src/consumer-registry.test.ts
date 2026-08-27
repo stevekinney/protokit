@@ -212,6 +212,23 @@ describe('defineScopes rejects what would break downstream', () => {
 	});
 });
 
+describe('capabilities follow the registry', () => {
+	/**
+	 * `McpServer` installs a family's discovery handlers only when its
+	 * `register*` is first called. Advertising a family the registry never
+	 * populates therefore promises a `resources/list` the server answers with
+	 * method-not-found. Invisible while this package served only its own
+	 * registry, which always has one of each.
+	 */
+	it('does not advertise resources or prompts for a tools-only consumer', async () => {
+		const client = await connect(getSupportedScopes(consumerRegistry));
+		const capabilities = client.getServerCapabilities();
+		expect(capabilities?.tools).toBeDefined();
+		expect(capabilities?.resources).toBeUndefined();
+		expect(capabilities?.prompts).toBeUndefined();
+	});
+});
+
 describe('registry instructions', () => {
 	/**
 	 * Serving the bundled instructions alongside a consumer's primitives hands

@@ -121,6 +121,11 @@ mock.module('@template/mcp', () => ({
 	// scope list `oauth-routes.ts`'s metadata endpoints publish, and this
 	// suite's `WWW-Authenticate` assertions check against it by name.
 	getSupportedScopes: () => ['profile:read', 'prompts:read'],
+	// `mcp-routes.ts` passes a registry to `getSupportedScopes`, so this mock
+	// has to export one or importing the module throws. The stub is empty
+	// because the mocked `getSupportedScopes` above ignores its argument and
+	// returns the real production-derived list by hand.
+	templateRegistry: { tools: [], resources: [], prompts: [] },
 }));
 
 let mockTokenResult: unknown[] = [];
