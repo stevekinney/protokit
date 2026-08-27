@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createToolStructuredResponse } from '../tool-response.js';
-import { defineTool } from '../types/primitives.js';
+import { defineTool } from '../scopes.js';
 
 const getUserProfileOutputSchema = z.object({
 	id: z.string(),

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { logger } from '../logger.js';
 import { environment } from '../env.js';
-import { definePrompt } from '../types/primitives.js';
+import { definePrompt } from '../scopes.js';
 
 /**
  * OBS-001 / S-14: whether raw prompt content is allowed to be logged right

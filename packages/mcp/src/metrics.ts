@@ -88,7 +88,13 @@ class MetricsCollector {
 	 * naturally ages out old samples as new ones arrive.
 	 */
 	snapshot(): MetricsSnapshot {
-		const tools: MetricsSnapshot['tools'] = {};
+		// Null-prototype, because the keys are consumer-supplied tool names. On a
+		// plain `{}`, `tools['__proto__'] = ...` invokes the inherited setter
+		// rather than creating an own property, so the entry vanishes and
+		// `/metrics` silently under-reports that tool to zero. Fixing it here
+		// rather than banning the name covers every reserved key at once,
+		// without constraining what a consumer may call its tools.
+		const tools: MetricsSnapshot['tools'] = Object.create(null) as MetricsSnapshot['tools'];
 		for (const [name, entry] of this.tools) {
 			const sorted = [...entry.durations].sort((a, b) => a - b);
 			tools[name] = {

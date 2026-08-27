@@ -1,5 +1,5 @@
 import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
-import { allResources } from './resources/index.js';
+import type { McpRegistry } from './scope-vocabulary.js';
 
 /**
  * CONTENT-001 / review finding: advertising the MCP Apps UI extension is
@@ -19,6 +19,6 @@ import { allResources } from './resources/index.js';
  * without it (or vice versa) -- the two advertisements are mechanically
  * kept in agreement, not just conventionally.
  */
-export function hasRegisteredUiExtensionResource(): boolean {
-	return allResources.some((resource) => resource.mimeType === RESOURCE_MIME_TYPE);
+export function hasRegisteredUiExtensionResource(registry: McpRegistry): boolean {
+	return registry.resources.some((resource) => resource.mimeType === RESOURCE_MIME_TYPE);
 }

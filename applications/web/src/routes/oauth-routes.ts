@@ -9,6 +9,7 @@ import {
 	isMcpScope,
 	mcpScopeDescriptions,
 } from '@template/mcp';
+import { templateRegistry } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { metricsCollector } from '@template/mcp/metrics';
 import { environment } from '@web/env';
@@ -2306,11 +2307,11 @@ export async function handleOauthAuthorizationMetadataGet(
 			token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
 			// AUTHZ-001: the exact same list `handleOauthProtectedResourceMetadataGet`
 			// and `handleOauthProtectedResourceMcpMetadataGet` below publish —
-			// both derived from `getSupportedScopes()`, never hand-duplicated,
+			// both derived from `getSupportedScopes(templateRegistry)`, never hand-duplicated,
 			// so "authorization server and protected-resource metadata publish
 			// the same supported scopes" is mechanically true rather than
 			// something that can drift.
-			scopes_supported: getSupportedScopes(),
+			scopes_supported: getSupportedScopes(templateRegistry),
 			// OAUTH-002 / MCP 2026-07-28: this is the exact key clients check
 			// per the spec's "Advertising CIMD Support" section before using an
 			// HTTPS URL as `client_id` instead of falling back to DCR.
@@ -2331,14 +2332,14 @@ export async function handleOauthAuthorizationMetadataGet(
 			// Review finding: the real `/mcp` server capabilities (`server.ts`)
 			// only advertise the UI extension when `MCP_ENABLE_UI_EXTENSION` is
 			// set *and* at least one registered resource is actually an MCP App
-			// (`hasRegisteredUiExtensionResource()`) -- `packages/mcp-apps` ships
+			// (`hasRegisteredUiExtensionResource(templateRegistry)`) -- `packages/mcp-apps` ships
 			// no application today, so that predicate is always false in this
 			// repository. This metadata document must apply the exact same
 			// predicate; advertising the extension here on the flag alone would
 			// let a client discover UI-extension support in OAuth metadata and
 			// then receive server capabilities without it.
 			extensions: {
-				...(environment.mcpEnableUiExtension && hasRegisteredUiExtensionResource()
+				...(environment.mcpEnableUiExtension && hasRegisteredUiExtensionResource(templateRegistry)
 					? { [mcpUiExtensionIdentifier]: {} }
 					: {}),
 			},
@@ -2355,7 +2356,7 @@ export async function handleOauthProtectedResourceMetadataGet(
 		{
 			resource: getMcpResourceUrl(context.request),
 			authorization_servers: [baseUrl],
-			scopes_supported: getSupportedScopes(),
+			scopes_supported: getSupportedScopes(templateRegistry),
 			// DOCS-001 / RFC 9728 sec. 2: same documentation/legal links as the
 			// authorization server metadata above, under this RFC's own field
 			// names.
@@ -2378,7 +2379,7 @@ export async function handleOauthProtectedResourceMcpMetadataGet(
 			authorization_servers: [baseUrl],
 			bearer_methods_supported: ['header'],
 			mcp_protocol_version: mcpLatestProtocolVersion,
-			scopes_supported: getSupportedScopes(),
+			scopes_supported: getSupportedScopes(templateRegistry),
 			resource_name: mcpEnvironment.mcpServerName,
 			resource_documentation: `${baseUrl}/support`,
 			resource_policy_uri: `${baseUrl}/privacy`,

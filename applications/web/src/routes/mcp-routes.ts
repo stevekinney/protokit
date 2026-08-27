@@ -7,6 +7,7 @@ import {
 	isLoopbackHostname,
 	hasValidLocalhostRebindingHeaders,
 } from '@template/mcp';
+import { templateRegistry } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { metricsCollector } from '@template/mcp/metrics';
 import { environment } from '@web/env';
@@ -43,13 +44,13 @@ import { mcpMaxBearerTokenLength } from '@web/lib/request-limits';
  * produced the `401`. Built once, here, rather than at each of this file's
  * four challenge call sites, so they cannot drift out of sync with each
  * other or with the identical list the OAuth metadata endpoints publish
- * (`getSupportedScopes()`, shared with `oauth-routes.ts`).
+ * (`getSupportedScopes(templateRegistry)`, shared with `oauth-routes.ts`).
  */
 function bearerChallenge(resourceMetadataUrl: string, errorCode?: string): string {
 	const parts = [
 		...(errorCode ? [`error="${errorCode}"`] : []),
 		`resource_metadata="${resourceMetadataUrl}"`,
-		`scope="${getSupportedScopes().join(' ')}"`,
+		`scope="${getSupportedScopes(templateRegistry).join(' ')}"`,
 	];
 	return `Bearer ${parts.join(', ')}`;
 }

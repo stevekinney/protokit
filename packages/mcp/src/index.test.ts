@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import * as packageEntry from './index';
+import { templateRegistry } from './template-registry.js';
 
 /**
  * `src/index.ts` is the package's public barrel -- the surface consumers
@@ -49,7 +50,7 @@ describe('package entry barrel (./index.ts)', () => {
 	});
 
 	it('re-exports getSupportedScopes as the sorted union of production requiredScope values', () => {
-		const supported = packageEntry.getSupportedScopes();
+		const supported = packageEntry.getSupportedScopes(templateRegistry);
 		expect(supported).toEqual([...supported].sort());
 		expect(supported.length).toBeGreaterThan(0);
 	});

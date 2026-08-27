@@ -9,6 +9,7 @@ import {
 	createMcpServer,
 	getSupportedScopes,
 } from '@template/mcp';
+import { templateRegistry } from '@template/mcp';
 import { logger } from '@template/mcp/logger';
 import { metricsCollector } from '@template/mcp/metrics';
 import { environment } from '@web/env';
@@ -103,21 +104,24 @@ function createUserHandlerEntry(userId: string): {
 			// request already has; the SDK calls this factory unconditionally on
 			// every request (even ones that never touch the profile), so
 			// re-fetching here would tax every request just as often.
-			return createMcpServer({
-				userId: requestAuthExtra.userId,
-				user: requestAuthExtra.userProfile,
-				requestId: requestAuthExtra.requestId,
-				enableUiExtension: environment.mcpEnableUiExtension,
-				enableConformanceMode: shouldEnableConformanceMode({
-					conformanceModeConfigured: environment.mcpConformanceMode,
-					tunnelActive: environment.protokitTunnelActive,
-				}),
-				era: ctx.era,
-				publishResourceUpdate: async (uri) => {
-					handler.notify.resourceUpdated(uri);
+			return createMcpServer(
+				{
+					userId: requestAuthExtra.userId,
+					user: requestAuthExtra.userProfile,
+					requestId: requestAuthExtra.requestId,
+					enableUiExtension: environment.mcpEnableUiExtension,
+					enableConformanceMode: shouldEnableConformanceMode({
+						conformanceModeConfigured: environment.mcpConformanceMode,
+						tunnelActive: environment.protokitTunnelActive,
+					}),
+					era: ctx.era,
+					publishResourceUpdate: async (uri) => {
+						handler.notify.resourceUpdated(uri);
+					},
+					scopes: requestAuthExtra.scopes,
 				},
-				scopes: requestAuthExtra.scopes,
-			});
+				templateRegistry,
+			);
 		},
 		{
 			// Serve 2025-11-25 clients (Claude's current hosted-connector maximum)
@@ -326,7 +330,11 @@ export async function handleMcpRequest(request: Request, authInfo: AuthInfo): Pr
 	// already performs.
 	if (
 		isListenRequest &&
-		!areResourceSubscriptionsAuthorized(requestedResourceUris, requestAuthExtra.scopes)
+		!areResourceSubscriptionsAuthorized(
+			requestedResourceUris,
+			requestAuthExtra.scopes,
+			templateRegistry,
+		)
 	) {
 		metricsCollector.recordEvent('mcp_method', 'insufficient_scope');
 		return createMcpProtocolErrorResponse({
@@ -340,7 +348,7 @@ export async function handleMcpRequest(request: Request, authInfo: AuthInfo): Pr
 				// necessary scope answers 403 with `insufficient_scope` and the
 				// scopes this server supports, matching the `scope` attribute
 				// AUTHZ-001 requires on every challenge this endpoint returns.
-				'WWW-Authenticate': `Bearer error="insufficient_scope", scope="${getSupportedScopes().join(' ')}"`,
+				'WWW-Authenticate': `Bearer error="insufficient_scope", scope="${getSupportedScopes(templateRegistry).join(' ')}"`,
 			},
 		});
 	}

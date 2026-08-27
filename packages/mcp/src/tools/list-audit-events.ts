@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createToolTextResponse } from '../tool-response.js';
-import { defineTool } from '../types/primitives.js';
+import { defineTool } from '../scopes.js';
 
 const auditEvents = Array.from({ length: 50 }, (_, index) => ({
 	identifier: `event-${String(index + 1).padStart(3, '0')}`,

@@ -4,22 +4,26 @@ import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { areResourceSubscriptionsAuthorized, createMcpServer } from './server';
 import { getSupportedScopes } from './supported-scopes.js';
+import { templateRegistry } from './template-registry.js';
 
 describe('createMcpServer', () => {
 	it('returns a defined server instance', () => {
-		const server = createMcpServer({
-			userId: 'test-user-id',
-			user: {
-				id: 'test-user-id',
-				email: 'test@example.com',
-				name: 'Test User',
-				image: null,
-				role: 'user',
+		const server = createMcpServer(
+			{
+				userId: 'test-user-id',
+				user: {
+					id: 'test-user-id',
+					email: 'test@example.com',
+					name: 'Test User',
+					image: null,
+					role: 'user',
+				},
+				enableUiExtension: true,
+				enableConformanceMode: false,
+				scopes: ['profile:read'],
 			},
-			enableUiExtension: true,
-			enableConformanceMode: false,
-			scopes: ['profile:read'],
-		});
+			templateRegistry,
+		);
 		expect(server).toBeDefined();
 	});
 
@@ -38,19 +42,22 @@ describe('createMcpServer', () => {
 	 */
 	it('logs and records a tool_failure outcome when a granted-scope call returns isError from its own handler', async () => {
 		const userId = randomUUID();
-		const server = createMcpServer({
-			userId,
-			user: {
-				id: userId,
-				email: 'test@example.com',
-				name: 'x'.repeat(300 * 1024),
-				image: null,
-				role: 'user',
+		const server = createMcpServer(
+			{
+				userId,
+				user: {
+					id: userId,
+					email: 'test@example.com',
+					name: 'x'.repeat(300 * 1024),
+					image: null,
+					role: 'user',
+				},
+				enableUiExtension: false,
+				enableConformanceMode: false,
+				scopes: getSupportedScopes(templateRegistry),
 			},
-			enableUiExtension: false,
-			enableConformanceMode: false,
-			scopes: getSupportedScopes(),
-		});
+			templateRegistry,
+		);
 		const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 		const client = new Client({ name: 'tool-failure-client', version: '1.0.0' });
 		await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -72,15 +79,21 @@ describe('createMcpServer', () => {
  */
 describe('areResourceSubscriptionsAuthorized', () => {
 	it('authorizes a URI whose resource requires a scope the caller holds', () => {
-		expect(areResourceSubscriptionsAuthorized(['user://profile'], ['profile:read'])).toBe(true);
+		expect(
+			areResourceSubscriptionsAuthorized(['user://profile'], ['profile:read'], templateRegistry),
+		).toBe(true);
 	});
 
 	it('denies a URI whose resource requires a scope the caller lacks (the reported bypass)', () => {
-		expect(areResourceSubscriptionsAuthorized(['user://profile'], ['prompts:read'])).toBe(false);
+		expect(
+			areResourceSubscriptionsAuthorized(['user://profile'], ['prompts:read'], templateRegistry),
+		).toBe(false);
 	});
 
 	it('denies when the caller holds no scopes at all', () => {
-		expect(areResourceSubscriptionsAuthorized(['user://profile'], [])).toBe(false);
+		expect(areResourceSubscriptionsAuthorized(['user://profile'], [], templateRegistry)).toBe(
+			false,
+		);
 	});
 
 	it('fails closed for a URI that names no known resource, without disclosing that distinctly', () => {
@@ -88,6 +101,7 @@ describe('areResourceSubscriptionsAuthorized', () => {
 			areResourceSubscriptionsAuthorized(
 				['user://does-not-exist'],
 				['profile:read', 'prompts:read'],
+				templateRegistry,
 			),
 		).toBe(false);
 	});
@@ -97,11 +111,12 @@ describe('areResourceSubscriptionsAuthorized', () => {
 			areResourceSubscriptionsAuthorized(
 				['user://profile', 'user://does-not-exist'],
 				['profile:read'],
+				templateRegistry,
 			),
 		).toBe(false);
 	});
 
 	it('authorizes an empty subscription list vacuously', () => {
-		expect(areResourceSubscriptionsAuthorized([], [])).toBe(true);
+		expect(areResourceSubscriptionsAuthorized([], [], templateRegistry)).toBe(true);
 	});
 });
