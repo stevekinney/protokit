@@ -620,6 +620,91 @@ describe('the freeze holds at every level', () => {
 	});
 });
 
+describe('every definition family is snapshotted the same way', () => {
+	/**
+	 * Written across all three families deliberately. The defect this replaces
+	 * was treating them differently: tools were copied then frozen, while
+	 * resources and prompts were frozen *in place* — so building a registry
+	 * mutated the caller's own objects, and a later edit to one threw in a
+	 * strict-mode module even though constructing a registry should not consume
+	 * its inputs.
+	 */
+	const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
+
+	it('leaves the caller’s resource and prompt objects editable', () => {
+		const resource = vocabulary.defineResource({
+			name: 'repo',
+			title: 'Repository',
+			uri: 'repo://one',
+			description: 'A resource the caller keeps.',
+			mimeType: 'application/json',
+			requiredScope: 'repositories:read',
+			handler: async () => ({ contents: [] }),
+		});
+		const promptArguments = { query: z.string() };
+		const prompt = vocabulary.definePrompt({
+			name: 'ask',
+			title: 'Ask',
+			description: 'A prompt the caller keeps.',
+			arguments: promptArguments,
+			requiredScope: 'repositories:read',
+			handler: async () => ({ messages: [] }),
+		});
+		const registry = vocabulary.defineRegistry({
+			tools: [],
+			resources: [resource],
+			prompts: [prompt],
+		});
+
+		// Constructing a registry must not consume the caller's objects.
+		expect(() => {
+			(resource as { title: string }).title = 'Localized title';
+			(prompt as { title: string }).title = 'Localized title';
+		}).not.toThrow();
+
+		// And the served copies are unaffected and frozen.
+		expect(registry.resources[0]?.title).toBe('Repository');
+		expect(registry.prompts[0]?.title).toBe('Ask');
+		expect(Object.isFrozen(registry.resources[0])).toBe(true);
+		expect(Object.isFrozen(registry.prompts[0])).toBe(true);
+	});
+
+	it('snapshots the prompt arguments map while keeping the schemas by reference', () => {
+		const promptArguments: Record<string, z.ZodType> = { query: z.string() };
+		const original = promptArguments.query;
+		const prompt = vocabulary.definePrompt({
+			name: 'ask_two',
+			title: 'Ask',
+			description: 'Caller retains the arguments map.',
+			arguments: promptArguments,
+			requiredScope: 'repositories:read',
+			handler: async () => ({ messages: [] }),
+		});
+		const registry = vocabulary.defineRegistry({ tools: [], resources: [], prompts: [prompt] });
+
+		promptArguments.query = z.number();
+		promptArguments.injected = z.string();
+
+		const served = registry.prompts[0]?.arguments as Record<string, z.ZodType>;
+		expect(served.query).toBe(original);
+		expect(served.injected).toBeUndefined();
+		expect(Object.isFrozen(served)).toBe(true);
+	});
+
+	it('snapshots serverInfo', () => {
+		const serverInfo = { name: 'tribunal-mcp', version: '2.1.0' };
+		const registry = vocabulary.defineRegistry({
+			tools: [],
+			resources: [],
+			prompts: [],
+			serverInfo,
+		});
+		serverInfo.version = '9.9.9';
+		expect(registry.serverInfo?.version).toBe('2.1.0');
+		expect(Object.isFrozen(registry.serverInfo)).toBe(true);
+	});
+});
+
 describe('server identity', () => {
 	it('reports the consumer’s own name and version', async () => {
 		const identified: McpRegistry<'repositories:read' | 'conformance:read'> = {

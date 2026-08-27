@@ -76,24 +76,56 @@ export type McpScopeVocabulary<Scope extends string> = {
  * frozen meaningfully. Those are genuinely not snapshot-able, and freezing
  * them would be a guarantee that reads stronger than it is.
  */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== 'object' || value === null) return false;
+	// By prototype rather than `typeof`: a Zod schema, a Map, a Date, and a
+	// class instance are all `'object'`, and none may be cloned or frozen here
+	// — a schema carries internal state that freezing would break.
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
+}
+
 function deepFreezePlainData<Value>(value: Value): Value {
 	if (Array.isArray(value)) {
 		for (const entry of value) deepFreezePlainData(entry);
 		return Object.freeze(value) as Value;
 	}
-	// `Object.getPrototypeOf` rather than `typeof`: a class instance, a Zod
-	// schema, a Map, a Date are all `'object'` and none should be frozen here.
-	if (
-		typeof value === 'object' &&
-		value !== null &&
-		(Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
-	) {
-		for (const entry of Object.values(value as Record<string, unknown>)) {
-			deepFreezePlainData(entry);
-		}
+	if (isPlainObject(value)) {
+		for (const entry of Object.values(value)) deepFreezePlainData(entry);
 		return Object.freeze(value) as Value;
 	}
 	return value;
+}
+
+function clonePlainData<Value>(value: Value): Value {
+	if (Array.isArray(value)) return value.map(clonePlainData) as Value;
+	if (isPlainObject(value)) {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, entry]) => [key, clonePlainData(entry)]),
+		) as Value;
+	}
+	return value;
+}
+
+/**
+ * Copies a definition and deep-freezes the plain data inside it, leaving Zod
+ * schemas and handler closures by reference.
+ *
+ * One function for tools, resources, prompts, conformance-only tools, and
+ * `serverInfo`, because doing it per family is what produced four rounds of
+ * this. Tool `annotations` were handled, then nested `_meta`, while
+ * `prompt.arguments` and `serverInfo` stayed aliased — and resources and
+ * prompts were frozen *in place* rather than copied, so building a registry
+ * mutated the caller's own objects and a later edit to one threw. That
+ * inconsistency was introduced while fixing the tools case alone.
+ *
+ * `clonePlainData` recursing only into plain objects and arrays is what makes
+ * one function sufficient: it walks into `annotations`, `_meta`, and the
+ * `arguments` map, and stops at the Zod schemas inside that map and at the
+ * handler, which must not be copied or frozen.
+ */
+function snapshotDefinition<Definition>(definition: Definition): Definition {
+	return deepFreezePlainData(clonePlainData(definition));
 }
 
 /**
@@ -193,7 +225,7 @@ export function defineScopes<
 	// can blank a description after validation, or add and delete keys so
 	// `descriptions` disagrees with the `scopes` and membership captured here.
 	// Every check above would have passed and none of them would still hold.
-	const frozenDescriptions = deepFreezePlainData({ ...descriptions }) as Readonly<
+	const frozenDescriptions = snapshotDefinition({ ...descriptions }) as Readonly<
 		Record<Scope, string>
 	>;
 
@@ -228,41 +260,6 @@ export function defineScopes<
 	 * meaningfully. Those are not snapshot-able, and pretending otherwise
 	 * would be the kind of guarantee that reads stronger than it is.
 	 */
-	function structuredCloneish<Value>(value: Value): Value {
-		if (Array.isArray(value)) return value.map(structuredCloneish) as Value;
-		if (
-			typeof value === 'object' &&
-			value !== null &&
-			(Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
-		) {
-			return Object.fromEntries(
-				Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-					key,
-					structuredCloneish(entry),
-				]),
-			) as Value;
-		}
-		return value;
-	}
-
-	function freezeToolDefinition<Definition extends { annotations?: unknown; _meta?: unknown }>(
-		definition: Definition,
-	): Definition {
-		return Object.freeze({
-			...definition,
-			// Deep, not shallow: the documented MCP Apps `_meta` shape is nested
-			// (`{ ui: { resourceUri, visibility } }`), so a shallow copy leaves
-			// `ui` aliased and a caller could still hide a tool from the model or
-			// redirect its UI resource after validation.
-			...(definition.annotations
-				? { annotations: deepFreezePlainData(structuredCloneish(definition.annotations)) }
-				: {}),
-			...(definition._meta
-				? { _meta: deepFreezePlainData(structuredCloneish(definition._meta)) }
-				: {}),
-		});
-	}
-
 	function assertDeclared<Definition extends { name: string; requiredScope: string }>(
 		definition: Definition,
 	): Definition {
@@ -304,13 +301,14 @@ export function defineScopes<
 			// pretending to freeze handler closures.
 			return Object.freeze({
 				...registry,
-				tools: Object.freeze(registry.tools.map(freezeToolDefinition)),
-				resources: Object.freeze(registry.resources.map((resource) => Object.freeze(resource))),
-				prompts: Object.freeze(registry.prompts.map((prompt) => Object.freeze(prompt))),
+				tools: Object.freeze(registry.tools.map(snapshotDefinition)),
+				resources: Object.freeze(registry.resources.map(snapshotDefinition)),
+				prompts: Object.freeze(registry.prompts.map(snapshotDefinition)),
+				...(registry.serverInfo ? { serverInfo: snapshotDefinition(registry.serverInfo) } : {}),
 				...(registry.conformanceOnlyTools
 					? {
 							conformanceOnlyTools: Object.freeze(
-								registry.conformanceOnlyTools.map(freezeToolDefinition),
+								registry.conformanceOnlyTools.map(snapshotDefinition),
 							),
 						}
 					: {}),
