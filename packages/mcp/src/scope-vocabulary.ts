@@ -145,16 +145,53 @@ export function defineScopes<
 
 	const membership = new Set<string>(scopes);
 
+	// Snapshot and freeze rather than exposing the caller's object. Returning a
+	// readonly *cast* of the input leaves the caller holding a live alias: it
+	// can blank a description after validation, or add and delete keys so
+	// `descriptions` disagrees with the `scopes` and membership captured here.
+	// Every check above would have passed and none of them would still hold.
+	const frozenDescriptions = Object.freeze({ ...descriptions }) as Readonly<Record<Scope, string>>;
+
+	/**
+	 * The type binding holds only when the descriptions are a literal. Given a
+	 * widened `Record<string, string>` — configuration assembled or loaded
+	 * before the call — `Scope` degrades to `string` and the definers below
+	 * would accept any `requiredScope`, including a typo or a scope absent
+	 * from this vocabulary entirely. `defineRegistry()` inherits the same
+	 * widened type and cannot recover it either.
+	 *
+	 * So membership is checked at runtime as well. The type catches the typo
+	 * on the primitive's own line where it can; this catches it at
+	 * construction where the type cannot.
+	 */
+	function assertDeclared<Definition extends { name: string; requiredScope: string }>(
+		definition: Definition,
+	): Definition {
+		if (!membership.has(definition.requiredScope)) {
+			throw new Error(
+				`${definition.name} requires scope ${JSON.stringify(definition.requiredScope)}, which ` +
+					`this vocabulary does not declare. Declared: ${scopes.join(', ')}.`,
+			);
+		}
+		return definition;
+	}
+
 	return {
 		scopes,
-		descriptions: descriptions as Readonly<Record<Scope, string>>,
+		descriptions: frozenDescriptions,
 		isScope(value: string): value is Scope {
 			return membership.has(value);
 		},
-		defineTool: (definition) => definition,
-		defineResource: (definition) => definition,
-		definePrompt: (definition) => definition,
-		defineRegistry: (registry) => registry,
+		defineTool: (definition) => assertDeclared(definition),
+		defineResource: (definition) => assertDeclared(definition),
+		definePrompt: (definition) => assertDeclared(definition),
+		defineRegistry: (registry) => {
+			for (const tool of registry.tools) assertDeclared(tool);
+			for (const resource of registry.resources) assertDeclared(resource);
+			for (const prompt of registry.prompts) assertDeclared(prompt);
+			for (const tool of registry.conformanceOnlyTools ?? []) assertDeclared(tool);
+			return registry;
+		},
 	};
 }
 

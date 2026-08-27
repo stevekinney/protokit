@@ -297,6 +297,113 @@ describe('numeric scope names', () => {
 	});
 });
 
+describe('guarantees that survive a widened descriptions type', () => {
+	/**
+	 * The type binding only holds for a literal. Given a
+	 * `Record<string, string>` assembled at runtime, `Scope` degrades to
+	 * `string` and the definers would otherwise accept anything — so the same
+	 * guarantee is enforced at construction.
+	 */
+	const widened: Record<string, string> = { 'repositories:read': 'Read repository metadata.' };
+	const widenedVocabulary = defineScopes(widened);
+
+	it('rejects a primitive whose scope the vocabulary does not declare', () => {
+		expect(() =>
+			widenedVocabulary.defineTool({
+				name: 'typo_tool',
+				title: 'Typo',
+				description: 'Declares a scope this vocabulary does not have.',
+				inputSchema: z.object({}),
+				annotations: {
+					readOnlyHint: true,
+					destructiveHint: false,
+					idempotentHint: true,
+					openWorldHint: false,
+				},
+				requiredScope: 'reposotories:read',
+				handler: async () => ({ content: [] }),
+			}),
+		).toThrow(/does not declare/);
+	});
+
+	it('rejects it through defineRegistry too, not only the definers', () => {
+		const foreign = defineScopes({ 'unrelated:read': 'Something else.' }).defineTool({
+			name: 'foreign_tool',
+			title: 'Foreign',
+			description: 'Declared against another vocabulary.',
+			inputSchema: z.object({}),
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
+			requiredScope: 'unrelated:read',
+			handler: async () => ({ content: [] }),
+		});
+		expect(() =>
+			widenedVocabulary.defineRegistry({ tools: [foreign], resources: [], prompts: [] }),
+		).toThrow(/does not declare/);
+	});
+
+	/**
+	 * A readonly cast of the caller's own object leaves them holding a live
+	 * alias — they could blank a description after validation, or add keys so
+	 * `descriptions` disagrees with the captured `scopes`.
+	 */
+	it('does not expose the caller’s object to later mutation', () => {
+		const source: Record<string, string> = { 'repositories:read': 'Read repository metadata.' };
+		const vocabulary = defineScopes(source);
+		source['repositories:read'] = '   ';
+		source['injected:read'] = 'Added after validation.';
+		expect(vocabulary.descriptions['repositories:read']).toBe('Read repository metadata.');
+		expect(vocabulary.isScope('injected:read')).toBe(false);
+		expect(Object.isFrozen(vocabulary.descriptions)).toBe(true);
+	});
+});
+
+describe('conformance mode populates every family', () => {
+	/**
+	 * `registerConformanceFixtures()` registers tools, resources, and prompts
+	 * regardless of the registry, so omitting a family here would let the SDK
+	 * recreate it on first `register*` with its default `listChanged: true` —
+	 * contradicting this server's explicit `listChanged: false`.
+	 */
+	it('advertises all three families for an empty registry in conformance mode', async () => {
+		const empty: McpRegistry<'repositories:read' | 'conformance:read'> = {
+			tools: [],
+			resources: [],
+			prompts: [],
+		};
+		const handler = createMcpHandler(
+			() => {
+				const userId = randomUUID();
+				return createMcpServer(
+					{
+						userId,
+						user: consumerUser(userId),
+						enableUiExtension: false,
+						enableConformanceMode: true,
+						scopes: [],
+					},
+					empty,
+				);
+			},
+			{ legacy: 'stateless' },
+		);
+		const client = new Client({ name: 'conformance-families-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL('http://consumer.local/mcp'), {
+			fetch: (input, init) => handler.fetch(new Request(input, init)),
+		});
+		await client.connect(transport);
+		const capabilities = client.getServerCapabilities();
+		expect(capabilities?.tools).toBeDefined();
+		expect(capabilities?.resources).toBeDefined();
+		expect(capabilities?.prompts).toBeDefined();
+		expect(capabilities?.resources?.listChanged).toBe(false);
+	});
+});
+
 describe('registry instructions', () => {
 	/**
 	 * Serving the bundled instructions alongside a consumer's primitives hands

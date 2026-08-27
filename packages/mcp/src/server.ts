@@ -279,17 +279,17 @@ export function createMcpServer(
 			instructions: registry.instructions ?? instructions,
 			capabilities: buildServerCapabilities({
 				families: {
-					// Conformance-only tools register as tools too, but *only* when
-					// conformance mode is on — so they count toward the family only
-					// then. Counting them unconditionally would advertise `tools` to
-					// a production consumer whose registry holds fixtures alone,
-					// where neither loop registers anything and `tools/list` answers
-					// method-not-found.
-					tools:
-						registry.tools.length > 0 ||
-						(enableConformanceMode && (registry.conformanceOnlyTools?.length ?? 0) > 0),
-					resources: registry.resources.length > 0,
-					prompts: registry.prompts.length > 0,
+					// Conformance mode registers tools, resources, and prompts
+					// through `registerConformanceFixtures()` regardless of what
+					// the registry holds, so all three families are populated
+					// whenever it is on. Omitting one then would not merely
+					// under-advertise: the SDK recreates the family on first
+					// `register*` with its default `listChanged: true`,
+					// contradicting the explicit `listChanged: false` contract
+					// below and dropping `subscribe: true` on a modern server.
+					tools: enableConformanceMode || registry.tools.length > 0,
+					resources: enableConformanceMode || registry.resources.length > 0,
+					prompts: enableConformanceMode || registry.prompts.length > 0,
 				},
 				enableConformanceMode,
 				experimentalCapabilities,
