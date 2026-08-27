@@ -169,6 +169,19 @@ function hasRequiredScope(grantedScopes: readonly string[], requiredScope: strin
  * that owns the raw request body, before it is ever handed to
  * `McpHttpHandler.fetch()`.
  *
+ * **A consumer wiring its own handler MUST call this before dispatch.** It is
+ * not invoked from `createMcpServer`, and it cannot be: `subscriptions/listen`
+ * is decided at the HTTP boundary, before the request reaches this
+ * `McpServer` at all. So wrapping `createMcpServer()` directly in the SDK's
+ * `createMcpHandler` — the obvious minimal wiring, and the shape this
+ * package's own tests use — leaves every scoped resource observable by an
+ * under-scoped client, because nothing checks. `applications/web`'s
+ * `mcp-handler.ts` is the worked example of doing it correctly.
+ *
+ * That this is a documented obligation rather than an enforced one is a real
+ * gap, tracked upstream: a consumer that never reads this comment gets no
+ * error, just a silent authorization bypass on subscription delivery.
+ *
  * This function is the reusable piece `createMcpServer` CAN own: the same
  * scope-lookup `assertRequiredScope` performs (grantedScopes vs. a
  * resource definition's `requiredScope`), applied per requested URI against
@@ -268,12 +281,19 @@ export function createMcpServer(
 		experimentalCapabilities[EXTENSION_ID] = { version: '1.0.0' };
 	}
 
-	const serverName = environment.mcpServerName ?? 'template-mcp-server';
+	// A consumer's registry names its own implementation; only this
+	// repository's own registry falls back to `MCP_SERVER_NAME`. Reporting this
+	// package's identity for someone else's server misattributes it everywhere
+	// `serverInfo` is read.
+	const serverInfo = registry.serverInfo ?? {
+		name: environment.mcpServerName ?? 'template-mcp-server',
+		version: '0.1.0',
+	};
 
 	const server = new McpServer(
 		{
-			name: serverName,
-			version: '0.1.0',
+			name: serverInfo.name,
+			version: serverInfo.version,
 		},
 		{
 			instructions: registry.instructions ?? instructions,

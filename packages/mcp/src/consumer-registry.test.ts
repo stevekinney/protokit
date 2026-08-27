@@ -67,6 +67,18 @@ function consumerUser(userId: string): McpUserProfile {
 	};
 }
 
+/**
+ * A minimal harness, **not a template for production wiring.**
+ *
+ * Wrapping `createMcpServer()` directly in `createMcpHandler` exercises the
+ * registry, which is what these tests are about — but it omits the
+ * subscription authorization a real consumer needs.
+ * `areResourceSubscriptionsAuthorized()` has to be called at the HTTP boundary
+ * before dispatch, because `subscriptions/listen` never reaches the
+ * `McpServer`; see `applications/web/src/lib/mcp-handler.ts`. This registry
+ * has no resources, so nothing here is exposed, but do not copy this shape for
+ * a registry that does.
+ */
 function connect(scopes: readonly string[]): Promise<Client> {
 	const handler = createMcpHandler(
 		() => {
@@ -401,6 +413,83 @@ describe('conformance mode populates every family', () => {
 		expect(capabilities?.resources).toBeDefined();
 		expect(capabilities?.prompts).toBeDefined();
 		expect(capabilities?.resources?.listChanged).toBe(false);
+	});
+});
+
+describe('a registry validated then mutated', () => {
+	/**
+	 * Same live-alias problem as the descriptions, one layer out: with a
+	 * widened descriptions type `Scope` is `string`, so a caller can legally
+	 * reassign a retained definition's `requiredScope` after validation, and
+	 * `getSupportedScopes()` would then advertise a scope this vocabulary
+	 * rejects.
+	 */
+	it('serves the validated shape, not the caller’s later edits', () => {
+		const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
+		const tool = vocabulary.defineTool({
+			name: 'mutable_tool',
+			title: 'Mutable',
+			description: 'Retained by the caller after validation.',
+			inputSchema: z.object({}),
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
+			requiredScope: 'repositories:read',
+			handler: async () => ({ content: [] }),
+		});
+		const mutableTools = [tool];
+		const registry = vocabulary.defineRegistry({
+			tools: mutableTools,
+			resources: [],
+			prompts: [],
+		});
+
+		// The registry copied the array, so the caller's push does not reach it.
+		mutableTools.push(tool);
+		expect(registry.tools).toHaveLength(1);
+
+		// And the definitions are frozen, so reassigning a validated
+		// `requiredScope` fails loudly under strict mode rather than silently
+		// smuggling a scope past validation.
+		expect(() => {
+			(tool as { requiredScope: string }).requiredScope = 'smuggled:read';
+		}).toThrow(TypeError);
+
+		expect(getSupportedScopes(registry)).toEqual(['repositories:read']);
+	});
+});
+
+describe('server identity', () => {
+	it('reports the consumer’s own name and version', async () => {
+		const identified: McpRegistry<'repositories:read' | 'conformance:read'> = {
+			...consumerRegistry,
+			serverInfo: { name: 'tribunal-mcp', version: '2.1.0' },
+		};
+		const handler = createMcpHandler(
+			() => {
+				const userId = randomUUID();
+				return createMcpServer(
+					{
+						userId,
+						user: consumerUser(userId),
+						enableUiExtension: false,
+						enableConformanceMode: false,
+						scopes: getSupportedScopes(identified),
+					},
+					identified,
+				);
+			},
+			{ legacy: 'stateless' },
+		);
+		const client = new Client({ name: 'identity-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL('http://consumer.local/mcp'), {
+			fetch: (input, init) => handler.fetch(new Request(input, init)),
+		});
+		await client.connect(transport);
+		expect(client.getServerVersion()).toEqual({ name: 'tribunal-mcp', version: '2.1.0' });
 	});
 });
 

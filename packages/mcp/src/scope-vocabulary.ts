@@ -190,7 +190,28 @@ export function defineScopes<
 			for (const resource of registry.resources) assertDeclared(resource);
 			for (const prompt of registry.prompts) assertDeclared(prompt);
 			for (const tool of registry.conformanceOnlyTools ?? []) assertDeclared(tool);
-			return registry;
+			// Same live-alias problem as the descriptions, one layer out.
+			// Returning the caller's object lets them push a primitive onto an
+			// array, or reassign a retained definition's `requiredScope`, after
+			// validation — and `getSupportedScopes()` and `createMcpServer()`
+			// then consume the unvalidated result. Copying the arrays and
+			// freezing the definitions makes the validated shape the one that
+			// actually gets served. Freezing is shallow by intent: it pins
+			// `requiredScope` and `name`, which is what was validated, without
+			// pretending to freeze handler closures.
+			return Object.freeze({
+				...registry,
+				tools: Object.freeze(registry.tools.map((tool) => Object.freeze(tool))),
+				resources: Object.freeze(registry.resources.map((resource) => Object.freeze(resource))),
+				prompts: Object.freeze(registry.prompts.map((prompt) => Object.freeze(prompt))),
+				...(registry.conformanceOnlyTools
+					? {
+							conformanceOnlyTools: Object.freeze(
+								registry.conformanceOnlyTools.map((tool) => Object.freeze(tool)),
+							),
+						}
+					: {}),
+			});
 		},
 	};
 }
@@ -226,6 +247,17 @@ export type McpRegistry<Scope extends string = string> = {
 	 * read-only.
 	 */
 	readonly instructions?: string;
+	/**
+	 * The implementation identity reported in the `initialize` response.
+	 *
+	 * Optional only so this repository's own registry keeps deriving its name
+	 * from `MCP_SERVER_NAME`; **a consumer should always set it.** Without it a
+	 * consumer's server reports this package's name and version, so clients and
+	 * operators misattribute it in diagnostics, and any client behaviour keyed
+	 * to `serverInfo` — compatibility shims, version gates — reads the wrong
+	 * implementation entirely.
+	 */
+	readonly serverInfo?: { readonly name: string; readonly version: string };
 	readonly tools: readonly McpToolDefinition<z.ZodType, z.ZodType | undefined, Scope>[];
 	readonly resources: readonly McpResourceDefinition<Scope>[];
 	readonly prompts: readonly McpPromptDefinition<Record<string, z.ZodType> | undefined, Scope>[];
