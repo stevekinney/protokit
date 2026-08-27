@@ -229,6 +229,74 @@ describe('capabilities follow the registry', () => {
 	});
 });
 
+describe('a fixtures-only registry in production', () => {
+	/**
+	 * Conformance-only tools register only when conformance mode is on. A
+	 * production consumer whose registry holds fixtures alone therefore
+	 * registers no tool at all, so advertising the family would promise a
+	 * `tools/list` the server answers with method-not-found.
+	 */
+	const fixturesOnly: McpRegistry<'repositories:read' | 'conformance:read'> = {
+		tools: [],
+		resources: [],
+		prompts: [],
+		conformanceOnlyTools: [fixtureTool],
+	};
+
+	it('advertises no tools family when conformance mode is off', async () => {
+		const handler = createMcpHandler(
+			() => {
+				const userId = randomUUID();
+				return createMcpServer(
+					{
+						userId,
+						user: consumerUser(userId),
+						enableUiExtension: false,
+						enableConformanceMode: false,
+						scopes: [],
+					},
+					fixturesOnly,
+				);
+			},
+			{ legacy: 'stateless' },
+		);
+		const client = new Client({ name: 'fixtures-only-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL('http://consumer.local/mcp'), {
+			fetch: (input, init) => handler.fetch(new Request(input, init)),
+		});
+		await client.connect(transport);
+		expect(client.getServerCapabilities()?.tools).toBeUndefined();
+	});
+});
+
+describe('numeric scope names', () => {
+	/**
+	 * `Object.keys()` stringifies keys, so a numerically-written scope is
+	 * `'123'` at runtime. The type has to agree or the vocabulary types as
+	 * `never` and its own definers reject a scope `isScope()` accepts.
+	 */
+	it('keeps a numerically-written scope usable', () => {
+		const numeric = defineScopes({ 123: 'Read numbered data.' });
+		expect(numeric.scopes).toEqual(['123']);
+		expect(numeric.isScope('123')).toBe(true);
+		const tool = numeric.defineTool({
+			name: 'numeric_scope_tool',
+			title: 'Numeric',
+			description: 'Uses a numerically-written scope.',
+			inputSchema: z.object({}),
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
+			requiredScope: '123',
+			handler: async () => ({ content: [] }),
+		});
+		expect(getSupportedScopes({ tools: [tool], resources: [], prompts: [] })).toEqual(['123']);
+	});
+});
+
 describe('registry instructions', () => {
 	/**
 	 * Serving the bundled instructions alongside a consumer's primitives hands

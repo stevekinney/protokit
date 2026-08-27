@@ -61,6 +61,19 @@ export type McpScopeVocabulary<Scope extends string> = {
 };
 
 /**
+ * The scope names a descriptions object actually yields at runtime.
+ *
+ * `Object.keys()` stringifies every key, so `{ 123: '...' }` produces the
+ * scope `'123'`. Taking only `Extract<keyof D, string>` would discard that
+ * numeric literal and type the vocabulary as `McpScopeVocabulary<never>` —
+ * its bound definers would reject `requiredScope: '123'` even though
+ * `isScope('123')` returns true at runtime. Templating the numeric keys back
+ * to strings keeps the type and the runtime describing the same set.
+ */
+type ScopeOf<Descriptions> =
+	Extract<keyof Descriptions, string> | `${Extract<keyof Descriptions, number>}`;
+
+/**
  * Builds a vocabulary from its consent-screen descriptions.
  *
  * The descriptions map is deliberately the **single source** of the
@@ -98,8 +111,8 @@ export function defineScopes<
 		 */
 		__proto__?: never;
 	},
->(descriptions: Descriptions): McpScopeVocabulary<Extract<keyof Descriptions, string>> {
-	type Scope = Extract<keyof Descriptions, string>;
+>(descriptions: Descriptions): McpScopeVocabulary<ScopeOf<Descriptions>> {
+	type Scope = ScopeOf<Descriptions>;
 	const scopes = Object.keys(descriptions) as Scope[];
 
 	if (scopes.length === 0) {

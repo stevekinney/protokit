@@ -131,3 +131,32 @@ const boundRegistry = consumerVocabulary.defineRegistry({
 });
 
 void boundRegistry;
+
+/**
+ * A numerically-written scope must stay usable.
+ *
+ * `Object.keys()` stringifies keys, so `{ 123: '...' }` yields the runtime
+ * scope `'123'`. If the type discarded the numeric literal the vocabulary
+ * would be `McpScopeVocabulary<never>` and this `requiredScope` would not
+ * compile — which is why the assertion belongs here rather than in a test
+ * file. A runtime test cannot see it: the behaviour is identical either way,
+ * because types do not exist at runtime. That test passes with the fix
+ * absent, which is precisely the shape of defect this package keeps warning
+ * about.
+ */
+const numericVocabulary = defineScopes({ 123: 'Read numbered data.' });
+
+numericVocabulary.defineTool({
+	name: 'numeric_scope_tool',
+	title: 'Numeric scope',
+	description: 'Declares a numerically-written scope.',
+	inputSchema: z.object({}),
+	annotations: {
+		readOnlyHint: true,
+		destructiveHint: false,
+		idempotentHint: true,
+		openWorldHint: false,
+	},
+	requiredScope: '123',
+	handler: noopHandler,
+});

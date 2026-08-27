@@ -279,9 +279,15 @@ export function createMcpServer(
 			instructions: registry.instructions ?? instructions,
 			capabilities: buildServerCapabilities({
 				families: {
-					// Conformance-only tools register as tools too, so the tools
-					// family is present whenever either list is non-empty.
-					tools: registry.tools.length > 0 || (registry.conformanceOnlyTools?.length ?? 0) > 0,
+					// Conformance-only tools register as tools too, but *only* when
+					// conformance mode is on — so they count toward the family only
+					// then. Counting them unconditionally would advertise `tools` to
+					// a production consumer whose registry holds fixtures alone,
+					// where neither loop registers anything and `tools/list` answers
+					// method-not-found.
+					tools:
+						registry.tools.length > 0 ||
+						(enableConformanceMode && (registry.conformanceOnlyTools?.length ?? 0) > 0),
 					resources: registry.resources.length > 0,
 					prompts: registry.prompts.length > 0,
 				},
