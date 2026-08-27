@@ -5,8 +5,8 @@
 # machine and every day. Re-pin deliberately (new digest, reviewed) rather
 # than switching back to a floating tag.
 #
-# oven/bun:1.3.14            (builder — has a shell, package manager, bun)
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS builder
+# oven/bun:1.4.0             (builder — has a shell, package manager, bun)
+FROM oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS builder
 
 WORKDIR /app
 
@@ -29,7 +29,7 @@ RUN bun turbo build --filter=./applications/web
 # build-only tooling (drizzle-kit, eslint, typescript-eslint, playwright,
 # esbuild, tsx, and everything each of those pulls in transitively) never
 # reaches the image that ships.
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS runtime-deps
+FROM oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS runtime-deps
 
 WORKDIR /app
 
@@ -41,9 +41,9 @@ COPY packages/mcp-apps/package.json ./packages/mcp-apps/
 
 RUN bun install --frozen-lockfile --production --ignore-scripts
 
-# oven/bun:1.3.14-distroless (runner — no shell, no package manager, no dev
+# oven/bun:1.4.0-distroless  (runner — no shell, no package manager, no dev
 # tooling at all; only the bun runtime and whatever is explicitly COPY'd in)
-FROM oven/bun:1.3.14-distroless@sha256:c28c51287af70bab8e0b66fc4b6a30cfb92a727ebc88045223adc9f4c9d09307 AS runner
+FROM oven/bun:1.4.0-distroless@sha256:a8919d4a092a234f7184ac6d3960a2d860fea73e034709e1752a7d0de09913f8 AS runner
 
 WORKDIR /app
 

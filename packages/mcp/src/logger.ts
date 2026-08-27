@@ -153,9 +153,19 @@ export function createLogger(options?: { destination?: DestinationStream }): pin
 	// is missing is never the right trade.
 	const prettyTransportAvailable = !isProduction && canResolvePrettyTransport();
 
+	// `transport` spawns pino-pretty on a worker thread via thread-stream.
+	// Under Bun 1.4.0, `bun test` now surfaces that worker's exit as an
+	// unhandled error between test files instead of tolerating it silently,
+	// cascading into unrelated test failures. `canResolvePrettyTransport()`
+	// above still runs unconditionally so its own resolution/fallback logic
+	// stays covered; only the decision to actually hand the worker-based
+	// transport to `pino()` is additionally gated on not being under test —
+	// pretty-printing is a developer convenience `bun test` doesn't need.
+	const useWorkerTransport = prettyTransportAvailable && environment.nodeEnv !== 'test';
+
 	return pino({
 		...baseOptions,
-		...(prettyTransportAvailable && { transport: { target: 'pino-pretty' } }),
+		...(useWorkerTransport && { transport: { target: 'pino-pretty' } }),
 	});
 }
 
