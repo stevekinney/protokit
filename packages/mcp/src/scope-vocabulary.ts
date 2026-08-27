@@ -61,6 +61,42 @@ export type McpScopeVocabulary<Scope extends string> = {
 };
 
 /**
+ * Recursively freezes plain data — objects and arrays — leaving everything
+ * else by reference.
+ *
+ * This exists because freezing one level at a time has been wrong three times
+ * on this change: the descriptions map, then the scope array, then tool
+ * annotations, each fixed alone while the level inside or outside it stayed
+ * mutable. The rule that actually holds is "anything plain that a consumer can
+ * still reach is frozen all the way down", so it is written once here rather
+ * than re-derived per field.
+ *
+ * It stops at anything that is not a plain object or array — Zod schemas carry
+ * internal state that freezing would break, and a handler closure cannot be
+ * frozen meaningfully. Those are genuinely not snapshot-able, and freezing
+ * them would be a guarantee that reads stronger than it is.
+ */
+function deepFreezePlainData<Value>(value: Value): Value {
+	if (Array.isArray(value)) {
+		for (const entry of value) deepFreezePlainData(entry);
+		return Object.freeze(value) as Value;
+	}
+	// `Object.getPrototypeOf` rather than `typeof`: a class instance, a Zod
+	// schema, a Map, a Date are all `'object'` and none should be frozen here.
+	if (
+		typeof value === 'object' &&
+		value !== null &&
+		(Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+	) {
+		for (const entry of Object.values(value as Record<string, unknown>)) {
+			deepFreezePlainData(entry);
+		}
+		return Object.freeze(value) as Value;
+	}
+	return value;
+}
+
+/**
  * The scope names a descriptions object actually yields at runtime.
  *
  * `Object.keys()` stringifies every key, so `{ 123: '...' }` produces the
@@ -157,7 +193,9 @@ export function defineScopes<
 	// can blank a description after validation, or add and delete keys so
 	// `descriptions` disagrees with the `scopes` and membership captured here.
 	// Every check above would have passed and none of them would still hold.
-	const frozenDescriptions = Object.freeze({ ...descriptions }) as Readonly<Record<Scope, string>>;
+	const frozenDescriptions = deepFreezePlainData({ ...descriptions }) as Readonly<
+		Record<Scope, string>
+	>;
 
 	/**
 	 * The type binding holds only when the descriptions are a literal. Given a
@@ -190,15 +228,38 @@ export function defineScopes<
 	 * meaningfully. Those are not snapshot-able, and pretending otherwise
 	 * would be the kind of guarantee that reads stronger than it is.
 	 */
+	function structuredCloneish<Value>(value: Value): Value {
+		if (Array.isArray(value)) return value.map(structuredCloneish) as Value;
+		if (
+			typeof value === 'object' &&
+			value !== null &&
+			(Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+		) {
+			return Object.fromEntries(
+				Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+					key,
+					structuredCloneish(entry),
+				]),
+			) as Value;
+		}
+		return value;
+	}
+
 	function freezeToolDefinition<Definition extends { annotations?: unknown; _meta?: unknown }>(
 		definition: Definition,
 	): Definition {
 		return Object.freeze({
 			...definition,
+			// Deep, not shallow: the documented MCP Apps `_meta` shape is nested
+			// (`{ ui: { resourceUri, visibility } }`), so a shallow copy leaves
+			// `ui` aliased and a caller could still hide a tool from the model or
+			// redirect its UI resource after validation.
 			...(definition.annotations
-				? { annotations: Object.freeze({ ...(definition.annotations as object) }) }
+				? { annotations: deepFreezePlainData(structuredCloneish(definition.annotations)) }
 				: {}),
-			...(definition._meta ? { _meta: Object.freeze({ ...(definition._meta as object) }) } : {}),
+			...(definition._meta
+				? { _meta: deepFreezePlainData(structuredCloneish(definition._meta)) }
+				: {}),
 		});
 	}
 
@@ -214,7 +275,11 @@ export function defineScopes<
 		return definition;
 	}
 
-	return {
+	// The container too, not only its contents. Freezing `scopes` while leaving
+	// the object holding it mutable let `vocabulary.scopes = [...]` succeed —
+	// the same guarantee defeated one level out, which is the mistake this
+	// whole family kept repeating.
+	return Object.freeze({
 		scopes,
 		descriptions: frozenDescriptions,
 		isScope(value: string): value is Scope {
@@ -251,7 +316,7 @@ export function defineScopes<
 					: {}),
 			});
 		},
-	};
+	});
 }
 
 /**

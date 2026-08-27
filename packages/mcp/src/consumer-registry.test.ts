@@ -506,6 +506,120 @@ describe('nested safety metadata in a registry snapshot', () => {
 	});
 });
 
+describe('a consumer handler that throws', () => {
+	/**
+	 * A handler that throws — a database or network failure, not a structured
+	 * error result — used to skip metrics entirely, so the call vanished from
+	 * the tool's invocation, error, and latency counts and surfaced only under
+	 * the transport catch-all, categorized as something it was not. Survivable
+	 * while every handler lived in this repository; ordinary once arbitrary
+	 * consumer handlers are served.
+	 */
+	it('is counted as a failed invocation rather than disappearing', async () => {
+		const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
+		const throwingTool = vocabulary.defineTool({
+			name: 'throwing_tool',
+			title: 'Throwing',
+			description: 'Fails the way a real dependency fails.',
+			inputSchema: z.object({}),
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
+			requiredScope: 'repositories:read',
+			handler: async () => {
+				throw new Error('database unreachable');
+			},
+		});
+		const registry = vocabulary.defineRegistry({
+			tools: [throwingTool],
+			resources: [],
+			prompts: [],
+		});
+
+		const before = metricsCollector.snapshot().tools['throwing_tool']?.invocations ?? 0;
+
+		const handler = createMcpHandler(
+			() => {
+				const userId = randomUUID();
+				return createMcpServer(
+					{
+						userId,
+						user: consumerUser(userId),
+						enableUiExtension: false,
+						enableConformanceMode: false,
+						scopes: ['repositories:read'],
+					},
+					registry,
+				);
+			},
+			{ legacy: 'stateless' },
+		);
+		const client = new Client({ name: 'throwing-client', version: '1.0.0' });
+		const transport = new StreamableHTTPClientTransport(new URL('http://consumer.local/mcp'), {
+			fetch: (input, init) => handler.fetch(new Request(input, init)),
+		});
+		await client.connect(transport);
+
+		await client.callTool({ name: 'throwing_tool', arguments: {} }).catch(() => undefined);
+
+		const after = metricsCollector.snapshot().tools['throwing_tool'];
+		expect(after?.invocations).toBe(before + 1);
+		expect(after?.errors).toBe(1);
+	});
+});
+
+describe('the freeze holds at every level', () => {
+	/**
+	 * Written as one test over the whole structure rather than per field,
+	 * because fixing this family a level at a time is what let it recur: the
+	 * descriptions map, the scope array, tool annotations, nested `_meta`, and
+	 * the container itself were each addressed alone while a neighbouring
+	 * level stayed mutable.
+	 */
+	const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
+
+	it('freezes the vocabulary container, not only its contents', () => {
+		expect(Object.isFrozen(vocabulary)).toBe(true);
+		expect(() => {
+			(vocabulary as { scopes: readonly string[] }).scopes = ['smuggled:read'];
+		}).toThrow(TypeError);
+		expect(vocabulary.scopes).toEqual(['repositories:read']);
+	});
+
+	it('deep-freezes nested _meta so MCP Apps metadata cannot be redirected', () => {
+		const meta = { ui: { resourceUri: 'ui://real', visibility: ['model'] } };
+		const tool = vocabulary.defineTool({
+			name: 'ui_tool',
+			title: 'UI tool',
+			description: 'Carries nested MCP Apps metadata.',
+			inputSchema: z.object({}),
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
+			requiredScope: 'repositories:read',
+			_meta: meta,
+			handler: async () => ({ content: [] }),
+		});
+		const registry = vocabulary.defineRegistry({ tools: [tool], resources: [], prompts: [] });
+
+		// The caller keeps their own object and may edit it.
+		meta.ui.resourceUri = 'ui://attacker';
+		meta.ui.visibility = [];
+
+		const served = registry.tools[0]?._meta as typeof meta;
+		expect(served.ui.resourceUri).toBe('ui://real');
+		expect(served.ui.visibility).toEqual(['model']);
+		expect(Object.isFrozen(served.ui)).toBe(true);
+		expect(Object.isFrozen(served.ui.visibility)).toBe(true);
+	});
+});
+
 describe('server identity', () => {
 	it('reports the consumer’s own name and version', async () => {
 		const identified: McpRegistry<'repositories:read' | 'conformance:read'> = {

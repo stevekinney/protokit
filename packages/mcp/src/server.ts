@@ -365,10 +365,38 @@ export function createMcpServer(
 				// so a handler that awaits a cancellable operation genuinely stops
 				// work on client disconnect/`notifications/cancelled`, instead of
 				// only abandoning a wrapper promise.
-				const result = await tool.handler(input as never, {
-					...context,
-					signal: ctx.mcpReq.signal,
-				});
+				// OBS-001: a handler that *throws* — a database or network failure,
+				// not a structured error result — used to skip every line below,
+				// so the call vanished from this tool's invocation, error, and
+				// latency counts and surfaced only under the transport-level
+				// catch-all, categorized as a transport failure it was not. That
+				// was survivable while every handler was written in this
+				// repository; serving arbitrary consumer handlers makes a thrown
+				// exception ordinary, so it is recorded and re-thrown rather than
+				// swallowed. Re-throwing matters: the SDK still owes the client a
+				// JSON-RPC error, and catching without re-throwing would turn a
+				// failure into a silent success.
+				let result;
+				try {
+					result = await tool.handler(input as never, {
+						...context,
+						signal: ctx.mcpReq.signal,
+					});
+				} catch (error) {
+					metricsCollector.recordToolInvocation(tool.name, Date.now() - start, true);
+					logger.warn(
+						{
+							event: 'mcp_tool_call',
+							outcome: 'tool_exception',
+							tool: tool.name,
+							userId: context.userId,
+							requestId: context.requestId,
+						},
+						'MCP tool handler threw',
+					);
+					metricsCollector.recordEvent('mcp_method', 'tool_exception');
+					throw error;
+				}
 				const isError = 'isError' in result && result.isError === true;
 				metricsCollector.recordToolInvocation(tool.name, Date.now() - start, isError);
 				if (isError) {
