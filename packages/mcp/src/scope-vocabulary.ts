@@ -171,6 +171,37 @@ export function defineScopes<
 	 * on the primitive's own line where it can; this catches it at
 	 * construction where the type cannot.
 	 */
+	/**
+	 * Freezes a tool definition and the plain-data objects it hands to
+	 * `registerTool`.
+	 *
+	 * A shallow freeze is not enough, and my earlier note calling it "shallow
+	 * by intent" reasoned about the wrong thing — what `assertDeclared`
+	 * validated, rather than what the snapshot protects. `annotations` is the
+	 * clearest case: a caller retaining that object can flip `readOnlyHint` or
+	 * `destructiveHint` after `defineRegistry()` returns, and the same object
+	 * reaches the client, so a tool can advertise safety metadata the registry
+	 * never validated. Those hints are read by a model deciding whether a call
+	 * is safe, which makes them worth more protection than the scope, not
+	 * less. `_meta` gets the same treatment for the same reason.
+	 *
+	 * It stops at the Zod schemas and the handler deliberately: schemas carry
+	 * internal state that freezing would break, and a closure cannot be frozen
+	 * meaningfully. Those are not snapshot-able, and pretending otherwise
+	 * would be the kind of guarantee that reads stronger than it is.
+	 */
+	function freezeToolDefinition<Definition extends { annotations?: unknown; _meta?: unknown }>(
+		definition: Definition,
+	): Definition {
+		return Object.freeze({
+			...definition,
+			...(definition.annotations
+				? { annotations: Object.freeze({ ...(definition.annotations as object) }) }
+				: {}),
+			...(definition._meta ? { _meta: Object.freeze({ ...(definition._meta as object) }) } : {}),
+		});
+	}
+
 	function assertDeclared<Definition extends { name: string; requiredScope: string }>(
 		definition: Definition,
 	): Definition {
@@ -208,13 +239,13 @@ export function defineScopes<
 			// pretending to freeze handler closures.
 			return Object.freeze({
 				...registry,
-				tools: Object.freeze(registry.tools.map((tool) => Object.freeze(tool))),
+				tools: Object.freeze(registry.tools.map(freezeToolDefinition)),
 				resources: Object.freeze(registry.resources.map((resource) => Object.freeze(resource))),
 				prompts: Object.freeze(registry.prompts.map((prompt) => Object.freeze(prompt))),
 				...(registry.conformanceOnlyTools
 					? {
 							conformanceOnlyTools: Object.freeze(
-								registry.conformanceOnlyTools.map((tool) => Object.freeze(tool)),
+								registry.conformanceOnlyTools.map(freezeToolDefinition),
 							),
 						}
 					: {}),

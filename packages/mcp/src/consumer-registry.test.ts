@@ -452,14 +452,57 @@ describe('a registry validated then mutated', () => {
 		mutableTools.push(tool);
 		expect(registry.tools).toHaveLength(1);
 
-		// And the definitions are frozen, so reassigning a validated
-		// `requiredScope` fails loudly under strict mode rather than silently
-		// smuggling a scope past validation.
-		expect(() => {
-			(tool as { requiredScope: string }).requiredScope = 'smuggled:read';
-		}).toThrow(TypeError);
+		// The registry holds an independent frozen copy, so the caller may still
+		// edit their own object — it simply does not reach what is served.
+		//
+		// This assertion previously expected the reassignment to throw, which
+		// encoded the older behaviour where the registry froze the caller's
+		// object in place. Deep-freezing annotations required copying instead,
+		// and the copy is the better guarantee: the served shape is still
+		// pinned, without the registry mutating data the caller still owns as a
+		// side effect of validating it.
+		(tool as { requiredScope: string }).requiredScope = 'smuggled:read';
 
+		expect(registry.tools[0]?.requiredScope).toBe('repositories:read');
+		expect(Object.isFrozen(registry.tools[0])).toBe(true);
 		expect(getSupportedScopes(registry)).toEqual(['repositories:read']);
+	});
+});
+
+describe('nested safety metadata in a registry snapshot', () => {
+	/**
+	 * `annotations` reaches the client and is read by a model deciding whether
+	 * a call is safe, so a caller flipping `readOnlyHint` or `destructiveHint`
+	 * after validation is worse than smuggling a scope — the tool advertises
+	 * safety the registry never validated.
+	 */
+	it('cannot have its annotations flipped after defineRegistry', () => {
+		const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
+		const annotations = {
+			readOnlyHint: true,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false,
+		};
+		const tool = vocabulary.defineTool({
+			name: 'annotated_tool',
+			title: 'Annotated',
+			description: 'Caller retains its annotations object.',
+			inputSchema: z.object({}),
+			annotations,
+			requiredScope: 'repositories:read',
+			handler: async () => ({ content: [] }),
+		});
+		const registry = vocabulary.defineRegistry({ tools: [tool], resources: [], prompts: [] });
+
+		expect(() => {
+			annotations.readOnlyHint = false;
+			annotations.destructiveHint = true;
+		}).not.toThrow(); // the caller's own object is still theirs
+
+		expect(registry.tools[0]?.annotations.readOnlyHint).toBe(true);
+		expect(registry.tools[0]?.annotations.destructiveHint).toBe(false);
+		expect(Object.isFrozen(registry.tools[0]?.annotations)).toBe(true);
 	});
 });
 
