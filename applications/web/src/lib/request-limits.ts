@@ -55,7 +55,7 @@ export const oauthMaxTokenLength = 512;
 
 /**
  * `scope` (AUTHZ-001): a space-delimited list drawn from this server's own
- * small, fixed scope vocabulary (`@template/mcp`'s `mcpScopes`) — generous
+ * small, fixed scope vocabulary (`@lostgradient/mcp`'s `mcpScopes`) — generous
  * relative to the longest real value (every scope requested, space-joined)
  * while still ruling out an attacker-supplied multi-kilobyte string.
  */

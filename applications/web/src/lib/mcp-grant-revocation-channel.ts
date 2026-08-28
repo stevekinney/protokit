@@ -1,4 +1,4 @@
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { getRedisClient, getRedisSubscriberClient, isRedisConfigured } from '@web/lib/redis-client';
 
 /**

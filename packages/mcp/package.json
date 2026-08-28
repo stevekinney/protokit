@@ -1,29 +1,64 @@
 {
-	"name": "@template/mcp",
-	"version": "0.0.0",
-	"private": true,
+	"name": "@lostgradient/mcp",
+	"version": "0.1.0",
+	"description": "A Model Context Protocol server engine: registries, scope vocabularies, and an OAuth-ready request boundary.",
+	"license": "MIT",
 	"type": "module",
+	"sideEffects": false,
+	"files": [
+		"dist",
+		"!dist/**/*.test.*",
+		"!dist/**/*.map",
+		"README.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"exports": {
-		".": "./src/index.ts",
-		"./logger": "./src/logger.ts",
-		"./env": "./src/env.ts",
-		"./testing": "./src/testing/index.ts",
-		"./metrics": "./src/metrics.ts",
-		"./environment-schema": "./src/environment-schema.ts",
-		"./version": "./src/version.ts"
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./logger": {
+			"types": "./dist/logger.d.ts",
+			"import": "./dist/logger.js",
+			"default": "./dist/logger.js"
+		},
+		"./env": {
+			"types": "./dist/env.d.ts",
+			"import": "./dist/env.js",
+			"default": "./dist/env.js"
+		},
+		"./metrics": {
+			"types": "./dist/metrics.d.ts",
+			"import": "./dist/metrics.js",
+			"default": "./dist/metrics.js"
+		},
+		"./environment-schema": {
+			"types": "./dist/environment-schema.d.ts",
+			"import": "./dist/environment-schema.js",
+			"default": "./dist/environment-schema.js"
+		},
+		"./version": {
+			"types": "./dist/version.d.ts",
+			"import": "./dist/version.js",
+			"default": "./dist/version.js"
+		},
+		"./package.json": "./package.json"
 	},
 	"scripts": {
-		"typecheck": "tsc --noEmit",
+		"build": "bun run build.ts",
+		"lint": "eslint src/",
 		"test": "LOG_LEVEL=info NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test",
 		"test:conformance": "NODE_ENV=test MCP_CONFORMANCE_PORT=3137 bun ./src/conformance-server.ts",
-		"lint": "eslint src/"
+		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/core": "^2.0.0",
 		"@modelcontextprotocol/ext-apps": "^1.7.5",
 		"@modelcontextprotocol/node": "^2.0.0",
 		"@modelcontextprotocol/server": "^2.0.0",
-		"@template/mcp-apps": "workspace:*",
 		"pino": "^10.3.1",
 		"zod": "^4.4.3"
 	},

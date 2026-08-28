@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { database } from '@template/database';
-import { hasRegisteredUiExtensionResource } from '@template/mcp';
-import { templateRegistry } from '@template/mcp';
+import { hasRegisteredUiExtensionResource } from '@lostgradient/mcp';
+import { templateRegistry } from '@lostgradient/mcp';
 import { environment } from '@web/env';
 import {
 	checkBearerCredential,

@@ -1,9 +1,9 @@
-import { getSupportedScopes } from '@template/mcp';
-import { templateRegistry } from '@template/mcp';
+import { getSupportedScopes } from '@lostgradient/mcp';
+import { templateRegistry } from '@lostgradient/mcp';
 
 /**
  * AUTHZ-001: parses and validates an OAuth `scope` request parameter
- * against this server's own supported vocabulary (`@template/mcp`'s
+ * against this server's own supported vocabulary (`@lostgradient/mcp`'s
  * production-registry-derived `getSupportedScopes(templateRegistry)` — never the full
  * `mcpScopes` vocabulary, which also contains the conformance-only
  * `audit:read` no real client can ever be granted).

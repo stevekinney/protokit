@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { environment } from '@web/env';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 

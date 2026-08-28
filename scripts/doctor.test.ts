@@ -92,7 +92,7 @@ describe('evaluateEnvironmentSchemas — real package schemas', () => {
 		const nodeEnvFailures = results.filter(
 			(entry) => entry.status === 'fail' && entry.label === 'NODE_ENV',
 		);
-		// NODE_ENV is required in both @template/mcp's and @template/web's schema.
+		// NODE_ENV is required in both @lostgradient/mcp's and @template/web's schema.
 		expect(nodeEnvFailures.length).toBeGreaterThanOrEqual(2);
 	});
 

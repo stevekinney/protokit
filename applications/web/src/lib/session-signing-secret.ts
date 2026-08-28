@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { environment } from '@web/env';
 
 export type SessionSigningSecretResolution = {

@@ -29,7 +29,7 @@
 		"@modelcontextprotocol/core": "^2.0.0",
 		"@modelcontextprotocol/server": "^2.0.0",
 		"@template/database": "workspace:*",
-		"@template/mcp": "workspace:*",
+		"@lostgradient/mcp": "workspace:*",
 		"drizzle-orm": "^0.45.2",
 		"jose": "^6.2.9",
 		"redis": "^6.2.1",

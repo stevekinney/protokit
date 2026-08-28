@@ -181,7 +181,7 @@ async function runAudit(): Promise<void> {
 		violations = violations.concat(scanFileContentsForViolations(target, fileContents));
 	}
 
-	const { allTools, allResources, allPrompts } = await import('@template/mcp');
+	const { allTools, allResources, allPrompts } = await import('@lostgradient/mcp');
 
 	const registryNames = [
 		...allTools.map((tool) => tool.name),

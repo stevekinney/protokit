@@ -82,7 +82,7 @@
 	"dependencies": {
 		"@neondatabase/serverless": "^1.1.0",
 		"@template/database": "workspace:*",
-		"@template/mcp": "workspace:*",
+		"@lostgradient/mcp": "workspace:*",
 		"@template/web": "workspace:*",
 		"zod": "^4.4.3"
 	},

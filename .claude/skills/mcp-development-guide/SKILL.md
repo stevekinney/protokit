@@ -1,6 +1,6 @@
 # MCP Development Guide
 
-Comprehensive reference for building tools, resources, and prompts in the `@template/mcp` package.
+Comprehensive reference for building tools, resources, and prompts in the `@lostgradient/mcp` package.
 `packages/mcp/CLAUDE.md` is the canonical, actively-maintained step list — required `title`,
 `description`, `annotations` (all four hints), `outputSchema`/`structuredContent`, and `requiredScope`
 (`AUTHZ-001`'s scope enforcement, checked before every tool/resource/prompt invocation) are all
@@ -59,7 +59,7 @@ try {
 
 ### Test Utilities
 
-Import from `@template/mcp/testing`:
+Import from `@lostgradient/mcp/testing`:
 
 - `createTestContext(overrides?)` — returns `{ userId: string }` with a deterministic test user identifier
 - `expectToolSuccess(result)` — asserts `content` is defined, is an array, and `isError` is not `true`

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import packageMetadata from '../package.json';
 
@@ -27,12 +28,50 @@ import packageMetadata from '../package.json';
 
 const packageRoot = resolve(import.meta.dir, '..');
 
-const entryPointSubpaths = Object.entries(packageMetadata.exports as Record<string, string>).map(
-	([subpath, relativePath]) => ({
-		subpath,
-		absolutePath: resolve(packageRoot, relativePath),
-	}),
-);
+/**
+ * The `exports` map is the single source of truth for which subpaths exist, so
+ * a newly added export is covered automatically. Its values are condition
+ * objects pointing into `dist/` (the published shape), and this suite runs
+ * against source — so each published path is translated back to the source
+ * file that produces it.
+ *
+ * The built artifact is checked too, when it exists. A source file with no
+ * import-time environment read can still become a bundle that has one, and the
+ * bundle is what a consumer actually loads. `dist/` is gitignored and absent
+ * before a build, so its absence skips that half rather than failing: the
+ * clean-directory install in TRI-74 covers the built artifact under Node
+ * directly.
+ */
+type EntryPoint = { subpath: string; label: string; absolutePath: string };
+
+const exportConditions = packageMetadata.exports as Record<
+	string,
+	{ import?: string; default?: string } | string
+>;
+
+const entryPointSubpaths: EntryPoint[] = [];
+
+for (const [subpath, condition] of Object.entries(exportConditions)) {
+	// `./package.json` is data, not a module with side effects.
+	if (subpath.endsWith('.json')) continue;
+
+	const published =
+		typeof condition === 'string' ? condition : (condition.import ?? condition.default);
+	if (published === undefined) continue;
+
+	const sourcePath = resolve(
+		packageRoot,
+		published.replace(/^\.\/dist\//, './src/').replace(/\.js$/, '.ts'),
+	);
+	if (existsSync(sourcePath)) {
+		entryPointSubpaths.push({ subpath, label: `${subpath} (source)`, absolutePath: sourcePath });
+	}
+
+	const builtPath = resolve(packageRoot, published);
+	if (existsSync(builtPath)) {
+		entryPointSubpaths.push({ subpath, label: `${subpath} (built)`, absolutePath: builtPath });
+	}
+}
 
 const poisonedEnvironment: Record<string, string> = {
 	PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -63,10 +102,10 @@ describe('import-time side effects', () => {
 		expect(entryPointSubpaths.map((entry) => entry.subpath)).toContain('.');
 	});
 
-	for (const { subpath, absolutePath } of entryPointSubpaths) {
-		it(`imports "${subpath}" cleanly under a deliberately invalid environment`, async () => {
+	for (const { label, absolutePath } of entryPointSubpaths) {
+		it(`imports "${label}" cleanly under a deliberately invalid environment`, async () => {
 			const { exitCode, stderr } = await importInPoisonedSubprocess(absolutePath);
-			expect({ subpath, exitCode, stderr }).toMatchObject({ exitCode: 0 });
+			expect({ label, exitCode, stderr }).toMatchObject({ exitCode: 0 });
 		}, 30_000);
 	}
 });

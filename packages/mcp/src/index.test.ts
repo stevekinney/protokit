@@ -5,7 +5,7 @@ import { templateRegistry } from './template-registry.js';
 /**
  * `src/index.ts` is the package's public barrel -- the surface consumers
  * outside this package (e.g. `applications/web`) actually import from
- * (`@template/mcp`), never any of these files directly. No existing test
+ * (`@lostgradient/mcp`), never any of these files directly. No existing test
  * imports through the barrel itself, only through relative internal paths,
  * so it never appeared in the coverage report at all. Asserts real shape
  * on a representative sample of each export family (factory function,

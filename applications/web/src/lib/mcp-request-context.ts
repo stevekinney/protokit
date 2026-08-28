@@ -1,5 +1,5 @@
 import type { AuthInfo } from '@modelcontextprotocol/server';
-import type { McpUserProfile } from '@template/mcp';
+import type { McpUserProfile } from '@lostgradient/mcp';
 import { getBaseUrl } from '@web/lib/base-url';
 
 /**

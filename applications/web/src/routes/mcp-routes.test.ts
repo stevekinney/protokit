@@ -114,7 +114,7 @@ mock.module('@web/lib/base-url', () => ({
 	getBaseUrl: () => 'http://localhost:3000',
 }));
 
-mock.module('@template/mcp', () => ({
+mock.module('@lostgradient/mcp', () => ({
 	isLoopbackHostname: () => false,
 	hasValidLocalhostRebindingHeaders: () => true,
 	// AUTHZ-001: real value, not a stub — this is the same production-derived

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { templateRegistry } from '@template/mcp';
+import { templateRegistry } from '@lostgradient/mcp';
 
 process.env.GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? 'google-client-id';
 process.env.GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? 'google-client-secret';
@@ -13,7 +13,7 @@ process.env.BASE_URL = process.env.BASE_URL ?? 'https://ui-extension-metadata.ex
 process.env.MCP_ENABLE_UI_EXTENSION = 'true';
 
 const { handleApplicationRequest } = await import('@web/application');
-const { hasRegisteredUiExtensionResource } = await import('@template/mcp');
+const { hasRegisteredUiExtensionResource } = await import('@lostgradient/mcp');
 
 /**
  * Review finding: the MCP server's real `/mcp` capabilities (`server.ts`)

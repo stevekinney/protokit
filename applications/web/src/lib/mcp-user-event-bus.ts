@@ -1,6 +1,6 @@
 import type { ServerEvent, ServerEventBus } from '@modelcontextprotocol/server';
 import { InMemoryServerEventBus } from '@modelcontextprotocol/server';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { isRedisConfigured, getRedisClient, getRedisSubscriberClient } from '@web/lib/redis-client';
 
 function channelForUser(userId: string): string {

@@ -16,8 +16,8 @@ describe('countSkippedTests', () => {
 
 	test('sums skip lines across multiple turbo-prefixed package blocks', () => {
 		const output = [
-			'@template/mcp:test: 130 pass',
-			'@template/mcp:test: 0 fail',
+			'@lostgradient/mcp:test: 130 pass',
+			'@lostgradient/mcp:test: 0 fail',
 			'@template/web:test: 580 pass',
 			'@template/web:test: 3 skip',
 			'@template/web:test: 0 fail',

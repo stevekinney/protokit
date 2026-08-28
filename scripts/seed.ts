@@ -2,7 +2,7 @@ import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@template/web/lib/credential-lifecycle-policy';
 
 import { writeSecretFileAtomic, ROOT_DIRECTORY } from './utilities.ts';

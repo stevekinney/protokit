@@ -22,7 +22,21 @@ export {
 	hasValidLocalhostRebindingHeaders,
 	isLoopbackHostname,
 } from './localhost-request-validation.js';
-export { EXTENSION_ID, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
+// Imported and re-exported rather than forwarded with `export ... from`.
+// The bundler that builds `dist/` drops the source binding of a re-export
+// whose module is external: it emitted `export { EXTENSION_ID }` with no
+// corresponding import, and Node rejected the module with "Export
+// 'EXTENSION_ID' is not defined in module". Binding the values locally forces
+// the import to survive. This is the only re-export from an external package
+// in this package's entry points; the other nineteen are relative and bundle
+// correctly.
+import {
+	EXTENSION_ID as extensionId,
+	RESOURCE_MIME_TYPE as resourceMimeType,
+} from '@modelcontextprotocol/ext-apps/server';
+
+export const EXTENSION_ID = extensionId;
+export const RESOURCE_MIME_TYPE = resourceMimeType;
 export {
 	readProgressToken,
 	readSessionIdentifier,

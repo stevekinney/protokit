@@ -20,4 +20,4 @@
  * thing making this approach safe — do not delete it to silence a release
  * bump; update this constant instead.
  */
-export const PACKAGE_VERSION = '0.0.0';
+export const PACKAGE_VERSION = '0.1.0';

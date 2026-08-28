@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
-import { logger } from '@template/mcp/logger';
-import { userProfileResource } from '@template/mcp';
+import { logger } from '@lostgradient/mcp/logger';
+import { userProfileResource } from '@lostgradient/mcp';
 import { environment } from '@web/env';
 import { PayloadTooLargeError, readBoundedFormUrlEncoded } from '@web/lib/bounded-request-body';
 import { getBaseUrl } from '@web/lib/base-url';
