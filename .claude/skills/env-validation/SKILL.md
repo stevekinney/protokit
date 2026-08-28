@@ -1,9 +1,18 @@
 # Skill: Environment Variable Validation
 
 Patterns for managing environment variables with `@lostgradient/environmentalist`. Every package's
-actual Zod shape lives in its own `src/environment-schema.ts`; `src/env.ts` is a thin
-`environmentalist.sync({...})` wrapper around that schema plus the `SKIP_ENV_VALIDATION` rejection
-below. `doctor` (`scripts/doctor.ts`) derives its checks from these same schemas — it must never
+actual Zod shape lives in its own `src/environment-schema.ts`; in `applications/web` and
+`packages/database`, `src/env.ts` is a thin `environmentalist.sync({...})` wrapper around that
+schema plus the `SKIP_ENV_VALIDATION` rejection below.
+
+**`packages/mcp` is the deliberate exception and this skill's guidance below does not describe it.**
+It is a publishable library, so it must not impose its environment contract on a host at import
+time. It does not depend on Environmentalist, does not read `process.env` at module scope, and
+exposes `parseMcpServerEnvironment(env)` plus a lazy, memoized `getEnvironment()`; its keys stay in
+the schema's own `SCREAMING_SNAKE_CASE` rather than being camel-cased. Both guards still apply, just
+inside the parse function. Follow the Environmentalist pattern below for application and
+non-published packages; follow `packages/mcp/src/env.ts` for anything meant to be consumed as a
+library. `doctor` (`scripts/doctor.ts`) derives its checks from these same schemas — it must never
 grow a second, hand-maintained variable list (`DX-001`).
 
 Environmentalist resolves each schema key from a `SCREAMING_SNAKE_CASE` schema property (e.g.
