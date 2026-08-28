@@ -85,3 +85,54 @@ describe('createToolStructuredResponse', () => {
 		expect((response as { structuredContent?: unknown }).structuredContent).toBeUndefined();
 	});
 });
+
+describe('the cap measures UTF-8 bytes, not UTF-16 code units', () => {
+	const capBytes = 256 * 1024;
+
+	/**
+	 * The defect this covers: `String.length` counts UTF-16 code units, and a
+	 * CJK character is one code unit but three UTF-8 bytes. So a payload can
+	 * sit comfortably under a character cap while encoding to nearly three
+	 * times the advertised byte limit — on a bound whose only job is stopping
+	 * oversized payloads reaching a client.
+	 *
+	 * It survived the existing tests because they pad with ASCII, where
+	 * characters and bytes coincide. Padding with `中` is the entire difference
+	 * between a test that checks this and one that reads as if it does.
+	 */
+	const multiByte = '中'.repeat(200_000);
+
+	it('the fixture is genuinely under a character cap and over a byte cap', () => {
+		// Asserted rather than assumed: if this ever stopped holding, the two
+		// tests below would still pass while checking nothing.
+		expect(multiByte.length).toBeLessThan(capBytes);
+		expect(new TextEncoder().encode(multiByte).length).toBeGreaterThan(capBytes);
+	});
+
+	it('rejects a multi-byte text result that a character cap would have allowed', () => {
+		const response = createToolTextResponse(multiByte);
+		expect((response as { isError?: boolean }).isError).toBe(true);
+		expect(response.content[0].text).toContain('bytes');
+	});
+
+	it('rejects it through the structured path too, not only the text one', () => {
+		const response = createToolStructuredResponse({ padding: multiByte }, 'summary');
+		expect((response as { isError?: boolean }).isError).toBe(true);
+		expect(response.content[0].text).toContain('bytes');
+	});
+
+	it('still returns an ASCII payload just under the cap intact', () => {
+		// A fix that rejects what the bound exists to permit is not a fix. This
+		// also exercises the slow path: 262,044 code units is well past the
+		// third-of-cap fast path, so it is actually encoded and measured.
+		const justUnder = 'x'.repeat(capBytes - 100);
+		const response = createToolTextResponse(justUnder);
+		expect((response as { isError?: boolean }).isError).toBeUndefined();
+		expect(response.content[0].text).toBe(justUnder);
+	});
+
+	it('reports the real byte length in the error, not the character count', () => {
+		const response = createToolTextResponse(multiByte);
+		expect(response.content[0].text).toContain(String(600_000));
+	});
+});

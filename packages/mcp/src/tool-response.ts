@@ -9,15 +9,46 @@
  * response rather than silently truncated: truncating a JSON string mid-way
  * would hand the caller invalid JSON, which is worse than a clear failure.
  */
-const maxToolResultCharacters = 256 * 1024;
+const maxToolResultBytes = 256 * 1024;
+
+/**
+ * SEC-004: the cap is measured in UTF-8 bytes, which is what actually goes on
+ * the wire — not `String.length`, which counts UTF-16 code units.
+ *
+ * The two diverge by up to 3x for non-ASCII output: 250,000 CJK characters
+ * satisfy a 256K *character* check and encode to roughly 750KB, nearly three
+ * times the advertised limit, on a bound whose entire purpose is stopping
+ * oversized payloads reaching a client.
+ *
+ * That defect survived its own tests because they pad with ASCII, where
+ * characters and bytes coincide — the cap read as enforced while the
+ * guarantee was absent for exactly the inputs that would breach it.
+ */
+const textEncoder = new TextEncoder();
+
+/**
+ * Returns the UTF-8 byte length when it exceeds the cap, or `null` when it
+ * does not.
+ *
+ * The length check first is a fast path, not an approximation: UTF-8 uses at
+ * most three bytes per UTF-16 code unit, so a string of at most a third of the
+ * cap in code units cannot exceed the cap in bytes and never needs encoding.
+ * Only strings that might breach it pay for the encode.
+ */
+function exceededByteLength(text: string): number | null {
+	if (text.length * 3 <= maxToolResultBytes) return null;
+	const byteLength = textEncoder.encode(text).length;
+	return byteLength > maxToolResultBytes ? byteLength : null;
+}
 
 function boundedTextContent(text: string): { content: [{ type: 'text'; text: string }] } {
-	if (text.length > maxToolResultCharacters) {
+	const exceeded = exceededByteLength(text);
+	if (exceeded !== null) {
 		return {
 			content: [
 				{
 					type: 'text',
-					text: `Result omitted: exceeded the ${maxToolResultCharacters}-character tool result limit (was ${text.length} characters).`,
+					text: `Result omitted: exceeded the ${maxToolResultBytes}-byte tool result limit (was ${exceeded} bytes).`,
 				},
 			],
 		};
@@ -70,12 +101,16 @@ export function createToolStructuredResponse<T>(data: T, summary: string) {
 	}
 
 	const serialized = JSON.stringify(data) ?? 'null';
-	if (serialized.length > maxToolResultCharacters) {
+	// Both callsites, deliberately. Fixing one and leaving the other reproduces
+	// exactly the illusion this change removes: a cap that reads as enforced
+	// and is not, for the half of the surface nobody re-checked.
+	const exceededSerialized = exceededByteLength(serialized);
+	if (exceededSerialized !== null) {
 		return {
 			content: [
 				{
 					type: 'text' as const,
-					text: `Result omitted: exceeded the ${maxToolResultCharacters}-character tool result limit (was ${serialized.length} characters).`,
+					text: `Result omitted: exceeded the ${maxToolResultBytes}-byte tool result limit (was ${exceededSerialized} bytes).`,
 				},
 			],
 			isError: true,
