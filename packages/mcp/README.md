@@ -73,6 +73,19 @@ const server = createMcpServer(
 
 > **Always set `instructions` on your registry.** When it is absent, the server falls back to instructions bundled with this package, which describe a different server: its own demo tools, its own OAuth endpoints, and an assertion that every operation is read-only. A client would receive a confident, wrong description of what your server does.
 
+### Construction and the ambient environment
+
+Importing this package reads nothing from `process.env`. **Constructing a server can**, through two fallbacks, and both are worth supplying explicitly:
+
+| Omitted                         | What happens                                              |
+| ------------------------------- | --------------------------------------------------------- |
+| `context.enableConformanceMode` | falls back to `MCP_CONFORMANCE_MODE` from the environment |
+| `registry.serverInfo`           | falls back to `MCP_SERVER_NAME` from the environment      |
+
+Each fallback calls the environment parser, which requires `NODE_ENV`. So in a plain Node process with `NODE_ENV` unset, omitting **either** makes `createMcpServer` throw before returning — supplying only one is not enough. The example above supplies both, which is why it runs anywhere.
+
+If you would rather rely on the environment, set `NODE_ENV` (and any other variable the schema requires) before constructing, and validate it yourself with `parseMcpServerEnvironment` so the failure is yours to report rather than a throw from inside the factory.
+
 `getSupportedScopes(registry)` returns the sorted union of every scope your registry actually requires. Use it for the `scopes_supported` field of your OAuth metadata documents and for the `scope` attribute on a `401` challenge, rather than maintaining that list by hand.
 
 ## Environment

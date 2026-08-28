@@ -1,79 +1,149 @@
 import { describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 /**
- * `packages/mcp`'s `exports` resolve into its `dist/`, so any script importing
- * it needs that package built first. Turborepo handles this for workspace
- * tasks through `dependsOn: ["^build"]`, but root scripts invoked as
- * `bun scripts/whatever.ts` bypass the graph entirely and get no such help.
+ * `packages/mcp`'s `exports` resolve into its `dist/`, so any code importing it
+ * needs that package built first. Turborepo handles this for workspace tasks
+ * through `dependsOn: ["^build"]`, but a root script that runs a source file
+ * directly — `bun scripts/doctor.ts`, `bun test applications/web/src/...` —
+ * bypasses the graph and gets no such help.
  *
- * This invariant exists because forgetting it is demonstrably easy: the gap
- * was found three separate times on one pull request — first by CI in the
- * container smoke test, then by review in `doctor` and `db:seed`, then by
- * review again in `audit:production-content`, with `test:doctor` and
- * `test:scripts-security` broken the whole time and reported by nobody. Each
- * fix addressed the instance in front of it. This addresses the class.
+ * The invariant is checked against the real import graph rather than a name
+ * list, because both cheaper approximations are wrong:
+ *
+ * - Scanning only files that import the package *directly* misses the common
+ *   case. `mcp-routes.test.ts` imports `mcp-routes.ts`, which imports the
+ *   package; the test file itself mentions it nowhere. An earlier version of
+ *   this very check made that mistake and passed while `test:security` was
+ *   broken.
+ * - Requiring the prerequisite on every script that touches workspace source
+ *   would cover 53 scripts, most of which never reach the package, and would
+ *   turn a real invariant into noise people route around.
+ *
+ * So: follow each invoked file's relative imports transitively, and require
+ * the prerequisite exactly where the package is reachable.
  */
 
 const PACKAGE_SPECIFIER = '@lostgradient/mcp';
 const BUILD_PREREQUISITE = 'build:engine';
+const INVOKED_PATH =
+	/(?:applications|packages|scripts|runner)\/[A-Za-z0-9_./-]+\.(?:ts|tsx|mts|cts|js|mjs|svelte)/g;
+const RELATIVE_IMPORT = /(?:from|import|require)\s*\(?\s*['"](\.[^'"]+)['"]/g;
+
+/** Candidate on-disk files for one import specifier. */
+function candidatesFor(fromFile: string, specifier: string): string[] {
+	const base = resolve(dirname(fromFile), specifier);
+	const withoutExtension = base.replace(/\.(js|mjs|cjs)$/, '');
+	return [
+		base,
+		`${withoutExtension}.ts`,
+		`${withoutExtension}.tsx`,
+		`${withoutExtension}.mts`,
+		`${withoutExtension}.svelte`,
+		join(base, 'index.ts'),
+		join(base, 'index.tsx'),
+	];
+}
+
+const reachesPackage = (() => {
+	const memo = new Map<string, boolean>();
+
+	return function walk(file: string, seen = new Set<string>()): boolean {
+		const cached = memo.get(file);
+		if (cached !== undefined) return cached;
+		if (seen.has(file) || !existsSync(file)) return false;
+		seen.add(file);
+
+		let contents: string;
+		try {
+			contents = readFileSync(file, 'utf-8');
+		} catch {
+			return false;
+		}
+
+		if (contents.includes(PACKAGE_SPECIFIER)) {
+			memo.set(file, true);
+			return true;
+		}
+
+		for (const match of contents.matchAll(RELATIVE_IMPORT)) {
+			const specifier = match[1];
+			if (specifier === undefined) continue;
+			for (const candidate of candidatesFor(file, specifier)) {
+				if (existsSync(candidate) && walk(candidate, seen)) {
+					memo.set(file, true);
+					return true;
+				}
+			}
+		}
+
+		memo.set(file, false);
+		return false;
+	};
+})();
 
 /**
- * Scripts that resolve the package some other way and do not need the prefix.
- * Each entry names why, so an exemption cannot quietly become a hiding place.
+ * Scripts that reach the package but resolve it another way. Each names how,
+ * so an exemption cannot quietly become a hiding place.
  */
 const EXEMPT: Record<string, string> = {
-	// Builds the engine itself, inside the script, before its direct web build.
-	'test:container-smoke': 'builds the engine internally before its own build step',
-	// Builds `@template/web`, which reaches the engine through `^build`.
+	'test:container-smoke': 'builds the engine internally before its own direct web build',
 	'test:coverage': 'builds @template/web, whose Turborepo graph builds the engine',
 };
 
-/** Root scripts, and the `scripts/*.ts` files each one runs. */
-function scriptsInvokedBy(command: string, available: readonly string[]): string[] {
-	return available.filter((file) => command.includes(`scripts/${file}`));
-}
-
-describe('root scripts that import the MCP engine', () => {
+describe('root scripts that reach the MCP engine', () => {
 	const manifest = JSON.parse(readFileSync('package.json', 'utf-8')) as {
 		scripts: Record<string, string>;
 	};
 
-	const scriptFiles = readdirSync('scripts').filter((name) => name.endsWith('.ts'));
-	const importers = scriptFiles.filter((name) =>
-		readFileSync(join('scripts', name), 'utf-8').includes(PACKAGE_SPECIFIER),
-	);
+	/** Scripts that run workspace source outside Turborepo's dependency graph. */
+	const directRunners = Object.entries(manifest.scripts)
+		.filter(([, command]) => !/\bturbo (run )?build/.test(command.split('&&')[0] ?? ''))
+		.map(([name, command]) => ({ name, command, paths: command.match(INVOKED_PATH) ?? [] }))
+		.filter((entry) => entry.paths.length > 0);
 
-	test('the detection itself finds something, so this suite cannot pass vacuously', () => {
-		expect(importers.length).toBeGreaterThan(0);
-		expect(Object.keys(manifest.scripts).length).toBeGreaterThan(0);
+	test('the analysis finds something, so this suite cannot pass vacuously', () => {
+		expect(directRunners.length).toBeGreaterThan(0);
+		const anyReaches = directRunners.some((entry) =>
+			entry.paths.some((path) => reachesPackage(resolve(path))),
+		);
+		expect(anyReaches).toBe(true);
 	});
 
-	test('every one of them builds the engine first, or is exempt with a stated reason', () => {
+	test('every script that can reach the engine builds it first, or is exempt', () => {
 		const offenders: string[] = [];
 
-		for (const [name, command] of Object.entries(manifest.scripts)) {
-			if (scriptsInvokedBy(command, importers).length === 0) continue;
+		for (const { name, command, paths } of directRunners) {
 			if (name in EXEMPT) continue;
 			if (command.includes(BUILD_PREREQUISITE)) continue;
+			if (!paths.some((path) => reachesPackage(resolve(path)))) continue;
 			offenders.push(name);
 		}
 
 		expect(
 			offenders,
-			`These root scripts run a file importing ${PACKAGE_SPECIFIER} without building it first. ` +
-				`Prefix the command with \`bun run ${BUILD_PREREQUISITE} && \`, or add an entry to EXEMPT ` +
-				`with the reason it resolves the package another way.`,
+			`These root scripts run code that transitively imports ${PACKAGE_SPECIFIER} without ` +
+				`building it first. Prefix each with \`bun run ${BUILD_PREREQUISITE} && \`, or add an ` +
+				`EXEMPT entry naming how it resolves the package another way.`,
 		).toEqual([]);
 	});
 
 	test('every exemption still names a script that exists', () => {
-		// An exemption for a deleted script hides nothing and is dead weight —
-		// and worse, could later shadow a real script of the same name.
 		for (const name of Object.keys(EXEMPT)) {
 			expect(manifest.scripts[name], `EXEMPT names "${name}", which is not a script`).toBeDefined();
 		}
+	});
+
+	test('the import walk follows transitive edges, not just direct mentions', () => {
+		// The case the previous version of this check missed: a file that reaches
+		// the package only through another file.
+		const transitive = 'applications/web/src/routes/mcp-routes.test.ts';
+		expect(existsSync(transitive)).toBe(true);
+		expect(readFileSync(transitive, 'utf-8').includes(PACKAGE_SPECIFIER)).toBe(true);
+		// And one that genuinely does not reach it, so the walk is not answering
+		// "true" for everything.
+		expect(reachesPackage(resolve('scripts/audit-docker-context.ts'))).toBe(false);
 	});
 
 	test('`build:engine` exists and actually builds the package', () => {
