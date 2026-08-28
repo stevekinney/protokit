@@ -61,6 +61,9 @@ const server = createMcpServer(
 		user, // { id, email, name, image, role }
 		scopes: grantedScopes, // the scopes this request's token actually carries
 		enableUiExtension: false,
+		// Supplied so construction never reads the ambient environment; see
+		// "Construction and the ambient environment" below.
+		enableConformanceMode: false,
 		// Optional: `requestId` to trace one action through your logs, `era` to
 		// pin the protocol revision, `publishResourceUpdate` to fan subscription
 		// events out across replicas.
