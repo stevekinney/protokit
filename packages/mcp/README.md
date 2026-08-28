@@ -44,10 +44,34 @@ const registry = scopes.defineRegistry({
 	resources: [],
 	prompts: [],
 	serverInfo: { name: 'my-server', version: '1.0.0' },
+	// Supply your own. Without this, the server advertises instructions
+	// describing a different server's tools and endpoints — see below.
+	instructions: 'Lists repositories the signed-in user can access.',
 });
-
-const server = createMcpServer(context, registry);
 ```
+
+## Constructing a server
+
+`createMcpServer` takes a context describing the current request. There is no ambient state: everything it needs is passed in, which is what lets the engine be embedded without knowing how you authenticate or store anything.
+
+```ts
+const server = createMcpServer(
+	{
+		userId: user.id,
+		user, // { id, email, name, image, role }
+		scopes: grantedScopes, // the scopes this request's token actually carries
+		enableUiExtension: false,
+		// Optional: `requestId` to trace one action through your logs, `era` to
+		// pin the protocol revision, `publishResourceUpdate` to fan subscription
+		// events out across replicas.
+	},
+	registry,
+);
+```
+
+`scopes` is the request's granted scopes, not your vocabulary — the server compares each operation's `requiredScope` against it, so passing the full vocabulary here would authorize everything.
+
+> **Always set `instructions` on your registry.** When it is absent, the server falls back to instructions bundled with this package, which describe a different server: its own demo tools, its own OAuth endpoints, and an assertion that every operation is read-only. A client would receive a confident, wrong description of what your server does.
 
 `getSupportedScopes(registry)` returns the sorted union of every scope your registry actually requires. Use it for the `scopes_supported` field of your OAuth metadata documents and for the `scope` attribute on a `401` challenge, rather than maintaining that list by hand.
 
