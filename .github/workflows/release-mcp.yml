@@ -97,14 +97,25 @@ jobs:
         if: github.event_name == 'release'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # A GitHub Release marked as a prerelease must not become the version
-          # an ordinary `npm install` resolves to. npm assigns `latest` when no
-          # `--tag` is given, so a `0.2.0-beta.1` release would silently become
-          # the default for every consumer.
-          NPM_DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
+          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
         # A scoped package defaults to restricted; without --access public the
         # publish either fails or succeeds privately, which is worse.
-        run: npm publish --access public --provenance --tag "$NPM_DIST_TAG"
+        #
+        # The dist-tag is derived from the version *and* the GitHub flag, not
+        # the flag alone. npm assigns `latest` when `--tag` is omitted, so a
+        # semver prerelease published through a Release whose prerelease
+        # checkbox was left unticked would silently become the version every
+        # ordinary `npm install` resolves to. Either signal is enough to
+        # withhold `latest`.
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          case "$version" in
+            *-*) tag='next' ;;
+            *) tag='latest' ;;
+          esac
+          if [ "$RELEASE_IS_PRERELEASE" = 'true' ]; then tag='next'; fi
+          echo "Publishing $version under dist-tag '$tag'."
+          npm publish --access public --provenance --tag "$tag"
         working-directory: packages/mcp
 
       - name: Rehearsal summary
