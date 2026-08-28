@@ -6,7 +6,7 @@ mock.module('@web/env', () => ({
 	environment: mockEnvironment,
 }));
 
-mock.module('@template/mcp/metrics', () => ({
+mock.module('@lostgradient/mcp/metrics', () => ({
 	metricsCollector: {
 		snapshot: () => ({
 			tools: {},

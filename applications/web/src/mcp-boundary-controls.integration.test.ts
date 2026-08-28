@@ -11,7 +11,7 @@ import type { TestServerHandle } from '@web/test-support/start-test-server';
  * would mean the request reached the authentication branch instead).
  *
  * `mcp-routes.test.ts` proves the rest of `authenticateMcpUser`'s branches
- * against a mocked `@web/lib/mcp-origin-validation` and `@template/mcp`;
+ * against a mocked `@web/lib/mcp-origin-validation` and `@lostgradient/mcp`;
  * this file is the sibling that proves the real implementations, wired
  * together, produce the same result end to end -- the same relationship
  * `oauth-mcp-resource-binding.integration.test.ts` has to `oauth-routes.test.ts`.

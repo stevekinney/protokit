@@ -33,7 +33,7 @@ mock.module('@template/database', () => ({
 	},
 }));
 
-mock.module('@template/mcp/logger', () => ({
+mock.module('@lostgradient/mcp/logger', () => ({
 	logger: {
 		info: () => {},
 		error: (payload: unknown) => {

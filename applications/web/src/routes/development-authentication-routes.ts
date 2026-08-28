@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { database, schema } from '@template/database';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { environment } from '@web/env';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import { createRateLimitedResponse } from '@web/lib/rate-limit-response';

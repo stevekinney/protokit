@@ -1,4 +1,4 @@
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { runScheduledCleanup } from '@template/web/lib/scheduled-cleanup';
 
 /**

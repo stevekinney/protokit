@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Component } from 'svelte';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { getContentSecurityPolicy } from '@web/lib/content-security-policy';

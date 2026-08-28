@@ -1,4 +1,4 @@
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { jsonResponse } from '@web/lib/http-response';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';

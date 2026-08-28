@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { inArray, isNotNull, lt, or } from 'drizzle-orm';
 import { database, schema } from '@template/database';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { environment } from '@web/env';
 import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 

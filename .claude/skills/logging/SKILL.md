@@ -15,7 +15,7 @@ The shared logger lives in `packages/mcp/src/logger.ts`:
 ### Import
 
 ```typescript
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 ```
 
 ### Child Loggers

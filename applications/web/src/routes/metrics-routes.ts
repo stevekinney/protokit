@@ -1,4 +1,4 @@
-import { metricsCollector } from '@template/mcp/metrics';
+import { metricsCollector } from '@lostgradient/mcp/metrics';
 import { jsonResponse } from '@web/lib/http-response';
 import { environment } from '@web/env';
 import {

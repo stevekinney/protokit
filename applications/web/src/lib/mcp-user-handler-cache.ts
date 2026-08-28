@@ -1,5 +1,5 @@
 import type { McpHttpHandler } from '@modelcontextprotocol/server';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import type { UserServerEventBus } from '@web/lib/mcp-user-event-bus';
 
 export type McpUserHandlerEntry = {

@@ -9,7 +9,8 @@ import {
 /**
  * Every existing test in this package imports these helpers through their
  * relative internal paths (`./context.js`/`./tool-assertions.js`), never
- * through this barrel (`@template/mcp/testing`), so `testing/index.ts`
+ * through this barrel (`../testing/index.js`; the `./testing` subpath is not
+ * published), so `testing/index.ts`
  * never appeared in the coverage report at all. This tests the barrel's
  * re-exports directly, and -- since these are themselves test utilities --
  * genuinely tests their behavior: `expectToolSuccess`/`expectToolError`

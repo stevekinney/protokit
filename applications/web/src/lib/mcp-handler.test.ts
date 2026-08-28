@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { AuthInfo } from '@modelcontextprotocol/server';
-import { cancellableOperationTestHooks } from '@template/mcp';
+import { cancellableOperationTestHooks } from '@lostgradient/mcp';
 
 mock.module('@web/env', () => ({
 	environment: {
@@ -64,7 +64,7 @@ const {
 describe('requestId trace propagation (OBS-001)', () => {
 	it('carries the HTTP-boundary requestId into a tool-call log line', async () => {
 		const warnCalls: unknown[] = [];
-		const { logger } = await import('@template/mcp/logger');
+		const { logger } = await import('@lostgradient/mcp/logger');
 		const originalWarn = logger.warn.bind(logger);
 		logger.warn = ((...args: Parameters<typeof logger.warn>) => {
 			warnCalls.push(args[0]);

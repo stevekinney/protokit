@@ -1,4 +1,4 @@
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import type { Component } from 'svelte';
 import { render } from 'svelte/server';
 import { getAssetManifest } from '@web/lib/asset-manifest';

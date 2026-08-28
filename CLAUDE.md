@@ -30,7 +30,7 @@
 ## Logging
 
 - Never use `console.log`, `console.error`, or `console.warn` in server code
-- Import: `import { logger } from '@template/mcp/logger'`
+- Import: `import { logger } from '@lostgradient/mcp/logger'`
 - Errors: `logger.error({ err }, 'description')`
 
 ## MCP Naming

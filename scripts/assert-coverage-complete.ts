@@ -42,7 +42,7 @@ export interface WorkspaceTarget {
 
 export const WORKSPACES: readonly WorkspaceTarget[] = [
 	{ name: '@template/database', directory: 'packages/database' },
-	{ name: '@template/mcp', directory: 'packages/mcp' },
+	{ name: '@lostgradient/mcp', directory: 'packages/mcp' },
 	{ name: '@template/web', directory: 'applications/web' },
 ];
 

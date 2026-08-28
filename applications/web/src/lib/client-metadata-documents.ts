@@ -1,7 +1,7 @@
 import { lookup as defaultDnsLookup } from 'node:dns/promises';
 import { isIPv4, isIPv6 } from 'node:net';
 import { z } from 'zod';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { isAddressInCidr } from '@web/lib/trusted-proxy';
 import { isValidClientName } from '@web/lib/client-name-validation';
 import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';

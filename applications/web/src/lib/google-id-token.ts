@@ -1,5 +1,5 @@
 import { importJWK, jwtVerify, type JWK, type JWTPayload } from 'jose';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import {
 	fetchGoogleEndpointBounded,

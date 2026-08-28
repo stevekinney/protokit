@@ -8,10 +8,10 @@ import {
 	hasRegisteredUiExtensionResource,
 	isMcpScope,
 	mcpScopeDescriptions,
-} from '@template/mcp';
-import { templateRegistry } from '@template/mcp';
-import { logger } from '@template/mcp/logger';
-import { metricsCollector } from '@template/mcp/metrics';
+} from '@lostgradient/mcp';
+import { templateRegistry } from '@lostgradient/mcp';
+import { logger } from '@lostgradient/mcp/logger';
+import { metricsCollector } from '@lostgradient/mcp/metrics';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';

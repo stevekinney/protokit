@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { handleApplicationRequest } from '@web/application';
 import { environment } from '@web/env';
 import { loadAssetManifest } from '@web/lib/asset-manifest';

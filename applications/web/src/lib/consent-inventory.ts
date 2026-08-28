@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { database, schema } from '@template/database';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { isValidClientName } from '@web/lib/client-name-validation';
 import { publishGrantRevocation } from '@web/lib/mcp-grant-revocation-channel';
 

@@ -110,6 +110,17 @@ async function containerHostPort(containerName: string, containerPort: number): 
 async function verifyReproducibleAssetBuild(): Promise<void> {
 	console.log('[smoke] verifying two consecutive clean builds are reproducible');
 
+	// `applications/web` imports `@lostgradient/mcp`, whose `exports` resolve
+	// into its `dist/` — so that package must be built before the web build can
+	// resolve it at all. The loop below deliberately calls `bun run build`
+	// directly rather than through Turborepo, because it is measuring whether
+	// two clean web builds produce identical assets and a cache replay would
+	// answer a different question. That bypass also skips Turborepo's
+	// `dependsOn: ["^build"]`, so the dependency is built here, once, before
+	// the loop. The container build itself is unaffected: the Dockerfile runs
+	// `bun turbo build --filter=./applications/web`, which honours the graph.
+	await $`bun turbo build --filter=@lostgradient/mcp`;
+
 	async function buildOnceAndListAssets(): Promise<{ manifest: unknown; filenames: string[] }> {
 		await $`rm -rf applications/web/dist applications/web/public/assets`;
 		await $`bun run build`.cwd('applications/web');

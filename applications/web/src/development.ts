@@ -1,6 +1,6 @@
 import { rmSync } from 'node:fs';
 import { watch } from 'node:fs';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 import { sveltePlugin } from '@lostgradient/bun-plugin-svelte';
 import type { AssetManifest } from '@web/lib/asset-manifest';
 

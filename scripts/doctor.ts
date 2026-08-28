@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { databaseServerEnvironmentSchema } from '@template/database/environment-schema';
 import { applyLocalProxyFetchEndpoint } from '@template/database/local-proxy';
-import { mcpServerEnvironmentSchema } from '@template/mcp/environment-schema';
+import { mcpServerEnvironmentSchema } from '@lostgradient/mcp/environment-schema';
 import { webServerEnvironmentSchema } from '@template/web/environment-schema';
 import { collectProductionStartupFailures } from '@template/web/lib/production-startup-requirements';
 import { probeRedisUrl } from '@template/web/lib/redis-probe';
@@ -113,7 +113,7 @@ export function evaluateEnvironmentSchema(
 export function evaluateEnvironmentSchemas(variables: CandidateVariables): CheckResult[] {
 	return [
 		...evaluateEnvironmentSchema('@template/database', databaseServerEnvironmentSchema, variables),
-		...evaluateEnvironmentSchema('@template/mcp', mcpServerEnvironmentSchema, variables),
+		...evaluateEnvironmentSchema('@lostgradient/mcp', mcpServerEnvironmentSchema, variables),
 		...evaluateEnvironmentSchema('@template/web', webServerEnvironmentSchema, variables),
 	];
 }
@@ -185,7 +185,7 @@ export function evaluateProductionReadiness(
  * next to `evaluateProductionReadiness` rather than inside
  * `collectProductionStartupFailures`/`production-startup-requirements.ts` because that file is
  * `applications/web`'s shared web-server invariant set — `LOG_CONTENT_DIAGNOSTICS_UNTIL` is an
- * `@template/mcp`-only field with no equivalent web invariant to share.
+ * `@lostgradient/mcp`-only field with no equivalent web invariant to share.
  */
 export function evaluateMcpProductionProhibitions(
 	target: Target,

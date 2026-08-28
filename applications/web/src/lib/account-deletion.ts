@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { database } from '@template/database';
-import { logger } from '@template/mcp/logger';
+import { logger } from '@lostgradient/mcp/logger';
 
 const deletionLogger = logger.child({ module: 'account-deletion' });
 
