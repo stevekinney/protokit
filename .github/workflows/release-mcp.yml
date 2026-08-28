@@ -1,17 +1,21 @@
 name: Release @lostgradient/mcp
 
 # Publishing is a deliberate human act, so this never triggers on a push or a
-# merge. A GitHub Release is created by a person; `workflow_dispatch` is for
-# rehearsing the pipeline and defaults to a dry run that publishes nothing.
+# merge. There is exactly one path to the registry: a published GitHub
+# Release, which a person creates, gated behind a protected environment.
+# `workflow_dispatch` rehearses the pipeline and cannot publish.
+#
+# The version guard and the publish step deliberately carry the SAME
+# condition, so the guard cannot be skipped on a publish.
 on:
   release:
     types: [published]
+  # Rehearsal only — this path builds, packs, and verifies, and can never
+  # publish. It carried a `dry_run` boolean that could be flipped to publish,
+  # which made it a second publish path that also skipped the version guard
+  # below (that step only runs for a release). One publish path, always
+  # version-checked, is easier to reason about than two.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Build, pack, and verify without publishing to the registry.'
-        type: boolean
-        default: true
 
 permissions: {}
 
@@ -24,6 +28,14 @@ jobs:
     name: Build, verify, and publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Requires a protected "npm-publish" GitHub environment holding the
+    # NPM_TOKEN secret, with required reviewers configured in the repository
+    # settings. That protection is what actually gates publishing, not this
+    # file: without it the token is an ordinary repository secret and any
+    # collaborator with write access could reach the publish step. Same
+    # reasoning, and the same pattern, as `production.yml`'s `production`
+    # environment.
+    environment: npm-publish
     permissions:
       contents: read
       # Required for npm provenance, which attests that this tarball was built
@@ -82,7 +94,7 @@ jobs:
         run: bun run --cwd packages/mcp verify:package
 
       - name: Publish to npm
-        if: github.event_name == 'release' || inputs.dry_run == false
+        if: github.event_name == 'release'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         # A scoped package defaults to restricted; without --access public the
@@ -90,6 +102,6 @@ jobs:
         run: npm publish --access public --provenance
         working-directory: packages/mcp
 
-      - name: Dry run summary
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
-        run: echo 'Dry run complete. The package was built, packed, and verified, and nothing was published.'
+      - name: Rehearsal summary
+        if: github.event_name == 'workflow_dispatch'
+        run: echo 'Rehearsal complete. The package was built, packed, and verified against a clean Node install, and nothing was published. Publish by creating a GitHub Release.'
