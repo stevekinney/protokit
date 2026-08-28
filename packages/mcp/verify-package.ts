@@ -23,6 +23,14 @@
  * workspace resolution would satisfy imports that a real consumer cannot.
  * Node runs the import rather than Bun, because Bun tolerates module shapes
  * Node rejects and the point is to catch exactly that difference.
+ *
+ * A temporary directory alone does not deliver the "no authentication"
+ * half. npm still reads the per-user `~/.npmrc`, the global config, and
+ * `npm_config_*` environment variables wherever it runs, so a developer token
+ * or a scoped private-registry mapping could make this pass where an
+ * anonymous consumer fails. The install therefore runs with an empty
+ * `--userconfig` and `--globalconfig`, the public registry named explicitly,
+ * and every npm auth-bearing environment variable stripped.
  */
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -31,8 +39,29 @@ import { join } from 'node:path';
 
 const packageRoot = import.meta.dir;
 
-function run(command: string[], cwd: string): string {
-	const result = Bun.spawnSync(command, { cwd, stdout: 'pipe', stderr: 'pipe' });
+/**
+ * `process.env` with every npm credential and registry override removed, so an
+ * ambient token cannot satisfy an install an anonymous consumer could not.
+ */
+function anonymousEnvironment(): Record<string, string> {
+	const environment: Record<string, string> = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (value === undefined) continue;
+		const lower = key.toLowerCase();
+		if (lower.startsWith('npm_config_')) continue;
+		if (lower === 'npm_token' || lower === 'node_auth_token') continue;
+		environment[key] = value;
+	}
+	return environment;
+}
+
+function run(command: string[], cwd: string, env?: Record<string, string>): string {
+	const result = Bun.spawnSync(command, {
+		cwd,
+		stdout: 'pipe',
+		stderr: 'pipe',
+		...(env ? { env } : {}),
+	});
 	const stdout = new TextDecoder().decode(result.stdout);
 	const stderr = new TextDecoder().decode(result.stderr);
 	if (result.exitCode !== 0) {
@@ -60,8 +89,33 @@ try {
 	);
 
 	// `--no-audit --no-fund` for output that is readable in CI; nothing here
-	// suppresses a failure.
-	run(['npm', 'install', join(consumer, packed), '--no-audit', '--no-fund'], consumer);
+	// suppresses a failure. The empty config files and explicit public registry
+	// are what make "no private-registry configuration and no authentication"
+	// true rather than merely intended.
+	// Two distinct files: npm refuses to load one path as both the user and
+	// the global config ("double-loading config ... as global, previously
+	// loaded as user") and exits before resolving anything.
+	const emptyUserConfig = join(consumer, 'empty-user.npmrc');
+	const emptyGlobalConfig = join(consumer, 'empty-global.npmrc');
+	await writeFile(emptyUserConfig, '');
+	await writeFile(emptyGlobalConfig, '');
+	run(
+		[
+			'npm',
+			'install',
+			join(consumer, packed),
+			'--no-audit',
+			'--no-fund',
+			'--userconfig',
+			emptyUserConfig,
+			'--globalconfig',
+			emptyGlobalConfig,
+			'--registry',
+			'https://registry.npmjs.org/',
+		],
+		consumer,
+		anonymousEnvironment(),
+	);
 
 	const probe = join(consumer, 'probe.mjs');
 	await writeFile(

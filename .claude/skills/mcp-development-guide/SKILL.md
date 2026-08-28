@@ -59,7 +59,7 @@ try {
 
 ### Test Utilities
 
-Import from `@lostgradient/mcp/testing`:
+Import from `../testing/index.js` within this package. The `./testing` subpath is **not** published — `tool-assertions.ts` imports `bun:test`, which a Node or vitest consumer cannot load, so shipping it would export something unusable:
 
 - `createTestContext(overrides?)` — returns `{ userId: string }` with a deterministic test user identifier
 - `expectToolSuccess(result)` — asserts `content` is defined, is an array, and `isError` is not `true`

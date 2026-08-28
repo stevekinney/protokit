@@ -97,9 +97,14 @@ jobs:
         if: github.event_name == 'release'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # A GitHub Release marked as a prerelease must not become the version
+          # an ordinary `npm install` resolves to. npm assigns `latest` when no
+          # `--tag` is given, so a `0.2.0-beta.1` release would silently become
+          # the default for every consumer.
+          NPM_DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
         # A scoped package defaults to restricted; without --access public the
         # publish either fails or succeeds privately, which is worse.
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag "$NPM_DIST_TAG"
         working-directory: packages/mcp
 
       - name: Rehearsal summary

@@ -98,7 +98,7 @@ Run tests with `bun test` from this package directory.
 
 ### Test Utilities
 
-Import from `@lostgradient/mcp/testing` (or `../testing/...` within this package):
+Import from `../testing/...` within this package. These helpers are deliberately **not** in the published `exports` map: `tool-assertions.ts` imports `bun:test`, so a consumer on Node or vitest could not use them, and `src/testing` is excluded from `typecheck` (which is how a missing `signal` on `createTestContext`'s return went unnoticed). Both are recorded in TRI-74 as pre-existing:
 
 - `createTestContext(overrides?)` — returns a full `McpContext` with `userId` and `user` (test defaults: `test@example.com`, `Test User`)
 - `expectToolSuccess(result)` — asserts `content` array exists, `isError` is not true
