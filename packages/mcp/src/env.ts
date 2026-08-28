@@ -2,9 +2,17 @@ import { z } from 'zod';
 
 import { mcpServerEnvironmentSchema } from './environment-schema.js';
 
-export type McpServerEnvironment = z.infer<z.ZodObject<typeof mcpServerEnvironmentSchema>>;
-
 const mcpServerEnvironmentObject = z.object(mcpServerEnvironmentSchema);
+
+/**
+ * Inferred from the parser's own schema object rather than from a
+ * separately reconstructed `z.ZodObject<typeof mcpServerEnvironmentSchema>`.
+ * The reconstructed form names the shape a second time, so wrapping or
+ * refining `mcpServerEnvironmentObject` later would change what
+ * `parseMcpServerEnvironment` returns while leaving this type describing
+ * the old shape. One source of truth instead.
+ */
+export type McpServerEnvironment = z.infer<typeof mcpServerEnvironmentObject>;
 
 /**
  * Parses a raw environment record into a validated `McpServerEnvironment`.

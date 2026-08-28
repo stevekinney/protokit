@@ -207,21 +207,35 @@ export const logger: pino.Logger = new Proxy({} as pino.Logger, {
 	// Only `get` and `set` are trapped. Reflecting `ownKeys`,
 	// `getOwnPropertyDescriptor`, or `getPrototypeOf` from the real logger
 	// makes the proxy describe properties its target (a permanently empty
-	// object) does not have, and the engine then rejects the `get` result
-	// for violating the proxy invariants — which is exactly what broke
-	// `logger.info.bind(logger)` in the diagnostics tests. Property access
-	// and assignment are the entire surface call sites use.
+	// object) does not have, and the engine then rejects the `get` result for
+	// violating the proxy invariants.
 	//
-	// Neither trap forwards `receiver`. With the proxy as receiver,
-	// `Reflect.set` defines the property on the *proxy's target* -- the empty
-	// object -- while `get` keeps reading from the real logger, so a test that
-	// monkey-patches `logger.info` would silently have no effect. Passing the
-	// real logger as both target and receiver keeps reads and writes on the
-	// same object.
-	get(_target, property) {
-		return Reflect.get(getLogger(), property);
+	// Both traps UNWRAP the receiver rather than forwarding or discarding it,
+	// because the two obvious choices each break one caller:
+	//
+	// - Forwarding `receiver` unchanged sends the proxy itself to
+	//   `Reflect.set`, which then defines the property on the proxy's target
+	//   (the empty object) while `get` keeps reading from the real logger. A
+	//   test that monkey-patches `logger.info` would silently have no effect.
+	// - Discarding `receiver` breaks `logger.child()`. Pino builds a child
+	//   with `Object.create(this)`, so the child inherits from this proxy;
+	//   assigning the child's own binding and state symbols walks the
+	//   prototype chain and lands in this `set` trap with the CHILD as
+	//   receiver. Dropping it writes those bindings onto the shared singleton
+	//   instead, so module-scoped children (`account-deletion`,
+	//   `scheduled-cleanup`, `consent-inventory`) and the per-request
+	//   `summarize` child overwrite one another's `module`/`userId` metadata
+	//   on the root logger.
+	//
+	// Substituting the real logger only when the receiver IS this proxy gives
+	// both: a direct `logger.info = fn` writes to the real logger, while an
+	// inheriting child keeps its own bindings on itself.
+	get(_target, property, receiver) {
+		const real = getLogger();
+		return Reflect.get(real, property, receiver === logger ? real : receiver);
 	},
-	set(_target, property, value) {
-		return Reflect.set(getLogger(), property, value);
+	set(_target, property, value, receiver) {
+		const real = getLogger();
+		return Reflect.set(real, property, value, receiver === logger ? real : receiver);
 	},
 });
