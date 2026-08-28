@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+	__utf8ByteLengthForTests,
 	createToolErrorResponse,
 	createToolJsonResponse,
 	createToolStructuredResponse,
@@ -134,5 +135,46 @@ describe('the cap measures UTF-8 bytes, not UTF-16 code units', () => {
 	it('reports the real byte length in the error, not the character count', () => {
 		const response = createToolTextResponse(multiByte);
 		expect(response.content[0].text).toContain(String(600_000));
+	});
+});
+
+describe('utf8ByteLength agrees with TextEncoder', () => {
+	/**
+	 * The counter is hand-rolled because `TextEncoder.encode()` allocates the
+	 * whole encoded payload to measure it — up to three times the string — on
+	 * exactly the oversized responses this cap exists to reject. Hand-rolling
+	 * trades that allocation for the risk of disagreeing with the real encoder,
+	 * which would replace one bug with another. So it is pinned against the
+	 * reference rather than reasoned about.
+	 */
+	const reference = new TextEncoder();
+	const cases: Array<[string, string]> = [
+		['empty', ''],
+		['ascii', 'hello world'],
+		['two-byte Latin', 'café rôle Ünïcödé'],
+		['two-byte Cyrillic and Greek', 'Привет κόσμε'],
+		['three-byte CJK', '中文日本語한국어'],
+		['four-byte emoji (surrogate pairs)', '👋🏽🎉🧑‍💻'],
+		['lone high surrogate', '\uD800'],
+		['lone low surrogate', '\uDC00'],
+		['lone surrogate between text', `a\uD800b`],
+		['mixed everything', 'a é 中 👋 \uD800 z'],
+		['boundary U+007F', '\u007F'],
+		['boundary U+0080', '\u0080'],
+		['boundary U+07FF', '\u07FF'],
+		['boundary U+0800', '\u0800'],
+		['boundary U+FFFF', '\uFFFF'],
+		['boundary U+10000', '\u{10000}'],
+	];
+
+	for (const [name, value] of cases) {
+		it(`matches for ${name}`, () => {
+			expect(__utf8ByteLengthForTests(value)).toBe(reference.encode(value).length);
+		});
+	}
+
+	it('matches on a large mixed payload', () => {
+		const large = ('a é 中 👋 ' + '\uD800').repeat(20_000);
+		expect(__utf8ByteLengthForTests(large)).toBe(reference.encode(large).length);
 	});
 });
