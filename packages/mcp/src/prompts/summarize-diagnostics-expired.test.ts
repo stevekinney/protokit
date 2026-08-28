@@ -16,9 +16,15 @@ import { describe, expect, it, mock } from 'bun:test';
  * import order against the other two files.
  */
 mock.module('../env.js', () => ({
-	environment: {
-		logContentDiagnosticsUntil: '2000-01-01T00:00:00Z',
-	},
+	// See `summarize-diagnostics.test.ts` for why the stub returns a
+	// complete environment rather than only the diagnostics field.
+	getEnvironment: () => ({
+		NODE_ENV: 'test',
+		LOG_LEVEL: 'info',
+		MCP_SERVER_NAME: 'template-mcp-server',
+		MCP_CONFORMANCE_MODE: false,
+		LOG_CONTENT_DIAGNOSTICS_UNTIL: '2000-01-01T00:00:00Z',
+	}),
 }));
 
 const { summarizePrompt } = await import('./summarize.js');

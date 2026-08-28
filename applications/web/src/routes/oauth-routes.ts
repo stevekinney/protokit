@@ -3,7 +3,7 @@ import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { database, schema } from '@template/database';
 import {
-	environment as mcpEnvironment,
+	getEnvironment as getMcpEnvironment,
 	getSupportedScopes,
 	hasRegisteredUiExtensionResource,
 	isMcpScope,
@@ -2360,7 +2360,7 @@ export async function handleOauthProtectedResourceMetadataGet(
 			// DOCS-001 / RFC 9728 sec. 2: same documentation/legal links as the
 			// authorization server metadata above, under this RFC's own field
 			// names.
-			resource_name: mcpEnvironment.mcpServerName,
+			resource_name: getMcpEnvironment().MCP_SERVER_NAME,
 			resource_documentation: `${baseUrl}/support`,
 			resource_policy_uri: `${baseUrl}/privacy`,
 			resource_tos_uri: `${baseUrl}/terms`,
@@ -2380,7 +2380,7 @@ export async function handleOauthProtectedResourceMcpMetadataGet(
 			bearer_methods_supported: ['header'],
 			mcp_protocol_version: mcpLatestProtocolVersion,
 			scopes_supported: getSupportedScopes(templateRegistry),
-			resource_name: mcpEnvironment.mcpServerName,
+			resource_name: getMcpEnvironment().MCP_SERVER_NAME,
 			resource_documentation: `${baseUrl}/support`,
 			resource_policy_uri: `${baseUrl}/privacy`,
 			resource_tos_uri: `${baseUrl}/terms`,

@@ -8,14 +8,16 @@ export { cancellableOperationTestHooks } from './conformance-fixture-registratio
 export { getUserProfileTool, listAuditEventsTool, allTools } from './tools/index.js';
 export { userProfileResource, allResources } from './resources/index.js';
 export { summarizePrompt, allPrompts } from './prompts/index.js';
-export { logger } from './logger.js';
+export { logger, getLogger } from './logger.js';
 export {
 	createToolTextResponse,
 	createToolJsonResponse,
 	createToolStructuredResponse,
 	createToolErrorResponse,
 } from './tool-response.js';
-export { environment } from './env.js';
+export { getEnvironment, parseMcpServerEnvironment } from './env.js';
+export type { McpServerEnvironment } from './env.js';
+export { PACKAGE_VERSION } from './version.js';
 export {
 	hasValidLocalhostRebindingHeaders,
 	isLoopbackHostname,
