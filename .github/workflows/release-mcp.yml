@@ -1,0 +1,95 @@
+name: Release @lostgradient/mcp
+
+# Publishing is a deliberate human act, so this never triggers on a push or a
+# merge. A GitHub Release is created by a person; `workflow_dispatch` is for
+# rehearsing the pipeline and defaults to a dry run that publishes nothing.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build, pack, and verify without publishing to the registry.'
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: release-mcp
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, verify, and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Required for npm provenance, which attests that this tarball was built
+      # by this workflow from this commit. Nothing else here needs write.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.0'
+
+      # npm rather than `bun publish`, for provenance: `--provenance` needs an
+      # OIDC-aware npm client, and `registry-url` is what makes setup-node
+      # write the `.npmrc` that reads NODE_AUTH_TOKEN.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: bun install --frozen-lockfile
+
+      # The published version must equal the release tag. Without this, a
+      # forgotten version bump publishes the previous version's contents under
+      # a new tag, or fails opaquely on a duplicate version.
+      - name: Verify the package version matches the release tag
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          package_version="$(node -p "require('./packages/mcp/package.json').version")"
+          expected="${RELEASE_TAG#v}"
+          if [ "$package_version" != "$expected" ]; then
+            echo "Release tag is '$RELEASE_TAG' (version '$expected') but packages/mcp/package.json is '$package_version'." >&2
+            exit 1
+          fi
+          echo "Version $package_version matches the release tag."
+
+      # `version.ts` is a checked-in constant and the source of the version the
+      # server advertises over the wire; its own test fails when it drifts from
+      # package.json. Running it here means a mismatched pair cannot publish.
+      - name: Test
+        run: bun run --cwd packages/mcp test
+
+      - name: Typecheck
+        run: bun run --cwd packages/mcp typecheck
+
+      - name: Build
+        run: bun run --cwd packages/mcp build
+
+      # Proves the tarball is importable before it is published, not after.
+      # Installs the packed artifact into a directory outside the workspace so
+      # no workspace resolution can satisfy an import the published package
+      # would leave unresolved.
+      - name: Verify the packed tarball installs and imports on Node
+        run: bun run --cwd packages/mcp verify:package
+
+      - name: Publish to npm
+        if: github.event_name == 'release' || inputs.dry_run == false
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # A scoped package defaults to restricted; without --access public the
+        # publish either fails or succeeds privately, which is worse.
+        run: npm publish --access public --provenance
+        working-directory: packages/mcp
+
+      - name: Dry run summary
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: echo 'Dry run complete. The package was built, packed, and verified, and nothing was published.'
