@@ -9,6 +9,7 @@ import { defineScopes } from './scope-vocabulary.js';
 import { metricsCollector } from './metrics.js';
 import type { McpRegistry } from './scope-vocabulary.js';
 import type { McpUserProfile } from './types/primitives.js';
+import { defineResource, definePrompt } from './types/primitives.js';
 
 /**
  * A second consumer, defined entirely here. Nothing in this file imports
@@ -812,5 +813,84 @@ describe('registry instructions', () => {
 		const served = client.getInstructions();
 		expect(served).toBe('This server exposes echo_repository and nothing else.');
 		expect(served).not.toContain('get_user_profile');
+	});
+});
+
+/**
+ * Coverage debt from #34 (registry injection), closed here rather than
+ * left red: these four paths were introduced by that change and never
+ * exercised, so `test:coverage` has been failing on `main` since it
+ * merged. Each is a real behaviour worth pinning, not a coverage-counter
+ * exercise.
+ */
+describe('#34 paths that shipped without a test', () => {
+	it('exposes unbound defineResource and definePrompt for consumers without a vocabulary', () => {
+		// The bound definers on a vocabulary are the recommended path, but
+		// the unbound helpers remain part of the public surface for a
+		// consumer that has not declared scopes -- `Scope` falls back to
+		// `string`. They are identity functions whose whole job is to carry
+		// inference, so identity is exactly what to assert.
+		const resource = defineResource({
+			name: 'unbound_resource',
+			title: 'Unbound resource',
+			description: 'Declared without a vocabulary.',
+			uri: 'test://unbound',
+			mimeType: 'text/plain',
+			requiredScope: 'anything:read',
+			handler: async () => ({ contents: [] }),
+		});
+		expect(resource.requiredScope).toBe('anything:read');
+
+		const prompt = definePrompt({
+			name: 'unbound_prompt',
+			title: 'Unbound prompt',
+			description: 'Declared without a vocabulary.',
+			arguments: undefined,
+			requiredScope: 'anything:read',
+			handler: async () => ({ messages: [] }),
+		});
+		expect(prompt.requiredScope).toBe('anything:read');
+	});
+
+	it('refuses a vocabulary that declares no scopes', () => {
+		// The error exists for the `__proto__` case, where the literal looks
+		// non-empty but yields no own properties. `type-assertions.ts` proves
+		// the compile-time half; this is the runtime throw, which no test
+		// reached.
+		expect(() => defineScopes({})).toThrow(/was given no scopes/);
+		expect(() => defineScopes({})).toThrow(/__proto__/);
+	});
+
+	it('snapshots conformanceOnlyTools alongside the registered families', () => {
+		const vocabulary = defineScopes({ 'fixtures:read': 'Read conformance fixtures.' });
+		const conformanceTool = vocabulary.defineTool({
+			name: 'conformance_fixture',
+			title: 'Conformance fixture',
+			description: 'Registered only in conformance mode.',
+			inputSchema: z.object({}),
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
+			requiredScope: 'fixtures:read',
+			handler: async () => ({ content: [] }),
+		});
+
+		const registry = vocabulary.defineRegistry({
+			tools: [],
+			resources: [],
+			prompts: [],
+			conformanceOnlyTools: [conformanceTool],
+		});
+
+		expect(registry.conformanceOnlyTools).toHaveLength(1);
+		expect(registry.conformanceOnlyTools?.[0]?.name).toBe('conformance_fixture');
+		// Frozen on the same terms as every other family: a consumer holding
+		// a reference to the array it passed in must not be able to mutate
+		// what the registry reports.
+		expect(Object.isFrozen(registry.conformanceOnlyTools)).toBe(true);
+		expect(Object.isFrozen(registry.conformanceOnlyTools?.[0])).toBe(true);
 	});
 });
