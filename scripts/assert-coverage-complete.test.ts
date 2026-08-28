@@ -247,14 +247,29 @@ describe('NEVER_IMPORTABLE_FILES / LINE_COVERAGE_WAIVED_FILES', () => {
 		// And the reverse never-importable path must not leak into the OTHER
 		// workspace's env.ts, in case a future edit tried the same shortcut.
 		expect(NEVER_IMPORTABLE_FILES.has('applications/web/src/env.ts')).toBe(false);
-		// Same narrowing as `server.ts` above -- these three `env.ts` files are
-		// each fully covered except their `SKIP_ENV_VALIDATION` guard body.
+		// Same narrowing as `server.ts` above. These two `env.ts` files are
+		// each fully covered except their `SKIP_ENV_VALIDATION` guard body,
+		// which runs at module scope and so is only reachable from a
+		// subprocess.
 		expect(LINE_COVERAGE_WAIVED_FILES.has('applications/web/src/env.ts')).toBe(false);
 		expect(LINE_COVERAGE_WAIVED_LINES.has('applications/web/src/env.ts')).toBe(true);
 		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/database/src/env.ts')).toBe(false);
 		expect(LINE_COVERAGE_WAIVED_LINES.has('packages/database/src/env.ts')).toBe(true);
+		// `packages/mcp/src/env.ts` was a third entry here, asserted to hold a
+		// narrow line waiver for the same guard body. It no longer has one, and
+		// must not: TRI-75 moved that guard out of module scope and into
+		// `parseMcpServerEnvironment`, where a test calls it directly. The
+		// waived lines became genuinely covered, so keeping the waiver would be
+		// exactly the stale exemption this gate reports as "a waiver nobody
+		// re-examines is how a real gap hides". Asserted as absent rather than
+		// deleted, so re-adding a waiver for this file fails here.
 		expect(LINE_COVERAGE_WAIVED_FILES.has('packages/mcp/src/env.ts')).toBe(false);
-		expect(LINE_COVERAGE_WAIVED_LINES.has('packages/mcp/src/env.ts')).toBe(true);
+		expect(LINE_COVERAGE_WAIVED_LINES.has('packages/mcp/src/env.ts')).toBe(false);
+		// The workspace-scoping property this test exists for is unaffected:
+		// three distinct `src/env.ts` paths still resolve independently, and
+		// the two that are waived are waived by their own full workspace key.
+		expect(NEVER_IMPORTABLE_FILES.has('packages/mcp/src/env.ts')).toBe(false);
+		expect(NEVER_IMPORTABLE_FILES.has('packages/database/src/env.ts')).toBe(false);
 	});
 });
 

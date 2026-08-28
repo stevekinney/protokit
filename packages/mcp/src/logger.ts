@@ -1,9 +1,7 @@
 import { createRequire } from 'node:module';
 import pino from 'pino';
 import type { DestinationStream, LoggerOptions } from 'pino';
-import { environment } from './env.js';
-
-const isProduction = environment.nodeEnv === 'production';
+import { getEnvironment } from './env.js';
 
 /**
  * OBS-001 / S-14: `logger.ts` previously declared no redaction paths at
@@ -126,8 +124,9 @@ function redactSecretValues(serialized: string): string {
  * approximation of it.
  */
 export function createLogger(options?: { destination?: DestinationStream }): pino.Logger {
+	const environment = getEnvironment();
 	const baseOptions: LoggerOptions = {
-		level: environment.logLevel ?? 'info',
+		level: environment.LOG_LEVEL,
 		redact: { paths: [...redactionPaths], censor: '[REDACTED]' },
 		hooks: { streamWrite: redactSecretValues },
 	};
@@ -151,7 +150,8 @@ export function createLogger(options?: { destination?: DestinationStream }): pin
 	// Resolve before requiring, and fall back to plain JSON. Pretty output is a
 	// developer convenience; refusing to start because a formatting dependency
 	// is missing is never the right trade.
-	const prettyTransportAvailable = !isProduction && canResolvePrettyTransport();
+	const prettyTransportAvailable =
+		environment.NODE_ENV !== 'production' && canResolvePrettyTransport();
 
 	// `transport` spawns pino-pretty on a worker thread via thread-stream.
 	// Under Bun 1.4.0, `bun test` now surfaces that worker's exit as an
@@ -161,7 +161,7 @@ export function createLogger(options?: { destination?: DestinationStream }): pin
 	// stays covered; only the decision to actually hand the worker-based
 	// transport to `pino()` is additionally gated on not being under test —
 	// pretty-printing is a developer convenience `bun test` doesn't need.
-	const useWorkerTransport = prettyTransportAvailable && environment.nodeEnv !== 'test';
+	const useWorkerTransport = prettyTransportAvailable && environment.NODE_ENV !== 'test';
 
 	return pino({
 		...baseOptions,
@@ -181,4 +181,61 @@ function canResolvePrettyTransport(): boolean {
 	}
 }
 
-export const logger = createLogger();
+/**
+ * The shared logger, constructed on first use rather than on import.
+ *
+ * `createLogger()` reads the environment, so calling it at module scope
+ * would put an environment read — and a validation throw — back into this
+ * package's import graph, which is the whole thing `env.ts` was reworked to
+ * avoid. A getter-backed proxy keeps every existing call site
+ * (`logger.info(...)`, `logger.child(...)`) working unchanged while moving
+ * the first environment read to the first log call.
+ *
+ * `getLogger()` is exported alongside it for callers that want the real
+ * instance rather than the proxy — passing the proxy somewhere that
+ * inspects it with `instanceof` or copies its own properties would not
+ * behave identically.
+ */
+let cachedLogger: pino.Logger | undefined;
+
+export function getLogger(): pino.Logger {
+	cachedLogger ??= createLogger();
+	return cachedLogger;
+}
+
+export const logger: pino.Logger = new Proxy({} as pino.Logger, {
+	// Only `get` and `set` are trapped. Reflecting `ownKeys`,
+	// `getOwnPropertyDescriptor`, or `getPrototypeOf` from the real logger
+	// makes the proxy describe properties its target (a permanently empty
+	// object) does not have, and the engine then rejects the `get` result for
+	// violating the proxy invariants.
+	//
+	// Both traps UNWRAP the receiver rather than forwarding or discarding it,
+	// because the two obvious choices each break one caller:
+	//
+	// - Forwarding `receiver` unchanged sends the proxy itself to
+	//   `Reflect.set`, which then defines the property on the proxy's target
+	//   (the empty object) while `get` keeps reading from the real logger. A
+	//   test that monkey-patches `logger.info` would silently have no effect.
+	// - Discarding `receiver` breaks `logger.child()`. Pino builds a child
+	//   with `Object.create(this)`, so the child inherits from this proxy;
+	//   assigning the child's own binding and state symbols walks the
+	//   prototype chain and lands in this `set` trap with the CHILD as
+	//   receiver. Dropping it writes those bindings onto the shared singleton
+	//   instead, so module-scoped children (`account-deletion`,
+	//   `scheduled-cleanup`, `consent-inventory`) and the per-request
+	//   `summarize` child overwrite one another's `module`/`userId` metadata
+	//   on the root logger.
+	//
+	// Substituting the real logger only when the receiver IS this proxy gives
+	// both: a direct `logger.info = fn` writes to the real logger, while an
+	// inheriting child keeps its own bindings on itself.
+	get(_target, property, receiver) {
+		const real = getLogger();
+		return Reflect.get(real, property, receiver === logger ? real : receiver);
+	},
+	set(_target, property, value, receiver) {
+		const real = getLogger();
+		return Reflect.set(real, property, value, receiver === logger ? real : receiver);
+	},
+});

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { environment } from '../env.js';
+import { getEnvironment } from '../env.js';
 import { definePrompt } from '../scopes.js';
 
 /**
@@ -11,7 +11,7 @@ import { definePrompt } from '../scopes.js';
  * session does not silently outlive its intended window.
  */
 function contentDiagnosticsActive(): boolean {
-	const until = environment.logContentDiagnosticsUntil;
+	const until = getEnvironment().LOG_CONTENT_DIAGNOSTICS_UNTIL;
 	if (!until) return false;
 	return Date.now() < Date.parse(until);
 }
@@ -43,7 +43,7 @@ export const summarizePrompt = definePrompt({
 		try {
 			if (diagnosticsActive) {
 				requestLogger.warn(
-					{ diagnosticsUntil: environment.logContentDiagnosticsUntil },
+					{ diagnosticsUntil: getEnvironment().LOG_CONTENT_DIAGNOSTICS_UNTIL },
 					'Content diagnostics mode active: logging raw prompt topic',
 				);
 				// Round 10 review finding: `logger.ts`'s `topic`/`*.topic`

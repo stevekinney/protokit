@@ -1,84 +1,132 @@
 import { describe, expect, it } from 'bun:test';
+import { getEnvironment, parseMcpServerEnvironment } from './env.js';
 
 /**
- * OBS-001: `LOG_CONTENT_DIAGNOSTICS_UNTIL` must be refused outright in
- * production, mirroring `SKIP_ENV_VALIDATION`'s fail-closed shape
- * (`CONFIG-001`). The check runs imperatively at module load, against the
- * real `process.env`, so it can only be proven by actually loading the
- * module in a fresh process with a real environment — not by constructing
- * a schema-only test around a mocked Environmentalist runtime.
+ * This file replaces a previous version whose assertions this change
+ * deliberately inverts. Recorded here rather than silently dropped.
+ *
+ * What it asserted: that importing `env.ts` with `SKIP_ENV_VALIDATION`
+ * set, or with `LOG_CONTENT_DIAGNOSTICS_UNTIL` set under
+ * `NODE_ENV=production`, killed the process — `expect(exitCode).not.toBe(0)`
+ * from a `Bun.spawn` subprocess. That was the correct test for the
+ * contract at the time: both guards ran at module scope, so a bad
+ * environment had to take the import down.
+ *
+ * Why the new behaviour is correct: TRI-75 makes importing this package
+ * side-effect-free, because a library that validates the host's
+ * environment during module evaluation cannot be consumed — the host
+ * cannot catch it, cannot supply a different environment, and cannot even
+ * decide whether it wants a server. So "import throws" is no longer the
+ * property to want, and asserting it would now be asserting the bug.
+ *
+ * What is NOT lost: both guards still fire, and each test below fails if
+ * its guard is deleted. The enforcement point moved from module load to
+ * `parseMcpServerEnvironment`, so the tests moved with it, from
+ * subprocess exit codes to direct calls. The inverted half of the old
+ * contract — that importing now *succeeds* under a hostile environment —
+ * is covered in `import-side-effects.test.ts`, which still uses a real
+ * subprocess because that property genuinely cannot be observed in-process
+ * once the module is cached.
+ *
+ * One thing the old file documented is genuinely gone: its note that the
+ * module-scope guard lines were an unclosable coverage gap under Bun's
+ * `--coverage` collector. They are ordinary covered lines now, because
+ * they live inside a function a test can call directly.
  */
-async function loadEnvironmentIn(env: Record<string, string>): Promise<{
-	exitCode: number;
-	stderr: string;
-}> {
-	const proc = Bun.spawn({
-		cmd: ['bun', '-e', "await import('./env.ts')"],
-		cwd: import.meta.dir,
-		env: { ...process.env, ...env },
-		stdout: 'pipe',
-		stderr: 'pipe',
+
+const validEnvironment = { NODE_ENV: 'test' } as const;
+
+describe('parseMcpServerEnvironment', () => {
+	it('parses a minimal valid environment and applies schema defaults', () => {
+		const environment = parseMcpServerEnvironment({ ...validEnvironment });
+		expect(environment.NODE_ENV).toBe('test');
+		expect(environment.MCP_SERVER_NAME).toBe('template-mcp-server');
+		expect(environment.MCP_CONFORMANCE_MODE).toBe(false);
+		expect(environment.LOG_LEVEL).toBe('info');
 	});
-	const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-	return { exitCode, stderr };
-}
 
-/**
- * CONFIG-001 / BUG-001: the same fail-closed shape, checked before this
- * package's `SKIP_ENV_VALIDATION` guard has any escape hatch — see
- * `applications/web/src/env.ts` for the full rationale. Reuses
- * `loadEnvironmentIn` above rather than a same-process dynamic
- * `import('./env.ts?query')`: confirmed empirically that Bun 1.3.14's
- * `--coverage` collector resets a source file's line-hit counters on every
- * fresh in-process re-instantiation of that file, so re-importing `env.ts`
- * in-process to observe the throw would wipe out the coverage already
- * recorded for the successful `environmentalist.sync(...)` path instead of unioning
- * with it — regardless of import order or whether the two imports are
- * split across separate test files. A real subprocess cannot regress an
- * already-covered line (it is invisible to the parent's coverage
- * instrumentation), but for that same reason it also cannot close this
- * gap — lines 9-11 remain a genuinely unclosable gap under this
- * toolchain, not silently skipped.
- */
-describe('SKIP_ENV_VALIDATION guard', () => {
-	it('throws immediately when SKIP_ENV_VALIDATION is set, before environmentalist.sync runs', async () => {
-		const { exitCode, stderr } = await loadEnvironmentIn({
-			SKIP_ENV_VALIDATION: 'true',
-			NODE_ENV: 'test',
+	it('rejects an environment missing the required NODE_ENV', () => {
+		expect(() => parseMcpServerEnvironment({})).toThrow();
+	});
+
+	it('rejects an invalid enum value rather than coercing it', () => {
+		expect(() =>
+			parseMcpServerEnvironment({ ...validEnvironment, MCP_CONFORMANCE_MODE: 'yes' }),
+		).toThrow();
+	});
+
+	/**
+	 * CONFIG-001 / BUG-001. A declared-but-blank variable must behave
+	 * exactly like one that was never set, so it reaches `.default()`
+	 * instead of failing `.min(1)` or coercing to a falsy value.
+	 */
+	it('treats an empty string as unset so defaults still apply', () => {
+		const environment = parseMcpServerEnvironment({
+			...validEnvironment,
+			MCP_SERVER_NAME: '',
 		});
-		expect(exitCode).not.toBe(0);
-		expect(stderr).toContain(
-			'SKIP_ENV_VALIDATION is not supported. Supply a real environment instead — see .env.example.',
-		);
-	}, 15000);
+		expect(environment.MCP_SERVER_NAME).toBe('template-mcp-server');
+	});
 
-	it('starts fine with valid environment and no SKIP_ENV_VALIDATION set', async () => {
-		const { exitCode } = await loadEnvironmentIn({ NODE_ENV: 'test' });
-		expect(exitCode).toBe(0);
-	}, 15000);
+	/**
+	 * CONFIG-001 / BUG-001 guard, relocated from module scope into this
+	 * function. Fails when the `SKIP_ENV_VALIDATION` check is removed: with
+	 * the guard gone the call returns a parsed environment instead of
+	 * throwing, because the variable is not part of the schema and is
+	 * simply ignored.
+	 */
+	it('refuses SKIP_ENV_VALIDATION outright, in every NODE_ENV', () => {
+		for (const nodeEnv of ['development', 'production', 'test'] as const) {
+			expect(() =>
+				parseMcpServerEnvironment({ NODE_ENV: nodeEnv, SKIP_ENV_VALIDATION: '1' }),
+			).toThrow(/SKIP_ENV_VALIDATION is not supported/);
+		}
+	});
+
+	/**
+	 * OBS-001 guard, likewise relocated. Fails when the production refusal
+	 * is removed: the timestamp is schema-valid on its own, so without the
+	 * imperative check the parse succeeds and production silently permits
+	 * raw prompt-content logging.
+	 */
+	it('refuses LOG_CONTENT_DIAGNOSTICS_UNTIL in production', () => {
+		expect(() =>
+			parseMcpServerEnvironment({
+				NODE_ENV: 'production',
+				LOG_CONTENT_DIAGNOSTICS_UNTIL: '2030-01-01T00:00:00Z',
+			}),
+		).toThrow(/cannot run in production/);
+	});
+
+	it('permits LOG_CONTENT_DIAGNOSTICS_UNTIL outside production', () => {
+		for (const nodeEnv of ['development', 'test'] as const) {
+			const environment = parseMcpServerEnvironment({
+				NODE_ENV: nodeEnv,
+				LOG_CONTENT_DIAGNOSTICS_UNTIL: '2030-01-01T00:00:00Z',
+			});
+			expect(environment.LOG_CONTENT_DIAGNOSTICS_UNTIL).toBe('2030-01-01T00:00:00Z');
+		}
+	});
+
+	it('reads only the record it is given, never process.env', () => {
+		const sentinel = 'sentinel-server-name-not-in-process-env';
+		process.env.MCP_SERVER_NAME = sentinel;
+		try {
+			const environment = parseMcpServerEnvironment({ ...validEnvironment });
+			expect(environment.MCP_SERVER_NAME).not.toBe(sentinel);
+			expect(environment.MCP_SERVER_NAME).toBe('template-mcp-server');
+		} finally {
+			delete process.env.MCP_SERVER_NAME;
+		}
+	});
 });
 
-describe('LOG_CONTENT_DIAGNOSTICS_UNTIL production guard', () => {
-	it('refuses to start production with LOG_CONTENT_DIAGNOSTICS_UNTIL set', async () => {
-		const { exitCode, stderr } = await loadEnvironmentIn({
-			NODE_ENV: 'production',
-			LOG_CONTENT_DIAGNOSTICS_UNTIL: '2099-01-01T00:00:00Z',
-		});
-		expect(exitCode).not.toBe(0);
-		expect(stderr).toContain('LOG_CONTENT_DIAGNOSTICS_UNTIL is not supported in production');
-	}, 15000);
+describe('getEnvironment', () => {
+	it('memoizes, returning the identical object across calls', () => {
+		expect(getEnvironment()).toBe(getEnvironment());
+	});
 
-	it('allows LOG_CONTENT_DIAGNOSTICS_UNTIL in development', async () => {
-		const { exitCode, stderr } = await loadEnvironmentIn({
-			NODE_ENV: 'development',
-			LOG_CONTENT_DIAGNOSTICS_UNTIL: '2099-01-01T00:00:00Z',
-		});
-		expect(exitCode).toBe(0);
-		expect(stderr).not.toContain('LOG_CONTENT_DIAGNOSTICS_UNTIL is not supported in production');
-	}, 15000);
-
-	it('production starts fine with no LOG_CONTENT_DIAGNOSTICS_UNTIL set', async () => {
-		const { exitCode } = await loadEnvironmentIn({ NODE_ENV: 'production' });
-		expect(exitCode).toBe(0);
-	}, 15000);
+	it('returns a validated environment reflecting the test runner NODE_ENV', () => {
+		expect(getEnvironment().NODE_ENV).toBe('test');
+	});
 });

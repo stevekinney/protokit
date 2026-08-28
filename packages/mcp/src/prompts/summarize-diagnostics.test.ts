@@ -24,9 +24,17 @@ import type { DestinationStream } from 'pino';
  * line — not a pre-serialization method-call interception.
  */
 mock.module('../env.js', () => ({
-	environment: {
-		logContentDiagnosticsUntil: '2099-01-01T00:00:00Z',
-	},
+	// `env.js` exports parsing functions rather than a pre-parsed
+	// `environment` object, so the stub is a `getEnvironment` returning a
+	// complete environment: `logger.ts` imports the same module and reads
+	// `LOG_LEVEL` and `NODE_ENV` from it when `createLogger()` runs below.
+	getEnvironment: () => ({
+		NODE_ENV: 'test',
+		LOG_LEVEL: 'info',
+		MCP_SERVER_NAME: 'template-mcp-server',
+		MCP_CONFORMANCE_MODE: false,
+		LOG_CONTENT_DIAGNOSTICS_UNTIL: '2099-01-01T00:00:00Z',
+	}),
 }));
 
 class MemoryDestination implements DestinationStream {

@@ -9,7 +9,8 @@
 		"./env": "./src/env.ts",
 		"./testing": "./src/testing/index.ts",
 		"./metrics": "./src/metrics.ts",
-		"./environment-schema": "./src/environment-schema.ts"
+		"./environment-schema": "./src/environment-schema.ts",
+		"./version": "./src/version.ts"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
@@ -18,7 +19,6 @@
 		"lint": "eslint src/"
 	},
 	"dependencies": {
-		"@lostgradient/environmentalist": "^0.1.0",
 		"@modelcontextprotocol/core": "^2.0.0",
 		"@modelcontextprotocol/ext-apps": "^1.7.5",
 		"@modelcontextprotocol/node": "^2.0.0",

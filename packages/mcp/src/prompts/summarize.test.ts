@@ -17,9 +17,19 @@ import { describe, it, expect, mock } from 'bun:test';
  * PROGRESS.local.md, reintroduced here in `packages/mcp`.
  */
 mock.module('../env.js', () => ({
-	environment: {
-		logContentDiagnosticsUntil: undefined,
-	},
+	// `env.js` exports parsing functions rather than a pre-parsed
+	// `environment` object. The stub returns a complete environment because
+	// `logger.ts` imports this same module and reads `LOG_LEVEL` and
+	// `NODE_ENV` from it when the logger is first built -- a partial stub
+	// leaves this file passing only when some other test file happens to
+	// have installed a compatible mock first.
+	getEnvironment: () => ({
+		NODE_ENV: 'test',
+		LOG_LEVEL: 'info',
+		MCP_SERVER_NAME: 'template-mcp-server',
+		MCP_CONFORMANCE_MODE: false,
+		LOG_CONTENT_DIAGNOSTICS_UNTIL: undefined,
+	}),
 }));
 
 const { summarizePrompt } = await import('./summarize.js');

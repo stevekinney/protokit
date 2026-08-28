@@ -14,7 +14,8 @@ import instructions from './instructions.md' with { type: 'text' };
 import { EXTENSION_ID } from '@modelcontextprotocol/ext-apps/server';
 import { registerConformanceFixtures } from './conformance-fixture-registration.js';
 import { hasRegisteredUiExtensionResource } from './ui-extension-support.js';
-import { environment } from './env.js';
+import { getEnvironment } from './env.js';
+import { PACKAGE_VERSION } from './version.js';
 import { metricsCollector } from './metrics.js';
 import { logger } from './logger.js';
 import type {
@@ -263,7 +264,8 @@ export function createMcpServer(
 	registry: McpRegistry,
 ): McpServer {
 	const era = context.era ?? 'legacy';
-	const enableConformanceMode = context.enableConformanceMode ?? environment.mcpConformanceMode;
+	const enableConformanceMode =
+		context.enableConformanceMode ?? getEnvironment().MCP_CONFORMANCE_MODE;
 	const experimentalCapabilities: Record<string, { version: string }> = {};
 	// CONTENT-001 / review finding: advertising the MCP Apps extension is not
 	// just gated on the `MCP_ENABLE_UI_EXTENSION` flag (which defaults off,
@@ -286,8 +288,8 @@ export function createMcpServer(
 	// package's identity for someone else's server misattributes it everywhere
 	// `serverInfo` is read.
 	const serverInfo = registry.serverInfo ?? {
-		name: environment.mcpServerName ?? 'template-mcp-server',
-		version: '0.1.0',
+		name: getEnvironment().MCP_SERVER_NAME,
+		version: PACKAGE_VERSION,
 	};
 
 	const server = new McpServer(

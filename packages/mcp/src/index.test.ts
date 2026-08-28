@@ -36,8 +36,22 @@ describe('package entry barrel (./index.ts)', () => {
 		expect(typeof packageEntry.logger.error).toBe('function');
 	});
 
-	it('re-exports the validated environment', () => {
-		expect(packageEntry.environment.nodeEnv).toBeDefined();
+	it('re-exports environment parsing as functions, not a parsed value', () => {
+		// The barrel deliberately no longer exports a pre-parsed
+		// `environment` object: that export was what forced `process.env` to
+		// be read when this module was imported. Consumers get the parser
+		// and a lazy accessor instead.
+		expect(typeof packageEntry.parseMcpServerEnvironment).toBe('function');
+		expect(typeof packageEntry.getEnvironment).toBe('function');
+		expect(packageEntry.getEnvironment().NODE_ENV).toBe('test');
+		expect(packageEntry.parseMcpServerEnvironment({ NODE_ENV: 'development' }).NODE_ENV).toBe(
+			'development',
+		);
+	});
+
+	it('re-exports the advertised package version', () => {
+		expect(typeof packageEntry.PACKAGE_VERSION).toBe('string');
+		expect(packageEntry.PACKAGE_VERSION.length).toBeGreaterThan(0);
 	});
 
 	it('re-exports the scope vocabulary and its type guard consistently', () => {

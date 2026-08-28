@@ -249,13 +249,6 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		new Set([9, 10, 11]),
 	],
 	[
-		// Identical guard, plus this workspace's own production-only companion
-		// check (same shape: the `if` line itself is always covered, only its
-		// throw body is subprocess-only reachable) -- same reason.
-		'packages/mcp/src/env.ts',
-		new Set([9, 10, 11, 39, 40, 41]),
-	],
-	[
 		// Reason 3-equivalent: the closing brace of `extractForwardedAddress`'s
 		// `'forwarded'`-header branch. Every statement inside that branch (the
 		// lines immediately above) is fully hit, 51-68 times each in a real
@@ -285,14 +278,14 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		]),
 	],
 	[
-		// Line 248: the MCP-Apps experimental-capability branch -- unreachable
+		// Line 283: the MCP-Apps experimental-capability branch -- unreachable
 		// because `hasRegisteredUiExtensionResource()` always returns `false`
 		// today; no MCP App is registered anywhere in this codebase yet. NOTE:
 		// this is `createMcpServer`, a different file from
 		// `applications/web/src/server.ts` (see `NEVER_IMPORTABLE_FILES`'s
 		// header comment) -- every other line here is required and covered.
 		'packages/mcp/src/server.ts',
-		new Set([248]),
+		new Set([283]),
 	],
 ]);
 
