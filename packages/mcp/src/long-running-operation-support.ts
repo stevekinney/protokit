@@ -42,6 +42,11 @@ export async function runWithStandardizedTimeout<T>(input: {
 	};
 
 	try {
+		if (input.abortSignal?.aborted) {
+			onExternalAbort();
+			throw new Error('Operation cancelled by client.');
+		}
+
 		return await Promise.race([
 			input.operation(internalController.signal),
 			new Promise<T>((_, reject) => {
@@ -64,11 +69,7 @@ export async function runWithStandardizedTimeout<T>(input: {
 				// up front and reacting immediately closes that window; the
 				// listener below still handles the ordinary case where the
 				// abort happens after this function has already started.
-				if (input.abortSignal?.aborted) {
-					onExternalAbort();
-				} else {
-					input.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
-				}
+				input.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
 			}),
 		]);
 	} finally {

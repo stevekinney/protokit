@@ -540,7 +540,9 @@ describe('a consumer handler that throws', () => {
 			prompts: [],
 		});
 
-		const before = metricsCollector.snapshot().tools['throwing_tool']?.invocations ?? 0;
+		const beforeSnapshot = metricsCollector.snapshot();
+		const before = beforeSnapshot.tools['throwing_tool']?.invocations ?? 0;
+		const beforeFailureEvents = beforeSnapshot.events.mcp_method?.tool_failure ?? 0;
 
 		const handler = createMcpHandler(
 			() => {
@@ -564,11 +566,15 @@ describe('a consumer handler that throws', () => {
 		});
 		await client.connect(transport);
 
-		await client.callTool({ name: 'throwing_tool', arguments: {} }).catch(() => undefined);
+		const result = await client.callTool({ name: 'throwing_tool', arguments: {} });
 
-		const after = metricsCollector.snapshot().tools['throwing_tool'];
+		const afterSnapshot = metricsCollector.snapshot();
+		const after = afterSnapshot.tools['throwing_tool'];
 		expect(after?.invocations).toBe(before + 1);
 		expect(after?.errors).toBe(1);
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([{ type: 'text', text: 'database unreachable' }]);
+		expect(afterSnapshot.events.mcp_method?.tool_failure).toBe(beforeFailureEvents + 1);
 	});
 });
 

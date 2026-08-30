@@ -87,6 +87,24 @@ function boundedTextContent(text: string): { content: [{ type: 'text'; text: str
 	return { content: [{ type: 'text', text }] };
 }
 
+const serializationErrorResponse = {
+	content: [
+		{
+			type: 'text' as const,
+			text: 'Result omitted: tool result could not be serialized as JSON.',
+		},
+	],
+	isError: true as const,
+};
+
+function serializeToolResult(data: unknown): string | null {
+	try {
+		return JSON.stringify(data) ?? 'null';
+	} catch {
+		return null;
+	}
+}
+
 export function createToolTextResponse(text: string) {
 	const bounded = boundedTextContent(text);
 	if (bounded.content[0].text !== text) {
@@ -99,7 +117,8 @@ export function createToolJsonResponse(data: unknown) {
 	// `JSON.stringify` returns `undefined` (not the string `"undefined"`) for
 	// `undefined`, symbols, and functions; normalize to `"null"` so this
 	// always has a string to bound and callers always get valid JSON text.
-	const serialized = JSON.stringify(data) ?? 'null';
+	const serialized = serializeToolResult(data);
+	if (serialized === null) return serializationErrorResponse;
 	const bounded = boundedTextContent(serialized);
 	if (bounded.content[0].text !== serialized) {
 		return { ...bounded, isError: true };
@@ -131,7 +150,8 @@ export function createToolStructuredResponse<T>(data: T, summary: string) {
 		return { ...boundedSummary, isError: true };
 	}
 
-	const serialized = JSON.stringify(data) ?? 'null';
+	const serialized = serializeToolResult(data);
+	if (serialized === null) return serializationErrorResponse;
 	// Both callsites, deliberately. Fixing one and leaving the other reproduces
 	// exactly the illusion this change removes: a cap that reads as enforced
 	// and is not, for the half of the surface nobody re-checked.
