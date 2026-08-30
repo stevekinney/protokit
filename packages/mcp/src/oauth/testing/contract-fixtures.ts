@@ -93,6 +93,7 @@ export const configurationContractFixture = {
 	baseUrl: new URL('https://application.example.com'),
 	accessTokenTtlSeconds: 3600,
 	refreshTokenTtlSeconds: 2_592_000,
+	clientSecretTtlSeconds: 15_552_000,
 	isTrustedOrigin: () => true,
 	trustedProxy: {
 		trustedProxyCidrs: [],

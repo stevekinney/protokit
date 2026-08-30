@@ -52,6 +52,8 @@ export type ConsentPresentation =
 			csrfToken: string;
 			/** Verified client redirect URI shown as consent destination context. */
 			redirectUri: string;
+			/** Authenticated host profile displayed as the account granting consent. */
+			requester: McpUserProfile;
 			client: { id: string; name: string };
 			scopes: Array<{ scope: string; description: string }>;
 	  };
@@ -148,6 +150,7 @@ export type OAuthConfiguration = {
 	baseUrl: URL;
 	accessTokenTtlSeconds: number;
 	refreshTokenTtlSeconds: number;
+	clientSecretTtlSeconds: number;
 	isTrustedOrigin(origin: string): boolean;
 	trustedProxy: TrustedProxyConfiguration;
 	rateLimits: RateLimitConfiguration;
