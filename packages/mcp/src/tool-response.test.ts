@@ -63,6 +63,17 @@ describe('createToolJsonResponse', () => {
 			]);
 		});
 	}
+
+	it('returns caller-owned error responses for separate serialization failures', () => {
+		const first = createToolJsonResponse({ value: 1n });
+		(first.content[0] as { text: string }).text = 'mutated by caller';
+
+		const second = createToolJsonResponse({ value: 2n });
+		expect(second.isError).toBe(true);
+		expect(second.content[0].text).toBe(
+			'Result omitted: tool result could not be serialized as JSON.',
+		);
+	});
 });
 
 describe('createToolErrorResponse', () => {

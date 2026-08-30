@@ -544,6 +544,7 @@ describe('a consumer handler that throws', () => {
 		const before = beforeSnapshot.tools['throwing_tool']?.invocations ?? 0;
 		const beforeFailureEvents = beforeSnapshot.events.mcp_method?.tool_failure ?? 0;
 
+		let transportError: unknown;
 		const handler = createMcpHandler(
 			() => {
 				const userId = randomUUID();
@@ -558,7 +559,12 @@ describe('a consumer handler that throws', () => {
 					registry,
 				);
 			},
-			{ legacy: 'stateless' },
+			{
+				legacy: 'stateless',
+				onerror: (error) => {
+					transportError = error;
+				},
+			},
 		);
 		const client = new Client({ name: 'throwing-client', version: '1.0.0' });
 		const transport = new StreamableHTTPClientTransport(new URL('http://consumer.local/mcp'), {
@@ -575,6 +581,10 @@ describe('a consumer handler that throws', () => {
 		expect(result.isError).toBe(true);
 		expect(result.content).toEqual([{ type: 'text', text: 'database unreachable' }]);
 		expect(afterSnapshot.events.mcp_method?.tool_failure).toBe(beforeFailureEvents + 1);
+		// The SDK converts tool exceptions to a tool-level error result without
+		// invoking its transport-level `onerror` callback. This keeps the
+		// mutually-exclusive tool_failure and transport_failure outcomes separate.
+		expect(transportError).toBeUndefined();
 	});
 });
 

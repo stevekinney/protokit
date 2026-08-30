@@ -152,6 +152,24 @@ describe('runWithStandardizedTimeout', () => {
 		expect(operationInvoked).toBe(false);
 	});
 
+	it('observes an external abort fired synchronously while the operation is being invoked', async () => {
+		const callerController = new AbortController();
+		const start = performance.now();
+
+		await expect(
+			runWithStandardizedTimeout({
+				operation: () => {
+					callerController.abort(new Error('disconnected during dispatch'));
+					return new Promise<never>(() => {});
+				},
+				timeoutMilliseconds: 5000,
+				abortSignal: callerController.signal,
+			}),
+		).rejects.toThrow('cancelled');
+
+		expect(performance.now() - start).toBeLessThan(1000);
+	});
+
 	it('does not leak abort listeners on a long-lived, reused external abortSignal whose signal never fires', async () => {
 		// Regression test for a leaked anonymous `{ once: true }` listener:
 		// it only self-removes when the signal actually fires, so a signal
