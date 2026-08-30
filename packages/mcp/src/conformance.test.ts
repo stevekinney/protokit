@@ -4,6 +4,16 @@ import { createConsumerConformanceHandler, runMcpConformance } from './conforman
 import { defineScopes } from './scope-vocabulary.js';
 
 const vocabulary = defineScopes({ 'fixtures:read': 'Read test-owned fixtures.' });
+const fixtureIdentity = {
+	userId: 'fixture-user',
+	user: {
+		id: 'fixture-user',
+		email: 'fixture@example.com',
+		name: 'Fixture User',
+		image: null,
+		role: 'administrator',
+	},
+} as const;
 
 const healthyTool = vocabulary.defineTool({
 	name: 'healthy_fixture',
@@ -17,7 +27,12 @@ const healthyTool = vocabulary.defineTool({
 		openWorldHint: false,
 	},
 	requiredScope: 'fixtures:read',
-	handler: async () => ({ content: [{ type: 'text', text: 'healthy' }] }),
+	handler: async (_input, context) => ({
+		...(context.userId === fixtureIdentity.userId && context.user.role === 'administrator'
+			? {}
+			: { isError: true }),
+		content: [{ type: 'text', text: 'healthy' }],
+	}),
 });
 
 const brokenTool = vocabulary.defineTool({
@@ -50,6 +65,7 @@ describe('consumer conformance harness', () => {
 			era: 'modern',
 			registry,
 			scopeVocabulary: vocabulary,
+			identity: fixtureIdentity,
 			toolProbes: {
 				healthy_fixture: {},
 				broken_fixture: {},
@@ -69,6 +85,7 @@ describe('consumer conformance harness', () => {
 			era: 'legacy',
 			registry,
 			scopeVocabulary: vocabulary,
+			identity: fixtureIdentity,
 			toolProbes: { healthy_fixture: {} },
 		});
 

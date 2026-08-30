@@ -67,6 +67,7 @@ export { createConsumerConformanceHandler, runMcpConformance } from './conforman
 export type {
 	ConsumerConformanceOptions,
 	McpConformanceEra,
+	McpConformanceIdentity,
 	McpConformanceResult,
 	RunMcpConformanceOptions,
 } from './conformance.js';

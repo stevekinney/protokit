@@ -15,10 +15,17 @@ export type McpConformanceResult = {
 	readonly error?: string;
 };
 
+export type McpConformanceIdentity = {
+	readonly userId: string;
+	readonly user: McpUserProfile;
+};
+
 export type ConsumerConformanceOptions<Scope extends string> = {
 	readonly registry: McpRegistry<Scope>;
 	readonly scopeVocabulary: McpScopeVocabulary<Scope>;
 	readonly enableConformanceMode?: boolean;
+	/** Stable application identity used for every stateless request. */
+	readonly identity?: McpConformanceIdentity;
 };
 
 export type RunMcpConformanceOptions<Scope extends string> = Omit<
@@ -53,17 +60,28 @@ function conformanceUser(userId: string): McpUserProfile {
 export function createConsumerConformanceHandler<Scope extends string>(
 	options: ConsumerConformanceOptions<Scope>,
 ): { fetch(request: Request): Promise<Response> } {
-	const handler = createMcpHandler(
+	const defaultUserId = randomUUID();
+	const identity = options.identity ?? {
+		userId: defaultUserId,
+		user: conformanceUser(defaultUserId),
+	};
+	const handler: ReturnType<typeof createMcpHandler> = createMcpHandler(
 		(requestContext) => {
-			const userId = randomUUID();
 			return createMcpServer(
 				{
-					userId,
-					user: conformanceUser(userId),
+					userId: identity.userId,
+					user: identity.user,
 					enableUiExtension: false,
 					enableConformanceMode: options.enableConformanceMode ?? false,
 					era: requestContext.era,
 					scopes: options.scopeVocabulary.scopes,
+					...(options.enableConformanceMode
+						? {
+								publishResourceUpdate: async (uri: string) => {
+									handler.notify.resourceUpdated(uri);
+								},
+							}
+						: {}),
 				},
 				options.registry,
 			);
@@ -115,6 +133,7 @@ export async function runMcpConformance<Scope extends string>(
 		registry: options.registry,
 		scopeVocabulary: options.scopeVocabulary,
 		enableConformanceMode: false,
+		...(options.identity ? { identity: options.identity } : {}),
 	});
 	const client = new Client(
 		{ name: 'consumer-conformance-client', version: '1.0.0' },
@@ -142,7 +161,10 @@ export async function runMcpConformance<Scope extends string>(
 		}),
 	);
 
-	if (!connected) return results;
+	if (!connected) {
+		await client.close();
+		return results;
+	}
 
 	try {
 		if (options.registry.tools.length > 0) {
