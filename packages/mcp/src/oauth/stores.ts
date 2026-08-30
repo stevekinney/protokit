@@ -96,8 +96,15 @@ export interface CodeStore {
 	findByCode(code: string): Promise<AuthorizationCode | null>;
 	/** A second consume call for the same code returns null. */
 	consume(code: string): Promise<AuthorizationCode | null>;
+	/** Reopens only the exact consumption returned by `consume`. */
+	unconsume(code: string, usedAt: Date): Promise<boolean>;
 	purgeExpired(now: Date): Promise<number>;
 }
+
+export type RefreshTokenRevocationTarget = {
+	/** Subject whose live MCP streams must be disconnected after revocation. */
+	userId: string;
+};
 
 export interface TokenStore {
 	/** Atomically persists the access token and optional root refresh token. */
@@ -126,7 +133,7 @@ export interface TokenStore {
 		createdAt: Date;
 	}): Promise<
 		| { status: 'rotated'; accessToken: AccessToken; refreshToken: RefreshToken }
-		| { status: 'replay_revoked' }
+		| ({ status: 'replay_revoked' } & RefreshTokenRevocationTarget)
 		| { status: 'invalid' }
 	>;
 	/** Revokes a client-owned access token and its paired refresh token, if any. */
@@ -138,7 +145,10 @@ export interface TokenStore {
 	revokeRefreshToken(
 		tokenHash: string,
 		clientId: string,
-	): Promise<{ status: 'revoked' | 'replay_revoked' | 'invalid' }>;
+	): Promise<
+		| ({ status: 'revoked' | 'replay_revoked' } & RefreshTokenRevocationTarget)
+		| { status: 'invalid' }
+	>;
 	/**
 	 * Revokes the refresh-token family and all access tokens descended from it
 	 * in one atomic statement or an equivalently non-interleavable operation.
