@@ -15,7 +15,8 @@ export type AuthorizationTransaction = {
 };
 
 export type AuthorizationCode = {
-	code: string;
+	/** Hash of the one-time credential; plaintext authorization codes are never persisted. */
+	codeHash: string;
 	clientId: string;
 	userId: string;
 	redirectUri: string;
@@ -57,7 +58,8 @@ export type RefreshToken = {
 
 export type RegisteredClient = {
 	clientId: string;
-	clientSecret: string | null;
+	/** Hash of the client credential; null for public clients. */
+	clientSecretHash: string | null;
 	clientName: string;
 	clientType: string;
 	tokenEndpointAuthMethod: string;
@@ -103,13 +105,18 @@ export interface TransactionStore {
 }
 
 export interface CodeStore {
+	/** Persists an authorization-code record containing only the code hash. */
 	issue(record: AuthorizationCode): Promise<void>;
-	/** Reads validation predicates without spending the code. */
-	findByCode(code: string): Promise<AuthorizationCode | null>;
-	/** A second consume call for the same code returns null. */
-	consume(code: string): Promise<ConsumedAuthorizationCode | null>;
+	/** Reads validation predicates by hash without spending the code. */
+	findByHash(codeHash: string): Promise<AuthorizationCode | null>;
+	/**
+	 * Atomically consumes an unused code whose expiry is later than `now`. A
+	 * second consume call for the same hash, or a call at or after expiry,
+	 * returns null.
+	 */
+	consume(codeHash: string, now: Date): Promise<ConsumedAuthorizationCode | null>;
 	/** Reopens only the exact consumption returned by `consume`. */
-	unconsume(code: string, usedAt: Date): Promise<boolean>;
+	unconsume(codeHash: string, usedAt: Date): Promise<boolean>;
 	purgeExpired(now: Date): Promise<number>;
 }
 
@@ -128,6 +135,8 @@ export interface TokenStore {
 	/**
 	 * Loads and validates the prior opaque token, then derives subject, scope,
 	 * resource, and family fields for both replacements inside one operation.
+	 * Successful rotation also revokes the access token paired with the prior
+	 * refresh token before returning the replacement credentials.
 	 * A requested scope must be a subset of the stored grant and is rejected
 	 * without consuming the prior token otherwise. Replaying an already-rotated
 	 * token atomically revokes its family before returning `replay_revoked`.

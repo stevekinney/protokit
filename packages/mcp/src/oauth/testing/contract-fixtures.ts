@@ -32,7 +32,7 @@ const transactionStore = {
 
 const codeStore = {
 	issue: () => Promise.resolve(),
-	findByCode: () => Promise.resolve(null),
+	findByHash: () => Promise.resolve(null),
 	consume: () => Promise.resolve(null),
 	unconsume: () => Promise.resolve(false),
 	purgeExpired: () => Promise.resolve(0),
