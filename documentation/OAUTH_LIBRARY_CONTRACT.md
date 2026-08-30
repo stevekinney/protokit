@@ -6,13 +6,13 @@ Consumers import the host contract from `@lostgradient/mcp/oauth` and the four s
 
 ## Request and identity
 
-`OAuthRequestContext` carries the request, parsed URL, request identifier, immediate socket peer, and an optional identity binding. The socket peer must be the address reported by the network connection—not a value an adapter already derived from `Forwarded` or `X-Forwarded-For`. The library combines that peer with the request headers and `TrustedProxyConfiguration`, so the trust decision stays in one implementation.
+`OAuthRequestContext` carries the request, parsed URL, request identifier, immediate socket peer, and optional resolved identity. The socket peer must be the address reported by the network connection—not a value an adapter already derived from `Forwarded` or `X-Forwarded-For`. The library combines that peer with the request headers and `TrustedProxyConfiguration`, so the trust decision stays in one implementation.
 
-`ResolveIdentityBinding` returns a host-chosen opaque string or `null`. Protokit can bind consent to one browser session while another host binds it to an account. The library compares the value but never parses it, joins through it, or assumes which granularity the host chose.
+`ResolveIdentityBinding` returns both the durable subject identifier used for grant attribution and a host-chosen opaque consent binding. Protokit can bind consent to one browser session while another host binds it to an account. The library compares the consent binding but never parses it, joins through it, or assumes which granularity the host chose.
 
 ## Consent
 
-`RenderConsent` receives either an error or the complete prompt presentation and returns a `Response`. The presentation intentionally contains no application user object: the host has already resolved identity, and handing its private user shape back through a public library contract would couple every consumer to one authentication model.
+`RenderConsent` receives either an error or the complete prompt presentation and returns a `Response`. A prompt includes the transaction identifier and the one-time plaintext CSRF token that approve and deny forms must submit; only its hash is persisted. The presentation intentionally contains no application user object: the host has already resolved identity, and handing its private user shape back through a public library contract would couple every consumer to one authentication model.
 
 The library owns approve and deny behavior. The host owns rendering.
 
@@ -20,13 +20,13 @@ The library owns approve and deny behavior. The host owns rendering.
 
 `TransactionStore`, `CodeStore`, `TokenStore`, and `ClientStore` remain separate because their lifetimes and reasonable backing stores differ. `OAuthStores` groups them when a consumer wants to pass the complete storage seam.
 
-The method comments are part of the contract. Transaction and code consumption must be single-use under concurrency. Transaction consumption must apply its identity, CSRF, expiry, and unused-record predicates atomically. Refresh-family revocation must revoke the family and its descendant access tokens without exposing an interleaving point. A store that reads, checks, and then writes does not satisfy those guarantees even if it matches the [TypeScript](https://www.typescriptlang.org/) signature.
+The method comments are part of the contract. Transaction and code consumption must be single-use under concurrency. Transaction consumption must apply its identity, CSRF, expiry, and unused-record predicates atomically, and compensation may reopen only the exact consumption marker returned by that operation. Authorization codes can be inspected for redirect URI and PKCE validation before the atomic consume. Initial token issuance stores an access token and optional root refresh token atomically. Refresh rotation derives inherited grant fields from the stored prior token rather than trusting caller-supplied copies. Per-token revocation is client-bound and revokes the paired credential, while refresh-family revocation revokes the family and all descendant access tokens without exposing an interleaving point. A store that reads, checks, and then writes does not satisfy those guarantees even if it matches the [TypeScript](https://www.typescriptlang.org/) signature.
 
 Record types use plain strings for host user identifiers and `Date` for timestamps. They do not import a database schema or carry foreign-key brands.
 
 ## Scopes
 
-`OAuthScopeConfiguration` accepts the `McpScopeVocabulary` returned by `defineScopes`. That keeps the consent descriptions, runtime membership check, and registry-bound definers tied to the same vocabulary instead of asking a host to maintain another scope list.
+`OAuthScopeConfiguration` accepts the `McpScopeVocabulary` returned by `defineScopes` and the supported scope set mechanically derived from the production registry. The vocabulary keeps consent descriptions and runtime membership tied to the same definitions, while the supported subset prevents conformance-only or otherwise unserved scopes from appearing in metadata or default consent.
 
 ## Policy and shared infrastructure
 

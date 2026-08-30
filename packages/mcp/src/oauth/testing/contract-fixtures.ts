@@ -25,20 +25,23 @@ import type {
 const transactionStore = {
 	create: () => Promise.resolve(),
 	consume: () => Promise.resolve(null),
-	unconsume: () => Promise.resolve(),
+	unconsume: () => Promise.resolve(false),
 	purgeExpired: () => Promise.resolve(0),
 } satisfies TransactionStore;
 
 const codeStore = {
 	issue: () => Promise.resolve(),
+	findByCode: () => Promise.resolve(null),
 	consume: () => Promise.resolve(null),
 	purgeExpired: () => Promise.resolve(0),
 } satisfies CodeStore;
 
 const tokenStore = {
-	issue: () => Promise.resolve(),
+	issueAuthorizationGrant: () => Promise.resolve(),
 	findByHash: () => Promise.resolve(null),
 	rotateRefreshToken: () => Promise.resolve(null),
+	revokeAccessToken: () => Promise.resolve(false),
+	revokeRefreshToken: () => Promise.resolve(false),
 	revokeFamily: () => Promise.resolve(0),
 	purgeExpired: () => Promise.resolve(0),
 } satisfies TokenStore;
@@ -67,6 +70,7 @@ const vocabulary = defineScopes({
 
 export const scopeContractFixture = {
 	vocabulary,
+	supportedScopes: ['repositories:read'],
 } satisfies OAuthScopeConfiguration;
 
 const minimalRedisClient = {
@@ -114,7 +118,7 @@ export const requestContextContractFixture = {
 	requestUrl: new URL('https://application.example.com/oauth/authorize'),
 	requestId: 'request-id',
 	socketAddress: '127.0.0.1',
-	identityBinding: null,
+	identity: null,
 } satisfies OAuthRequestContext;
 
 export const structuralRedisClientContractFixture: MinimalRedisClient = minimalRedisClient;

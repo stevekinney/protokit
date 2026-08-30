@@ -22,18 +22,27 @@ export type OAuthRequestContext = {
 	 * configuration before deriving a rate-limit or lockout identity.
 	 */
 	socketAddress?: string;
-	/** Host-chosen opaque identity at its approved account or session granularity. */
-	identityBinding: string | null;
+	/** Durable host subject and opaque consent binding, resolved together. */
+	identity: OAuthIdentity | null;
 };
 
-/** Resolves an opaque host identity that the library never parses or interprets. */
-export type ResolveIdentityBinding = (request: Request) => Promise<string | null>;
+export type OAuthIdentity = {
+	/** Durable subject identifier persisted on grants and tokens. */
+	subjectId: string;
+	/** Opaque account or session value used only to bind consent. */
+	consentBinding: string;
+};
+
+/** Resolves durable attribution and an opaque consent binding in one host lookup. */
+export type ResolveIdentityBinding = (request: Request) => Promise<OAuthIdentity | null>;
 
 export type ConsentPresentation =
 	| { mode: 'error'; error: string }
 	| {
 			mode: 'prompt';
 			transactionId: string;
+			/** One-time plaintext value rendered into approve and deny submissions. */
+			csrfToken: string;
 			client: { id: string; name: string };
 			scopes: Array<{ scope: string; description: string }>;
 	  };
@@ -42,6 +51,8 @@ export type RenderConsent = (presentation: ConsentPresentation) => Response | Pr
 
 export type OAuthScopeConfiguration<Scope extends string = string> = {
 	vocabulary: McpScopeVocabulary<Scope>;
+	/** Production scopes mechanically derived from the registry being served. */
+	supportedScopes: readonly Scope[];
 };
 
 export type SlidingWindowRateLimiterResult = {

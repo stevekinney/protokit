@@ -85,21 +85,45 @@ export interface TransactionStore {
 		csrfToken: string,
 		binding: string,
 	): Promise<AuthorizationTransaction | null>;
-	unconsume(transactionId: string): Promise<void>;
+	/** Reopens only the exact consumption returned by `consume`. */
+	unconsume(transactionId: string, consumedAt: Date): Promise<boolean>;
 	purgeExpired(now: Date): Promise<number>;
 }
 
 export interface CodeStore {
 	issue(record: AuthorizationCode): Promise<void>;
+	/** Reads validation predicates without spending the code. */
+	findByCode(code: string): Promise<AuthorizationCode | null>;
 	/** A second consume call for the same code returns null. */
 	consume(code: string): Promise<AuthorizationCode | null>;
 	purgeExpired(now: Date): Promise<number>;
 }
 
 export interface TokenStore {
-	issue(record: AccessToken): Promise<void>;
+	/** Atomically persists the access token and optional root refresh token. */
+	issueAuthorizationGrant(input: {
+		accessToken: AccessToken;
+		refreshToken?: RefreshToken;
+	}): Promise<void>;
 	findByHash(tokenHash: string): Promise<AccessToken | null>;
-	rotateRefreshToken(priorHash: string, next: RefreshToken): Promise<RefreshToken | null>;
+	/**
+	 * Loads and validates the prior opaque token, then derives subject, scope,
+	 * resource, and family fields for both replacements inside one operation.
+	 */
+	rotateRefreshToken(input: {
+		priorHash: string;
+		clientId: string;
+		resource: string;
+		nextAccessTokenHash: string;
+		nextRefreshTokenHash: string;
+		accessTokenExpiresAt: Date;
+		refreshTokenExpiresAt: Date;
+		createdAt: Date;
+	}): Promise<{ accessToken: AccessToken; refreshToken: RefreshToken } | null>;
+	/** Revokes a client-owned access token and its paired refresh token, if any. */
+	revokeAccessToken(tokenHash: string, clientId: string): Promise<boolean>;
+	/** Revokes a client-owned refresh token and its paired access token. */
+	revokeRefreshToken(tokenHash: string, clientId: string): Promise<boolean>;
 	/**
 	 * Revokes the refresh-token family and all access tokens descended from it
 	 * in one atomic statement or an equivalently non-interleavable operation.
