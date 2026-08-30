@@ -1,6 +1,7 @@
 import { defineScopes } from '../../scope-vocabulary.js';
 import type {
 	CrossInstanceMessaging,
+	HandleUnauthenticatedAuthorization,
 	MinimalRedisClient,
 	OAuthConfiguration,
 	OAuthRequestContext,
@@ -39,15 +40,16 @@ const codeStore = {
 const tokenStore = {
 	issueAuthorizationGrant: () => Promise.resolve(),
 	findByHash: () => Promise.resolve(null),
-	rotateRefreshToken: () => Promise.resolve(null),
+	rotateRefreshToken: () => Promise.resolve({ status: 'invalid' as const }),
 	revokeAccessToken: () => Promise.resolve(false),
-	revokeRefreshToken: () => Promise.resolve(false),
+	revokeRefreshToken: () => Promise.resolve({ status: 'invalid' as const }),
 	revokeFamily: () => Promise.resolve(0),
 	purgeExpired: () => Promise.resolve(0),
 } satisfies TokenStore;
 
 const clientStore = {
 	register: () => Promise.resolve(),
+	upsert: () => Promise.resolve(),
 	findById: () => Promise.resolve(null),
 	update: () => Promise.resolve(),
 } satisfies ClientStore;
@@ -61,6 +63,9 @@ export const storeContractFixture = {
 
 export const identityContractFixture = (() =>
 	Promise.resolve(null)) satisfies ResolveIdentityBinding;
+
+export const unauthenticatedAuthorizationContractFixture = (() =>
+	new Response(null, { status: 302 })) satisfies HandleUnauthenticatedAuthorization;
 
 export const consentContractFixture = (() => new Response()) satisfies RenderConsent;
 
@@ -81,6 +86,8 @@ const minimalRedisClient = {
 export const configurationContractFixture = {
 	issuer: new URL('https://authorization.example.com'),
 	baseUrl: new URL('https://application.example.com'),
+	accessTokenTtlSeconds: 3600,
+	refreshTokenTtlSeconds: 2_592_000,
 	isTrustedOrigin: () => true,
 	trustedProxy: {
 		trustedProxyCidrs: [],

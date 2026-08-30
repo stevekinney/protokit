@@ -10,9 +10,11 @@ Consumers import the host contract from `@lostgradient/mcp/oauth` and the four s
 
 `ResolveIdentityBinding` returns both the durable subject identifier used for grant attribution and a host-chosen opaque consent binding. Protokit can bind consent to one browser session while another host binds it to an account. The library compares the consent binding but never parses it, joins through it, or assumes which granularity the host chose.
 
+`HandleUnauthenticatedAuthorization` receives the original authorization request when identity resolution returns `null`. The host can redirect into its own sign-in flow while preserving the complete authorization callback; the library never hardcodes an application authentication route.
+
 ## Consent
 
-`RenderConsent` receives either an error or the complete prompt presentation and returns a `Response`. A prompt includes the transaction identifier and the one-time plaintext CSRF token that approve and deny forms must submit; only its hash is persisted. The presentation intentionally contains no application user object: the host has already resolved identity, and handing its private user shape back through a public library contract would couple every consumer to one authentication model.
+`RenderConsent` receives either an error or the complete prompt presentation and returns a `Response`. A prompt includes the transaction identifier, verified redirect URI, and the one-time plaintext CSRF token that approve and deny forms must submit; only its hash is persisted. The presentation intentionally contains no application user object: the host has already resolved identity, and handing its private user shape back through a public library contract would couple every consumer to one authentication model.
 
 The library owns approve and deny behavior. The host owns rendering.
 
@@ -20,7 +22,7 @@ The library owns approve and deny behavior. The host owns rendering.
 
 `TransactionStore`, `CodeStore`, `TokenStore`, and `ClientStore` remain separate because their lifetimes and reasonable backing stores differ. `OAuthStores` groups them when a consumer wants to pass the complete storage seam.
 
-The method comments are part of the contract. Transaction and code consumption must be single-use under concurrency. Transaction consumption must apply its identity, CSRF, expiry, and unused-record predicates atomically, and compensation may reopen only the exact consumption marker returned by that operation. Authorization codes can be inspected for redirect URI and PKCE validation before the atomic consume. Initial token issuance stores an access token and optional root refresh token atomically. Refresh rotation derives inherited grant fields from the stored prior token rather than trusting caller-supplied copies. Per-token revocation is client-bound and revokes the paired credential, while refresh-family revocation revokes the family and all descendant access tokens without exposing an interleaving point. A store that reads, checks, and then writes does not satisfy those guarantees even if it matches the [TypeScript](https://www.typescriptlang.org/) signature.
+The method comments are part of the contract. Transaction and code consumption must be single-use under concurrency. Transaction consumption must apply its identity, CSRF, expiry, and unused-record predicates atomically, and compensation may reopen only the exact consumption marker returned by that operation. Authorization codes can be inspected for redirect URI and PKCE validation before the atomic consume. Initial token issuance stores an access token and optional root refresh token atomically. Refresh rotation derives inherited grant fields from the stored prior token, validates any requested scope narrowing before consumption, and discriminates a replay after atomically revoking its family. Per-token revocation is client-bound, revokes the paired credential, and likewise distinguishes replay-driven family revocation from an invalid token. Refresh-family revocation revokes the family and all descendant access tokens without exposing an interleaving point. Client metadata refresh uses atomic upsert rather than a racy read-create sequence. A store that reads, checks, and then writes does not satisfy those guarantees even if it matches the [TypeScript](https://www.typescriptlang.org/) signature.
 
 Record types use plain strings for host user identifiers and `Date` for timestamps. They do not import a database schema or carry foreign-key brands.
 
@@ -30,7 +32,7 @@ Record types use plain strings for host user identifiers and `Date` for timestam
 
 ## Policy and shared infrastructure
 
-`OAuthConfiguration` supplies canonical URLs, trusted-origin policy, trusted-proxy policy, rate-limit categories, and optional backing stores. The library owns the limiter and concurrency policy; the host supplies only atomic storage. `AtomicSlidingWindowStore` handles admission, while `ConcurrencySlotStore` holds named, renewable slots. They are different contracts because a request counted once and a stream held open for minutes have different lifetimes.
+`OAuthConfiguration` supplies canonical URLs, access- and refresh-token lifetimes, trusted-origin policy, trusted-proxy policy, rate-limit categories, and optional backing stores. The library uses those lifetimes for initial issuance and rotation rather than embedding deployment policy. The library owns the limiter and concurrency policy; the host supplies only atomic storage. `AtomicSlidingWindowStore` handles admission, while `ConcurrencySlotStore` holds named, renewable slots. They are different contracts because a request counted once and a stream held open for minutes have different lifetimes.
 
 The optional key namespace isolates test runs that share a Redis instance. Production deployments normally omit it instead of weakening the real limits.
 

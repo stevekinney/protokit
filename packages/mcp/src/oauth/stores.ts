@@ -109,21 +109,36 @@ export interface TokenStore {
 	/**
 	 * Loads and validates the prior opaque token, then derives subject, scope,
 	 * resource, and family fields for both replacements inside one operation.
+	 * A requested scope must be a subset of the stored grant and is rejected
+	 * without consuming the prior token otherwise. Replaying an already-rotated
+	 * token atomically revokes its family before returning `replay_revoked`.
 	 */
 	rotateRefreshToken(input: {
 		priorHash: string;
 		clientId: string;
 		resource: string;
+		/** Optional normalized scope request; the store rejects any non-subset. */
+		requestedScope?: string;
 		nextAccessTokenHash: string;
 		nextRefreshTokenHash: string;
 		accessTokenExpiresAt: Date;
 		refreshTokenExpiresAt: Date;
 		createdAt: Date;
-	}): Promise<{ accessToken: AccessToken; refreshToken: RefreshToken } | null>;
+	}): Promise<
+		| { status: 'rotated'; accessToken: AccessToken; refreshToken: RefreshToken }
+		| { status: 'replay_revoked' }
+		| { status: 'invalid' }
+	>;
 	/** Revokes a client-owned access token and its paired refresh token, if any. */
 	revokeAccessToken(tokenHash: string, clientId: string): Promise<boolean>;
-	/** Revokes a client-owned refresh token and its paired access token. */
-	revokeRefreshToken(tokenHash: string, clientId: string): Promise<boolean>;
+	/**
+	 * Revokes a client-owned refresh token and its paired access token. Replaying
+	 * a rotated token atomically revokes its family and returns `replay_revoked`.
+	 */
+	revokeRefreshToken(
+		tokenHash: string,
+		clientId: string,
+	): Promise<{ status: 'revoked' | 'replay_revoked' | 'invalid' }>;
 	/**
 	 * Revokes the refresh-token family and all access tokens descended from it
 	 * in one atomic statement or an equivalently non-interleavable operation.
@@ -134,6 +149,8 @@ export interface TokenStore {
 
 export interface ClientStore {
 	register(record: RegisteredClient): Promise<void>;
+	/** Atomically creates or replaces a client sourced from refreshed metadata. */
+	upsert(record: RegisteredClient): Promise<void>;
 	findById(clientId: string): Promise<RegisteredClient | null>;
 	update(clientId: string, patch: Partial<RegisteredClient>): Promise<void>;
 }

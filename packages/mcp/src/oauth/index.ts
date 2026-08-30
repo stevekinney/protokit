@@ -36,6 +36,9 @@ export type OAuthIdentity = {
 /** Resolves durable attribution and an opaque consent binding in one host lookup. */
 export type ResolveIdentityBinding = (request: Request) => Promise<OAuthIdentity | null>;
 
+/** Starts or otherwise handles host authentication for an authorization request. */
+export type HandleUnauthenticatedAuthorization = (request: Request) => Response | Promise<Response>;
+
 export type ConsentPresentation =
 	| { mode: 'error'; error: string }
 	| {
@@ -43,6 +46,8 @@ export type ConsentPresentation =
 			transactionId: string;
 			/** One-time plaintext value rendered into approve and deny submissions. */
 			csrfToken: string;
+			/** Verified client redirect URI shown as consent destination context. */
+			redirectUri: string;
 			client: { id: string; name: string };
 			scopes: Array<{ scope: string; description: string }>;
 	  };
@@ -125,6 +130,8 @@ export interface MinimalRedisClient {
 export type OAuthConfiguration = {
 	issuer: URL;
 	baseUrl: URL;
+	accessTokenTtlSeconds: number;
+	refreshTokenTtlSeconds: number;
 	isTrustedOrigin(origin: string): boolean;
 	trustedProxy: TrustedProxyConfiguration;
 	rateLimits: RateLimitConfiguration;
@@ -141,6 +148,7 @@ export type CrossInstanceMessaging = {
 
 export type OAuthHostSeams<Scope extends string = string> = {
 	resolveIdentityBinding: ResolveIdentityBinding;
+	handleUnauthenticatedAuthorization: HandleUnauthenticatedAuthorization;
 	renderConsent: RenderConsent;
 	stores: OAuthStores;
 	scopes: OAuthScopeConfiguration<Scope>;
