@@ -91,6 +91,27 @@ If you would rather rely on the environment, set `NODE_ENV` (and any other varia
 
 `getSupportedScopes(registry)` returns the sorted union of every scope your registry actually requires. Use it for the `scopes_supported` field of your OAuth metadata documents and for the `scope` attribute on a `401` challenge, rather than maintaining that list by hand.
 
+## Running protocol conformance
+
+`runMcpConformance` runs either protocol era against your registry. Discovery is checked automatically. Supply valid arguments only for the tools or prompts you want invoked, and resource URIs only for the resources you want read—the harness cannot safely invent valid consumer input.
+
+```ts
+import { runMcpConformance } from '@lostgradient/mcp';
+
+const results = await runMcpConformance({
+	era: 'modern', // or 'legacy'
+	registry,
+	scopeVocabulary: scopes,
+	toolProbes: { list_repositories: {} },
+});
+
+for (const result of results) {
+	console.log(result.name, result.status, result.error ?? '');
+}
+```
+
+Each result has a stable behavior name and its own `passed` or `failed` status. One failed tool, resource, or prompt probe does not hide the results of the remaining behaviors. `createConsumerConformanceHandler` exposes the lower-level request handler when a consumer needs to drive its own client. Its localhost DNS-rebinding check runs independently of `enableConformanceMode`.
+
 ## Environment
 
 Importing this package reads nothing from `process.env` and cannot throw, whatever the ambient environment. That is deliberate: a library which validates its host's environment during module evaluation cannot be embedded, because the host can neither catch the failure nor supply a different environment nor decide whether it wants a server at all.

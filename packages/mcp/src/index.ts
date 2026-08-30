@@ -63,4 +63,11 @@ export type { McpScopeVocabulary, McpRegistry } from './scope-vocabulary.js';
 export { templateRegistry } from './template-registry.js';
 export type { McpScope } from './scopes.js';
 export { getSupportedScopes } from './supported-scopes.js';
+export { createConsumerConformanceHandler, runMcpConformance } from './conformance.js';
+export type {
+	ConsumerConformanceOptions,
+	McpConformanceEra,
+	McpConformanceResult,
+	RunMcpConformanceOptions,
+} from './conformance.js';
 export { hasRegisteredUiExtensionResource } from './ui-extension-support.js';
