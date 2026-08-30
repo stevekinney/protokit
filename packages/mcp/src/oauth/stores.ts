@@ -103,6 +103,14 @@ export interface TransactionStore {
 	): Promise<ConsumedAuthorizationTransaction | null>;
 	/** Reopens only the exact consumption returned by `consume`. */
 	unconsume(transactionId: string, consumedAt: Date): Promise<boolean>;
+	/**
+	 * Deletes every transaction whose opaque consent binding equals `value`.
+	 * The store compares the value for equality and must never parse or infer
+	 * identity granularity from it.
+	 */
+	deleteByBinding(value: string): Promise<number>;
+	/** Deletes every authorization transaction attributed to the durable subject. */
+	deleteAllForUser(userId: string): Promise<number>;
 	purgeExpired(now: Date): Promise<number>;
 }
 
@@ -119,6 +127,8 @@ export interface CodeStore {
 	consume(codeHash: string, now: Date): Promise<ConsumedAuthorizationCode | null>;
 	/** Reopens only the exact consumption returned by `consume`. */
 	unconsume(codeHash: string, usedAt: Date): Promise<boolean>;
+	/** Deletes every authorization code attributed to the durable subject. */
+	deleteAllForUser(userId: string): Promise<number>;
 	purgeExpired(now: Date): Promise<number>;
 }
 
@@ -178,9 +188,22 @@ export interface TokenStore {
 	 * in one atomic statement or an equivalently non-interleavable operation.
 	 */
 	revokeFamily(familyId: string): Promise<number>;
+	/** Deletes every access and refresh token attributed to the durable subject. */
+	deleteAllForUser(userId: string): Promise<number>;
+	/**
+	 * Deletes expired access tokens and refresh tokens whose `expiresAt` is at
+	 * or before `now`. A rotated refresh token remains observable until its own
+	 * expiry so presenting it again can still trigger family replay revocation;
+	 * rotation alone never makes a refresh token eligible for this purge.
+	 */
 	purgeExpired(now: Date): Promise<number>;
 }
 
+/**
+ * Client registrations are not user-owned and therefore have no
+ * `deleteAllForUser` operation. Secret expiry is enforced when the client
+ * authenticates; deleting the registration would prevent secret rotation.
+ */
 export interface ClientStore {
 	register(record: RegisteredClient): Promise<void>;
 	/** Atomically creates or replaces a client sourced from refreshed metadata. */
@@ -189,9 +212,22 @@ export interface ClientStore {
 	update(clientId: string, patch: Partial<RegisteredClient>): Promise<void>;
 }
 
+export type OAuthUserDeletionResult = {
+	transactions: number;
+	codes: number;
+	tokens: number;
+};
+
 export type OAuthStores = {
 	transactions: TransactionStore;
 	codes: CodeStore;
 	tokens: TokenStore;
 	clients: ClientStore;
+	/**
+	 * Deletes all user-owned OAuth state across the transaction, code, and token
+	 * stores. A Postgres adapter may satisfy this through referential cascade;
+	 * a backing store without referential integrity must explicitly fan out to
+	 * all three stores.
+	 */
+	deleteAllForUser(userId: string): Promise<OAuthUserDeletionResult>;
 };
