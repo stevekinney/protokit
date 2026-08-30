@@ -389,14 +389,14 @@ export function createMcpServer(
 					logger.warn(
 						{
 							event: 'mcp_tool_call',
-							outcome: 'tool_exception',
+							outcome: 'tool_failure',
 							tool: tool.name,
 							userId: context.userId,
 							requestId: context.requestId,
 						},
 						'MCP tool handler threw',
 					);
-					metricsCollector.recordEvent('mcp_method', 'tool_exception');
+					metricsCollector.recordEvent('mcp_method', 'tool_failure');
 					throw error;
 				}
 				const isError = 'isError' in result && result.isError === true;
