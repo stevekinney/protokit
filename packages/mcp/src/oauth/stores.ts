@@ -1,8 +1,6 @@
 export type AuthorizationTransaction = {
 	transactionId: string;
-	csrfTokenHash: string;
 	userId: string;
-	sessionTokenHash: string;
 	clientId: string;
 	redirectUri: string;
 	codeChallenge: string;
@@ -73,7 +71,15 @@ export type RegisteredClient = {
 };
 
 export interface TransactionStore {
-	create(record: AuthorizationTransaction): Promise<void>;
+	/**
+	 * Persists hashes of both plaintext secrets using one store-owned hashing
+	 * scheme. The plaintext values must never be retained in the record.
+	 */
+	create(input: {
+		record: AuthorizationTransaction;
+		csrfToken: string;
+		consentBinding: string;
+	}): Promise<void>;
 	/**
 	 * Atomically consumes a live, unused transaction matching the transaction
 	 * identifier, CSRF token, and identity binding. The implementation must
@@ -134,6 +140,7 @@ export interface TokenStore {
 	}): Promise<
 		| { status: 'rotated'; accessToken: AccessToken; refreshToken: RefreshToken }
 		| ({ status: 'replay_revoked' } & RefreshTokenRevocationTarget)
+		| { status: 'scope_rejected' }
 		| { status: 'invalid' }
 	>;
 	/** Revokes a client-owned access token and its paired refresh token, if any. */

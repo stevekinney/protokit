@@ -1,11 +1,11 @@
 import { defineScopes } from '../../scope-vocabulary.js';
+import { defineOAuthScopeConfiguration } from '../../oauth-scope-configuration.js';
 import type {
 	CrossInstanceMessaging,
 	HandleUnauthenticatedAuthorization,
 	MinimalRedisClient,
 	OAuthConfiguration,
 	OAuthRequestContext,
-	OAuthScopeConfiguration,
 	RenderConsent,
 	ResolveIdentityBinding,
 } from '../index.js';
@@ -74,10 +74,10 @@ const vocabulary = defineScopes({
 	'repositories:read': 'Read repository metadata.',
 });
 
-export const scopeContractFixture = {
+export const scopeContractFixture = defineOAuthScopeConfiguration({
 	vocabulary,
 	supportedScopes: ['repositories:read'],
-} satisfies OAuthScopeConfiguration;
+});
 
 const minimalRedisClient = {
 	eval: () => Promise.resolve(0),
@@ -97,6 +97,7 @@ export const configurationContractFixture = {
 	},
 	rateLimits: {
 		categories: {},
+		maximumConcurrent: 25,
 	},
 	rateLimitStores: {
 		slidingWindow: {

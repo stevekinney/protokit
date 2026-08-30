@@ -63,4 +63,5 @@ export type { McpScopeVocabulary, McpRegistry } from './scope-vocabulary.js';
 export { templateRegistry } from './template-registry.js';
 export type { McpScope } from './scopes.js';
 export { getSupportedScopes } from './supported-scopes.js';
+export { defineOAuthScopeConfiguration } from './oauth-scope-configuration.js';
 export { hasRegisteredUiExtensionResource } from './ui-extension-support.js';

@@ -120,7 +120,7 @@ try {
 	const probe = join(consumer, 'probe.mjs');
 	await writeFile(
 		probe,
-		`import { createMcpServer, defineScopes, getSupportedScopes, parseMcpServerEnvironment, PACKAGE_VERSION, EXTENSION_ID } from '@lostgradient/mcp';
+		`import { createMcpServer, defineOAuthScopeConfiguration, defineScopes, getSupportedScopes, parseMcpServerEnvironment, PACKAGE_VERSION, EXTENSION_ID } from '@lostgradient/mcp';
 import { logger as rootLogger, getLogger as rootGetLogger } from '@lostgradient/mcp';
 import { logger as subpathLogger, getLogger as subpathGetLogger } from '@lostgradient/mcp/logger';
 import * as oauthContract from '@lostgradient/mcp/oauth';
@@ -130,6 +130,7 @@ const problems = [];
 const require = (condition, message) => { if (!condition) problems.push(message); };
 
 require(typeof createMcpServer === 'function', 'createMcpServer is not a function');
+require(typeof defineOAuthScopeConfiguration === 'function', 'defineOAuthScopeConfiguration is not a function');
 require(typeof defineScopes === 'function', 'defineScopes is not a function');
 require(typeof parseMcpServerEnvironment === 'function', 'parseMcpServerEnvironment is not a function');
 require(typeof PACKAGE_VERSION === 'string' && PACKAGE_VERSION.length > 0, 'PACKAGE_VERSION is missing');

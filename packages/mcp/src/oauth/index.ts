@@ -54,7 +54,7 @@ export type ConsentPresentation =
 
 export type RenderConsent = (presentation: ConsentPresentation) => Response | Promise<Response>;
 
-export type OAuthScopeConfiguration<Scope extends string = string> = {
+export type OAuthScopeConfiguration<Scope extends string> = {
 	vocabulary: McpScopeVocabulary<Scope>;
 	/** Production scopes mechanically derived from the registry being served. */
 	supportedScopes: readonly Scope[];
@@ -113,6 +113,8 @@ export type RateLimitCategoryConfiguration = {
 
 export type RateLimitConfiguration = {
 	categories: Readonly<Record<string, RateLimitCategoryConfiguration>>;
+	/** Maximum live operations admitted through the concurrency slot store. */
+	maximumConcurrent: number;
 	/**
 	 * Optional isolation for shared backing stores. Real deployments leave it
 	 * empty; concurrent test runs use distinct values instead of weakening the
@@ -146,7 +148,7 @@ export type CrossInstanceMessaging = {
 	subscribe(channel: string, onMessage: (message: string) => void): Promise<() => Promise<void>>;
 };
 
-export type OAuthHostSeams<Scope extends string = string> = {
+export type OAuthHostSeams<Scope extends string> = {
 	resolveIdentityBinding: ResolveIdentityBinding;
 	handleUnauthenticatedAuthorization: HandleUnauthenticatedAuthorization;
 	renderConsent: RenderConsent;
