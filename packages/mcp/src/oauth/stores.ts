@@ -30,7 +30,8 @@ export type AuthorizationCode = {
 };
 
 export type AccessToken = {
-	accessToken: string;
+	/** Hash of the bearer credential; plaintext access tokens are never persisted. */
+	accessTokenHash: string;
 	clientId: string;
 	userId: string;
 	scope: string | null;
@@ -41,7 +42,8 @@ export type AccessToken = {
 };
 
 export type RefreshToken = {
-	refreshToken: string;
+	/** Hash of the bearer credential; plaintext refresh tokens are never persisted. */
+	refreshTokenHash: string;
 	clientId: string;
 	userId: string;
 	scope: string | null;
@@ -70,6 +72,10 @@ export type RegisteredClient = {
 	updatedAt: Date;
 };
 
+export type ConsumedAuthorizationTransaction = AuthorizationTransaction & { consumedAt: Date };
+
+export type ConsumedAuthorizationCode = AuthorizationCode & { usedAt: Date };
+
 export interface TransactionStore {
 	/**
 	 * Persists hashes of both plaintext secrets using one store-owned hashing
@@ -90,7 +96,7 @@ export interface TransactionStore {
 		transactionId: string,
 		csrfToken: string,
 		binding: string,
-	): Promise<AuthorizationTransaction | null>;
+	): Promise<ConsumedAuthorizationTransaction | null>;
 	/** Reopens only the exact consumption returned by `consume`. */
 	unconsume(transactionId: string, consumedAt: Date): Promise<boolean>;
 	purgeExpired(now: Date): Promise<number>;
@@ -101,7 +107,7 @@ export interface CodeStore {
 	/** Reads validation predicates without spending the code. */
 	findByCode(code: string): Promise<AuthorizationCode | null>;
 	/** A second consume call for the same code returns null. */
-	consume(code: string): Promise<AuthorizationCode | null>;
+	consume(code: string): Promise<ConsumedAuthorizationCode | null>;
 	/** Reopens only the exact consumption returned by `consume`. */
 	unconsume(code: string, usedAt: Date): Promise<boolean>;
 	purgeExpired(now: Date): Promise<number>;
@@ -113,7 +119,7 @@ export type RefreshTokenRevocationTarget = {
 };
 
 export interface TokenStore {
-	/** Atomically persists the access token and optional root refresh token. */
+	/** Atomically persists the hashed access token and optional hashed root refresh token. */
 	issueAuthorizationGrant(input: {
 		accessToken: AccessToken;
 		refreshToken?: RefreshToken;

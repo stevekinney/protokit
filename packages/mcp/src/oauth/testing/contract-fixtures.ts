@@ -96,7 +96,16 @@ export const configurationContractFixture = {
 		trustedProxyHopCount: 0,
 	},
 	rateLimits: {
-		categories: {},
+		categories: {
+			oauth_authorize: { maximumRequests: 30, windowSeconds: 60 },
+			oauth_register: { maximumRequests: 10, windowSeconds: 60 },
+			oauth_token_network: { maximumRequests: 30, windowSeconds: 60 },
+			oauth_token_client: { maximumRequests: 30, windowSeconds: 60 },
+			oauth_revoke: { maximumRequests: 30, windowSeconds: 60 },
+			mcp_network: { maximumRequests: 60, windowSeconds: 60 },
+			mcp_user: { maximumRequests: 60, windowSeconds: 60 },
+			failed_authentication: { maximumRequests: 10, windowSeconds: 300 },
+		},
 		maximumConcurrent: 25,
 	},
 	rateLimitStores: {

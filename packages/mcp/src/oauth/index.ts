@@ -111,8 +111,18 @@ export type RateLimitCategoryConfiguration = {
 	windowSeconds: number;
 };
 
+export type OAuthRateLimitCategory =
+	| 'oauth_authorize'
+	| 'oauth_register'
+	| 'oauth_token_network'
+	| 'oauth_token_client'
+	| 'oauth_revoke'
+	| 'mcp_network'
+	| 'mcp_user'
+	| 'failed_authentication';
+
 export type RateLimitConfiguration = {
-	categories: Readonly<Record<string, RateLimitCategoryConfiguration>>;
+	categories: Readonly<Record<OAuthRateLimitCategory, RateLimitCategoryConfiguration>>;
 	/** Maximum live operations admitted through the concurrency slot store. */
 	maximumConcurrent: number;
 	/**
