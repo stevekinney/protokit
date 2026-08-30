@@ -28,6 +28,8 @@ const transactionStore = {
 	create: () => Promise.resolve(),
 	consume: () => Promise.resolve(null),
 	unconsume: () => Promise.resolve(false),
+	deleteByBinding: () => Promise.resolve(0),
+	deleteAllForUser: () => Promise.resolve(0),
 	purgeExpired: () => Promise.resolve(0),
 } satisfies TransactionStore;
 
@@ -36,6 +38,7 @@ const codeStore = {
 	findByHash: () => Promise.resolve(null),
 	consume: () => Promise.resolve(null),
 	unconsume: () => Promise.resolve(false),
+	deleteAllForUser: () => Promise.resolve(0),
 	purgeExpired: () => Promise.resolve(0),
 } satisfies CodeStore;
 
@@ -46,6 +49,7 @@ const tokenStore = {
 	revokeAccessToken: () => Promise.resolve(false),
 	revokeRefreshToken: () => Promise.resolve({ status: 'invalid' as const }),
 	revokeFamily: () => Promise.resolve(0),
+	deleteAllForUser: () => Promise.resolve(0),
 	purgeExpired: () => Promise.resolve(0),
 } satisfies TokenStore;
 
@@ -56,11 +60,21 @@ const clientStore = {
 	update: () => Promise.resolve(),
 } satisfies ClientStore;
 
+type ClientStoreOmitsUserDeletion = 'deleteAllForUser' extends keyof ClientStore ? never : true;
+
+export const clientStoreOmitsUserDeletionContractFixture: ClientStoreOmitsUserDeletion = true;
+
 export const storeContractFixture = {
 	transactions: transactionStore,
 	codes: codeStore,
 	tokens: tokenStore,
 	clients: clientStore,
+	deleteAllForUser: () =>
+		Promise.resolve({
+			transactions: 0,
+			codes: 0,
+			tokens: 0,
+		}),
 } satisfies OAuthStores;
 
 export const identityContractFixture = (() =>
