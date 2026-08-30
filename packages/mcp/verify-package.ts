@@ -120,7 +120,7 @@ try {
 	const probe = join(consumer, 'probe.mjs');
 	await writeFile(
 		probe,
-		`import { createMcpServer, defineScopes, getSupportedScopes, parseMcpServerEnvironment, PACKAGE_VERSION, EXTENSION_ID } from '@lostgradient/mcp';
+		`import { createMcpServer, defineScopes, getSupportedScopes, parseMcpServerEnvironment, runMcpConformance, PACKAGE_VERSION, EXTENSION_ID } from '@lostgradient/mcp';
 import { logger as rootLogger, getLogger as rootGetLogger } from '@lostgradient/mcp';
 import { logger as subpathLogger, getLogger as subpathGetLogger } from '@lostgradient/mcp/logger';
 
@@ -129,6 +129,7 @@ const require = (condition, message) => { if (!condition) problems.push(message)
 
 require(typeof createMcpServer === 'function', 'createMcpServer is not a function');
 require(typeof defineScopes === 'function', 'defineScopes is not a function');
+require(typeof runMcpConformance === 'function', 'runMcpConformance is not a function');
 require(typeof parseMcpServerEnvironment === 'function', 'parseMcpServerEnvironment is not a function');
 require(typeof PACKAGE_VERSION === 'string' && PACKAGE_VERSION.length > 0, 'PACKAGE_VERSION is missing');
 require(typeof EXTENSION_ID === 'string' && EXTENSION_ID.length > 0, 'EXTENSION_ID lost its binding through the bundler');
