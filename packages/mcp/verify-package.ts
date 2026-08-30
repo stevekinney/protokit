@@ -123,6 +123,8 @@ try {
 		`import { createMcpServer, defineScopes, getSupportedScopes, parseMcpServerEnvironment, PACKAGE_VERSION, EXTENSION_ID } from '@lostgradient/mcp';
 import { logger as rootLogger, getLogger as rootGetLogger } from '@lostgradient/mcp';
 import { logger as subpathLogger, getLogger as subpathGetLogger } from '@lostgradient/mcp/logger';
+import * as oauthContract from '@lostgradient/mcp/oauth';
+import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
 
 const problems = [];
 const require = (condition, message) => { if (!condition) problems.push(message); };
@@ -138,7 +140,7 @@ require(rootLogger === subpathLogger, 'logger differs between the root export an
 require(rootGetLogger === subpathGetLogger, 'getLogger differs between the root export and the /logger subpath');
 
 // Every subpath in the exports map must resolve under Node.
-for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version']) {
+for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores']) {
   try { await import('@lostgradient/mcp' + subpath); }
   catch (error) { problems.push('subpath "' + (subpath || '.') + '" failed to import: ' + error.message); }
 }
@@ -148,6 +150,8 @@ const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata
 const registry = vocabulary.defineRegistry({ tools: [], resources: [], prompts: [] });
 require(Array.isArray(getSupportedScopes(registry)), 'getSupportedScopes did not return a list');
 require(parseMcpServerEnvironment({ NODE_ENV: 'test' }).NODE_ENV === 'test', 'environment parsing failed');
+require(Object.keys(oauthContract).length === 0, '/oauth must remain a type-only contract');
+require(Object.keys(oauthStoresContract).length === 0, '/oauth/stores must remain a type-only contract');
 
 if (problems.length > 0) {
   console.error('Packaged artifact is not consumable:');

@@ -44,6 +44,8 @@ const ENTRY_POINTS = [
 	'src/metrics.ts',
 	'src/environment-schema.ts',
 	'src/version.ts',
+	'src/oauth/index.ts',
+	'src/oauth/stores.ts',
 ].map((entry) => join(packageRoot, entry));
 
 await rm(outdir, { recursive: true, force: true });

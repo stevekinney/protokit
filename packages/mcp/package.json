@@ -46,6 +46,16 @@
 			"import": "./dist/version.js",
 			"default": "./dist/version.js"
 		},
+		"./oauth": {
+			"types": "./dist/oauth/index.d.ts",
+			"import": "./dist/oauth/index.js",
+			"default": "./dist/oauth/index.js"
+		},
+		"./oauth/stores": {
+			"types": "./dist/oauth/stores.d.ts",
+			"import": "./dist/oauth/stores.js",
+			"default": "./dist/oauth/stores.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"scripts": {
