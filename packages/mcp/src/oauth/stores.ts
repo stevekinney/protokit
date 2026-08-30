@@ -1,5 +1,6 @@
 export type AuthorizationTransaction = {
-	transactionId: string;
+	/** Store-derived hash of the opaque transaction identifier. */
+	transactionIdHash: string;
 	userId: string;
 	clientId: string;
 	redirectUri: string;
@@ -84,7 +85,8 @@ export interface TransactionStore {
 	 * scheme. The plaintext values must never be retained in the record.
 	 */
 	create(input: {
-		record: AuthorizationTransaction;
+		record: Omit<AuthorizationTransaction, 'transactionIdHash'>;
+		transactionId: string;
 		csrfToken: string;
 		consentBinding: string;
 	}): Promise<void>;

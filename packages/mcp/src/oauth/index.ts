@@ -1,4 +1,5 @@
 import type { McpScopeVocabulary } from '../scope-vocabulary.js';
+import type { McpUserProfile } from '../types/primitives.js';
 import type { OAuthStores } from './stores.js';
 
 export type TrustedProxyHeader = 'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip';
@@ -35,6 +36,9 @@ export type OAuthIdentity = {
 
 /** Resolves durable attribution and an opaque consent binding in one host lookup. */
 export type ResolveIdentityBinding = (request: Request) => Promise<OAuthIdentity | null>;
+
+/** Resolves the host profile required to construct MCP context for a token subject. */
+export type ResolveUserProfile = (subjectId: string) => Promise<McpUserProfile | null>;
 
 /** Starts or otherwise handles host authentication for an authorization request. */
 export type HandleUnauthenticatedAuthorization = (request: Request) => Response | Promise<Response>;
@@ -147,6 +151,14 @@ export type OAuthConfiguration = {
 	isTrustedOrigin(origin: string): boolean;
 	trustedProxy: TrustedProxyConfiguration;
 	rateLimits: RateLimitConfiguration;
+	/**
+	 * Both values must be true before authorization-server metadata advertises
+	 * MCP Apps support, matching the capability exposed by the MCP server.
+	 */
+	mcpUiExtension: {
+		enabled: boolean;
+		registryHasUiExtensionResource: boolean;
+	};
 	rateLimitStores?: {
 		slidingWindow: AtomicSlidingWindowStore;
 		concurrencySlots: ConcurrencySlotStore;
@@ -160,6 +172,7 @@ export type CrossInstanceMessaging = {
 
 export type OAuthHostSeams<Scope extends string> = {
 	resolveIdentityBinding: ResolveIdentityBinding;
+	resolveUserProfile: ResolveUserProfile;
 	handleUnauthenticatedAuthorization: HandleUnauthenticatedAuthorization;
 	renderConsent: RenderConsent;
 	stores: OAuthStores;

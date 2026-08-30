@@ -8,6 +8,7 @@ import type {
 	OAuthRequestContext,
 	RenderConsent,
 	ResolveIdentityBinding,
+	ResolveUserProfile,
 } from '../index.js';
 import type {
 	ClientStore,
@@ -65,6 +66,9 @@ export const storeContractFixture = {
 export const identityContractFixture = (() =>
 	Promise.resolve(null)) satisfies ResolveIdentityBinding;
 
+export const userProfileContractFixture = (() =>
+	Promise.resolve(null)) satisfies ResolveUserProfile;
+
 export const unauthenticatedAuthorizationContractFixture = (() =>
 	new Response(null, { status: 302 })) satisfies HandleUnauthenticatedAuthorization;
 
@@ -107,6 +111,10 @@ export const configurationContractFixture = {
 			failed_authentication: { maximumRequests: 10, windowSeconds: 300 },
 		},
 		maximumConcurrent: 25,
+	},
+	mcpUiExtension: {
+		enabled: true,
+		registryHasUiExtensionResource: true,
 	},
 	rateLimitStores: {
 		slidingWindow: {
