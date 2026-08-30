@@ -110,7 +110,7 @@ for (const result of results) {
 }
 ```
 
-Each result has a stable behavior name and its own `passed` or `failed` status. One failed tool, resource, or prompt probe does not hide the results of the remaining behaviors. `createConsumerConformanceHandler` exposes the lower-level request handler when a consumer needs to drive its own client. Its localhost DNS-rebinding check runs independently of `enableConformanceMode`.
+Each result has a stable behavior name and its own `passed` or `failed` status. One failed tool, resource, or prompt probe does not hide the results of the remaining behaviors. The runner disables package-owned conformance fixtures so discovery reflects only the supplied registry. `createConsumerConformanceHandler` exposes the lower-level request handler when a consumer needs to drive its own client or explicitly enable those fixtures. Its localhost DNS-rebinding check runs independently of `enableConformanceMode`.
 
 ## Environment
 

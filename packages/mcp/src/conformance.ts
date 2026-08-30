@@ -21,7 +21,10 @@ export type ConsumerConformanceOptions<Scope extends string> = {
 	readonly enableConformanceMode?: boolean;
 };
 
-export type RunMcpConformanceOptions<Scope extends string> = ConsumerConformanceOptions<Scope> & {
+export type RunMcpConformanceOptions<Scope extends string> = Omit<
+	ConsumerConformanceOptions<Scope>,
+	'enableConformanceMode'
+> & {
 	readonly era: McpConformanceEra;
 	/** Valid arguments for the consumer tools the harness should invoke. */
 	readonly toolProbes?: Readonly<Record<string, Record<string, unknown>>>;
@@ -105,7 +108,14 @@ async function recordBehavior(
 export async function runMcpConformance<Scope extends string>(
 	options: RunMcpConformanceOptions<Scope>,
 ): Promise<readonly McpConformanceResult[]> {
-	const handler = createConsumerConformanceHandler(options);
+	// Package-owned fixtures are deliberately disabled here: discovery must
+	// describe only the consumer registry. Callers that need the lower-level
+	// fixture mode can use createConsumerConformanceHandler directly.
+	const handler = createConsumerConformanceHandler({
+		registry: options.registry,
+		scopeVocabulary: options.scopeVocabulary,
+		enableConformanceMode: false,
+	});
 	const client = new Client(
 		{ name: 'consumer-conformance-client', version: '1.0.0' },
 		options.era === 'modern' ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : undefined,
@@ -123,12 +133,12 @@ export async function runMcpConformance<Scope extends string>(
 	results.push(
 		await recordBehavior(options.era, 'connection', async () => {
 			await client.connect(transport);
-			connected = true;
 			if (client.getProtocolEra() !== options.era) {
 				throw new Error(
 					`Expected ${options.era} protocol era, received ${String(client.getProtocolEra())}.`,
 				);
 			}
+			connected = true;
 		}),
 	);
 
