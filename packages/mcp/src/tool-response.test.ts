@@ -43,6 +43,37 @@ describe('createToolJsonResponse', () => {
 		const response = createToolJsonResponse(undefined);
 		expect(response.content[0].text).toBe('null');
 	});
+
+	for (const [name, data] of [
+		[
+			'circular data',
+			(() => {
+				const value: Record<string, unknown> = {};
+				value.self = value;
+				return value;
+			})(),
+		],
+		['BigInt data', { value: 1n }],
+	] as const) {
+		it(`returns a stable error response instead of throwing for ${name}`, () => {
+			const response = createToolJsonResponse(data);
+			expect(response.isError).toBe(true);
+			expect(response.content).toEqual([
+				{ type: 'text', text: 'Result omitted: tool result could not be serialized as JSON.' },
+			]);
+		});
+	}
+
+	it('returns caller-owned error responses for separate serialization failures', () => {
+		const first = createToolJsonResponse({ value: 1n });
+		(first.content[0] as { text: string }).text = 'mutated by caller';
+
+		const second = createToolJsonResponse({ value: 2n });
+		expect(second.isError).toBe(true);
+		expect(second.content[0].text).toBe(
+			'Result omitted: tool result could not be serialized as JSON.',
+		);
+	});
 });
 
 describe('createToolErrorResponse', () => {
@@ -85,6 +116,27 @@ describe('createToolStructuredResponse', () => {
 		expect(response.content[0].text).toContain('exceeded');
 		expect((response as { structuredContent?: unknown }).structuredContent).toBeUndefined();
 	});
+
+	for (const [name, data] of [
+		[
+			'circular data',
+			(() => {
+				const value: Record<string, unknown> = {};
+				value.self = value;
+				return value;
+			})(),
+		],
+		['BigInt data', { value: 1n }],
+	] as const) {
+		it(`returns a stable error response without structuredContent for ${name}`, () => {
+			const response = createToolStructuredResponse(data, 'summary');
+			expect(response.isError).toBe(true);
+			expect(response.content).toEqual([
+				{ type: 'text', text: 'Result omitted: tool result could not be serialized as JSON.' },
+			]);
+			expect((response as { structuredContent?: unknown }).structuredContent).toBeUndefined();
+		});
+	}
 });
 
 describe('the cap measures UTF-8 bytes, not UTF-16 code units', () => {

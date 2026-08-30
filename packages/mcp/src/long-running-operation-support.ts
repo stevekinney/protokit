@@ -42,6 +42,11 @@ export async function runWithStandardizedTimeout<T>(input: {
 	};
 
 	try {
+		if (input.abortSignal?.aborted) {
+			onExternalAbort();
+			throw new Error('Operation cancelled by client.');
+		}
+
 		return await Promise.race([
 			input.operation(internalController.signal),
 			new Promise<T>((_, reject) => {

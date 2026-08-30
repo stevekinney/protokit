@@ -104,7 +104,7 @@ describe('runWithStandardizedTimeout', () => {
 		expect(capturedSignal?.aborted).toBe(true);
 	});
 
-	it('rejects immediately and cancels a cooperative operation when the caller-provided abortSignal is already aborted before the call starts', async () => {
+	it('rejects immediately when the caller-provided abortSignal is already aborted before the call starts', async () => {
 		// Round 12 review (P2): `addEventListener('abort', ...)` never fires
 		// for a signal that was aborted BEFORE the listener was attached --
 		// a real scenario for an operation queued behind another and handed
@@ -114,30 +114,11 @@ describe('runWithStandardizedTimeout', () => {
 		const preAbortedController = new AbortController();
 		preAbortedController.abort(new Error('client disconnected before this operation started'));
 
-		let observedAbort = false;
-		let signalAtStart: AbortSignal | undefined;
-
 		const start = performance.now();
 		let thrown: unknown;
 		try {
 			await runWithStandardizedTimeout({
-				operation: (signal) =>
-					new Promise<never>((_, reject) => {
-						signalAtStart = signal;
-						if (signal.aborted) {
-							observedAbort = true;
-							reject(signal.reason);
-							return;
-						}
-						signal.addEventListener(
-							'abort',
-							() => {
-								observedAbort = true;
-								reject(signal.reason);
-							},
-							{ once: true },
-						);
-					}),
+				operation: () => new Promise<never>(() => {}),
 				timeoutMilliseconds: 5000,
 				abortSignal: preAbortedController.signal,
 			});
@@ -148,10 +129,45 @@ describe('runWithStandardizedTimeout', () => {
 
 		expect(thrown instanceof Error).toBe(true);
 		expect((thrown as Error).message).toContain('cancelled');
-		expect(observedAbort).toBe(true);
-		expect(signalAtStart?.aborted).toBe(true);
 		// Well under the 5000ms timeout -- proves this didn't wait it out.
 		expect(elapsedMilliseconds).toBeLessThan(1000);
+	});
+
+	it('does not invoke the operation when the caller-provided abortSignal is already aborted', async () => {
+		const preAbortedController = new AbortController();
+		preAbortedController.abort(new Error('client disconnected before dispatch'));
+		let operationInvoked = false;
+
+		await expect(
+			runWithStandardizedTimeout({
+				operation: async () => {
+					operationInvoked = true;
+					return 'must not run';
+				},
+				timeoutMilliseconds: 5000,
+				abortSignal: preAbortedController.signal,
+			}),
+		).rejects.toThrow('cancelled');
+
+		expect(operationInvoked).toBe(false);
+	});
+
+	it('observes an external abort fired synchronously while the operation is being invoked', async () => {
+		const callerController = new AbortController();
+		const start = performance.now();
+
+		await expect(
+			runWithStandardizedTimeout({
+				operation: () => {
+					callerController.abort(new Error('disconnected during dispatch'));
+					return new Promise<never>(() => {});
+				},
+				timeoutMilliseconds: 5000,
+				abortSignal: callerController.signal,
+			}),
+		).rejects.toThrow('cancelled');
+
+		expect(performance.now() - start).toBeLessThan(1000);
 	});
 
 	it('does not leak abort listeners on a long-lived, reused external abortSignal whose signal never fires', async () => {
