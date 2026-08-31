@@ -4,6 +4,18 @@ import type { DestinationStream, LoggerOptions } from 'pino';
 import { getEnvironment } from './env.js';
 
 /**
+ * The complete logging surface used by the MCP engine. Hosts can satisfy
+ * this structurally with their existing logger; no pino import or pino type
+ * is required. A child must preserve the same four-method contract.
+ */
+export interface McpLogger {
+	info(bindingsOrMessage: Record<string, unknown> | string, message?: string): void;
+	warn(bindingsOrMessage: Record<string, unknown> | string, message?: string): void;
+	error(bindingsOrMessage: Record<string, unknown> | string, message?: string): void;
+	child(bindings: Record<string, unknown>): McpLogger;
+}
+
+/**
  * OBS-001 / S-14: `logger.ts` previously declared no redaction paths at
  * all, so any structured field that happened to carry a credential-shaped
  * value would be written verbatim. This template's request boundary
@@ -197,8 +209,25 @@ function canResolvePrettyTransport(): boolean {
  * behave identically.
  */
 let cachedLogger: pino.Logger | undefined;
+let hostLogger: McpLogger | undefined;
+
+/**
+ * Replaces the engine's logging sink with a host-owned logger. Every package
+ * call through the shared `logger` proxy is forwarded to this instance,
+ * including calls made by OAuth utilities and prompt handlers. Existing
+ * callers that never call `setLogger` continue to receive the lazy pino
+ * logger from `createLogger()`.
+ */
+export function setLogger(nextLogger: McpLogger): () => void {
+	const previousLogger = hostLogger;
+	hostLogger = nextLogger;
+	return () => {
+		if (hostLogger === nextLogger) hostLogger = previousLogger;
+	};
+}
 
 export function getLogger(): pino.Logger {
+	if (hostLogger) return hostLogger as pino.Logger;
 	cachedLogger ??= createLogger();
 	return cachedLogger;
 }
@@ -232,7 +261,13 @@ export const logger: pino.Logger = new Proxy({} as pino.Logger, {
 	// inheriting child keeps its own bindings on itself.
 	get(_target, property, receiver) {
 		const real = getLogger();
-		return Reflect.get(real, property, receiver === logger ? real : receiver);
+		const value = Reflect.get(real, property, receiver === logger ? real : receiver);
+		// A structural host logger may use receiver state or private fields.
+		// Pino's proxy behavior above must stay unchanged, but injected methods
+		// need the ordinary method receiver their implementation expects.
+		return hostLogger && receiver === logger && typeof value === 'function'
+			? value.bind(real)
+			: value;
 	},
 	set(_target, property, value, receiver) {
 		const real = getLogger();

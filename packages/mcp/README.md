@@ -139,6 +139,10 @@ The shared `RateLimitConfiguration` owns exactly eight protocol categories: OAut
 
 Concurrency is a resource-lifetime concern, not a handler-promise concern. For a streaming response, pass the acquired slot to `attachConcurrencySlotToResponseLifetime` so it renews while the body remains open and releases only when the body closes, is canceled, or errors. A host that separately tracks requests must follow the same rule; Tribunal's other implementation is `applications/web/src/lib/in-flight-request-tracker.ts`.
 
+## Host logging
+
+Call `setLogger(hostLogger)` before serving requests to route every engine log record through the host's existing sink and redaction policy. The logger is structural and deliberately small: `info`, `warn`, `error`, and `child`. A host does not need to import pino or implement any other pino API. The function returns a restoration callback for tests or scoped embedding; a long-lived server can ignore it. If `setLogger` is not called, the package retains its existing lazy pino logger and behavior.
+
 ## Mounting in SvelteKit
 
 `@lostgradient/mcp/sveltekit` provides a dependency-free adapter for a SvelteKit `handle` chain. Call `createSvelteKitMcpMount` once in a long-lived server process, pass the OAuth seams and MCP runtime, and delegate each request to the returned `handle`. The adapter claims its process lifecycle synchronously: a second mount fails, disposal is permanent, and failed startup cannot be retried in the same process.
@@ -158,7 +162,7 @@ The dedicated `@lostgradient/mcp/oauth/client-metadata-documents` subpath expose
 | Subpath                                             | Contents                                                               |
 | --------------------------------------------------- | ---------------------------------------------------------------------- |
 | `@lostgradient/mcp`                                 | The engine: server factory, registries, scope vocabularies, primitives |
-| `@lostgradient/mcp/logger`                          | The shared pino logger, built lazily on first use                      |
+| `@lostgradient/mcp/logger`                          | Host logger injection and the lazy default pino logger                 |
 | `@lostgradient/mcp/env`                             | `parseMcpServerEnvironment` and `getEnvironment`                       |
 | `@lostgradient/mcp/environment-schema`              | The raw Zod shape, side-effect free                                    |
 | `@lostgradient/mcp/metrics`                         | The in-process metrics collector                                       |

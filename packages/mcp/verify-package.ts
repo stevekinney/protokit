@@ -121,8 +121,8 @@ try {
 	await writeFile(
 		probe,
 		`import { createMcpServer, defineOAuthScopeConfiguration, defineScopes, getSupportedScopes, parseMcpServerEnvironment, runMcpConformance, PACKAGE_VERSION, EXTENSION_ID } from '@lostgradient/mcp';
-import { logger as rootLogger, getLogger as rootGetLogger } from '@lostgradient/mcp';
-import { logger as subpathLogger, getLogger as subpathGetLogger } from '@lostgradient/mcp/logger';
+import { logger as rootLogger, getLogger as rootGetLogger, setLogger as rootSetLogger } from '@lostgradient/mcp';
+import { logger as subpathLogger, getLogger as subpathGetLogger, setLogger as subpathSetLogger } from '@lostgradient/mcp/logger';
 import * as oauthContract from '@lostgradient/mcp/oauth';
 import * as clientMetadataDocuments from '@lostgradient/mcp/oauth/client-metadata-documents';
 import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
@@ -146,6 +146,7 @@ require(typeof EXTENSION_ID === 'string' && EXTENSION_ID.length > 0, 'EXTENSION_
 // Shared modules must be shared chunks, not per-entry copies.
 require(rootLogger === subpathLogger, 'logger differs between the root export and the /logger subpath');
 require(rootGetLogger === subpathGetLogger, 'getLogger differs between the root export and the /logger subpath');
+require(rootSetLogger === subpathSetLogger, 'setLogger differs between the root export and the /logger subpath');
 
 // Every subpath in the exports map must resolve under Node.
 for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres', '/oauth/client-metadata-documents', '/rate-limit', '/http', '/sveltekit']) {
