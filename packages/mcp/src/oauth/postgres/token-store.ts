@@ -1,0 +1,192 @@
+import type { AccessToken, RefreshToken, TokenStore } from '../stores.js';
+import { countRows, resultRows, sql, type PostgresOAuthDatabase } from './database.js';
+import type { PostgresOAuthSchema } from './schema.js';
+
+const returnedAccessToken = sql`access_token_hash AS "accessTokenHash", client_id AS "clientId", user_id::text AS "userId",
+	scope, resource, expires_at AS "expiresAt", revoked_at AS "revokedAt", created_at AS "createdAt"`;
+
+export class PostgresTokenStore implements TokenStore {
+	constructor(
+		private readonly database: PostgresOAuthDatabase,
+		private readonly schema: PostgresOAuthSchema,
+	) {}
+
+	async issueAuthorizationGrant(
+		input: Parameters<TokenStore['issueAuthorizationGrant']>[0],
+	): Promise<void> {
+		const access = input.accessToken;
+		const refresh = input.refreshToken;
+		await this.database.execute(sql`WITH inserted_access AS (
+			INSERT INTO ${this.schema.accessTokens} (access_token_hash, client_id, user_id, scope, resource, expires_at, revoked_at, created_at)
+			VALUES (${access.accessTokenHash}, ${access.clientId}, ${access.userId}, ${access.scope}, ${access.resource},
+				${access.expiresAt}, ${access.revokedAt}, ${access.createdAt}) RETURNING access_token_hash
+		) ${
+			refresh
+				? sql`INSERT INTO ${this.schema.refreshTokens} (refresh_token_hash, client_id, user_id, scope, resource,
+			access_token_hash, family_id, expires_at, revoked_at, created_at)
+			SELECT ${refresh.refreshTokenHash}, ${refresh.clientId}, ${refresh.userId}, ${refresh.scope}, ${refresh.resource},
+				access_token_hash, ${refresh.familyId}, ${refresh.expiresAt}, ${refresh.revokedAt}, ${refresh.createdAt} FROM inserted_access`
+				: sql`SELECT access_token_hash FROM inserted_access`
+		}`);
+	}
+
+	async findByHash(tokenHash: string): Promise<AccessToken | null> {
+		const result = await this.database
+			.execute(sql`SELECT ${returnedAccessToken} FROM ${this.schema.accessTokens}
+			WHERE access_token_hash = ${tokenHash}`);
+		return resultRows<AccessToken>(result)[0] ?? null;
+	}
+
+	async rotateRefreshToken(
+		input: Parameters<TokenStore['rotateRefreshToken']>[0],
+	): ReturnType<TokenStore['rotateRefreshToken']> {
+		const result = await this.database.execute(sql`WITH prior AS MATERIALIZED (
+			SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${input.priorHash}
+				AND client_id = ${input.clientId} AND resource = ${input.resource} FOR UPDATE
+		), live AS (
+			SELECT * FROM prior WHERE revoked_at IS NULL AND expires_at > ${input.createdAt}
+		), eligible AS (
+			SELECT * FROM live WHERE (${input.requestedScope ?? null}::text IS NULL OR NOT EXISTS (
+					SELECT requested_scope FROM unnest(string_to_array(${input.requestedScope ?? ''}, ' ')) requested_scope
+					WHERE requested_scope <> '' AND requested_scope <> ALL(string_to_array(COALESCE(live.scope, ''), ' '))))
+		), revoked_prior AS (
+			UPDATE ${this.schema.refreshTokens} SET revoked_at = ${input.createdAt}
+			WHERE refresh_token_hash IN (SELECT refresh_token_hash FROM eligible) RETURNING *
+		), revoked_access AS (
+			UPDATE ${this.schema.accessTokens} SET revoked_at = ${input.createdAt}
+			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_prior) RETURNING access_token_hash
+		), inserted_access AS (
+			INSERT INTO ${this.schema.accessTokens} (access_token_hash, client_id, user_id, scope, resource, expires_at, revoked_at, created_at)
+			SELECT ${input.nextAccessTokenHash}, client_id, user_id, COALESCE(${input.requestedScope ?? null}::text, scope),
+				resource, ${input.accessTokenExpiresAt}, NULL, ${input.createdAt} FROM revoked_prior
+			RETURNING *
+		), inserted_refresh AS (
+			INSERT INTO ${this.schema.refreshTokens} (refresh_token_hash, client_id, user_id, scope, resource,
+				access_token_hash, family_id, expires_at, revoked_at, created_at)
+			SELECT ${input.nextRefreshTokenHash}, prior.client_id, prior.user_id,
+				COALESCE(${input.requestedScope ?? null}::text, prior.scope), prior.resource,
+				inserted_access.access_token_hash, prior.family_id, ${input.refreshTokenExpiresAt}, NULL, ${input.createdAt}
+			FROM revoked_prior prior CROSS JOIN inserted_access RETURNING *
+		), replay_refresh AS (
+			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, ${input.createdAt})
+			WHERE family_id IN (SELECT family_id FROM prior WHERE revoked_at IS NOT NULL) RETURNING access_token_hash
+		), replay_access AS (
+			UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, ${input.createdAt})
+			WHERE access_token_hash IN (SELECT access_token_hash FROM replay_refresh) RETURNING access_token_hash
+		)
+		SELECT CASE
+			WHEN EXISTS (SELECT 1 FROM inserted_refresh) THEN 'rotated'
+			WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
+			WHEN EXISTS (SELECT 1 FROM live) AND ${input.requestedScope ?? null}::text IS NOT NULL THEN 'scope_rejected'
+			ELSE 'invalid' END AS status,
+			(SELECT user_id::text FROM prior LIMIT 1) AS "userId",
+			(SELECT row_to_json(a) FROM inserted_access a LIMIT 1) AS access,
+			(SELECT row_to_json(r) FROM inserted_refresh r LIMIT 1) AS refresh`);
+		const row = resultRows<{
+			status: 'rotated' | 'replay_revoked' | 'scope_rejected' | 'invalid';
+			userId?: string;
+			access?: Record<string, unknown>;
+			refresh?: Record<string, unknown>;
+		}>(result)[0];
+		if (!row || row.status === 'invalid') return Promise.resolve({ status: 'invalid' });
+		if (row.status === 'scope_rejected') return Promise.resolve({ status: 'scope_rejected' });
+		if (row.status === 'replay_revoked')
+			return Promise.resolve({ status: 'replay_revoked', userId: row.userId! });
+		return Promise.resolve({
+			status: 'rotated',
+			accessToken: mapAccess(row.access!),
+			refreshToken: mapRefresh(row.refresh!),
+		});
+	}
+
+	async revokeAccessToken(tokenHash: string, clientId: string): Promise<boolean> {
+		const result = await this.database.execute(sql`WITH revoked_access AS (
+			UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+			WHERE access_token_hash = ${tokenHash} AND client_id = ${clientId} RETURNING access_token_hash
+		), revoked_refresh AS (
+			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_access)
+		) SELECT count(*) AS count FROM revoked_access`);
+		return countRows(result) === 1;
+	}
+
+	async revokeRefreshToken(
+		tokenHash: string,
+		clientId: string,
+	): ReturnType<TokenStore['revokeRefreshToken']> {
+		const lookup = await this.database
+			.execute(sql`SELECT user_id::text AS "userId", family_id AS "familyId", revoked_at AS "revokedAt"
+			FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash} AND client_id = ${clientId}`);
+		const token = resultRows<{ userId: string; familyId: string; revokedAt: Date | null }>(
+			lookup,
+		)[0];
+		if (!token) return Promise.resolve({ status: 'invalid' });
+		if (token.revokedAt) {
+			await this.revokeFamily(token.familyId);
+			return Promise.resolve({ status: 'replay_revoked', userId: token.userId });
+		}
+		await this.database.execute(sql`WITH revoked_refresh AS (
+			UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
+			WHERE refresh_token_hash = ${tokenHash} AND client_id = ${clientId} AND revoked_at IS NULL RETURNING access_token_hash
+		) UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_refresh)`);
+		return Promise.resolve({ status: 'revoked', userId: token.userId });
+	}
+
+	async revokeFamily(familyId: string): Promise<number> {
+		const result = await this.database.execute(sql`WITH revoked_refresh AS (
+			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+			WHERE family_id = ${familyId} RETURNING access_token_hash
+		), revoked_access AS (
+			UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_refresh) RETURNING 1
+		) SELECT (SELECT count(*) FROM revoked_refresh) + (SELECT count(*) FROM revoked_access) AS count`);
+		return countRows(result);
+	}
+
+	async deleteAllForUser(userId: string): Promise<number> {
+		const result = await this.database.execute(sql`WITH deleted_refresh AS (
+			DELETE FROM ${this.schema.refreshTokens} WHERE user_id = ${userId} RETURNING 1
+		), deleted_access AS (
+			DELETE FROM ${this.schema.accessTokens} WHERE user_id = ${userId} RETURNING 1
+		) SELECT (SELECT count(*) FROM deleted_refresh) + (SELECT count(*) FROM deleted_access) AS count`);
+		return countRows(result);
+	}
+
+	async purgeExpired(now: Date): Promise<number> {
+		const result = await this.database.execute(sql`WITH deleted_refresh AS (
+			DELETE FROM ${this.schema.refreshTokens} WHERE expires_at <= ${now} RETURNING 1
+		), deleted_access AS (
+			DELETE FROM ${this.schema.accessTokens} WHERE expires_at <= ${now} RETURNING 1
+		) SELECT (SELECT count(*) FROM deleted_refresh) + (SELECT count(*) FROM deleted_access) AS count`);
+		return countRows(result);
+	}
+}
+
+function mapAccess(row: Record<string, unknown>): AccessToken {
+	return {
+		accessTokenHash: row.access_token_hash as string,
+		clientId: row.client_id as string,
+		userId: String(row.user_id),
+		scope: row.scope as string | null,
+		resource: row.resource as string,
+		expiresAt: row.expires_at as Date,
+		revokedAt: row.revoked_at as Date | null,
+		createdAt: row.created_at as Date,
+	};
+}
+
+function mapRefresh(row: Record<string, unknown>): RefreshToken {
+	return {
+		refreshTokenHash: row.refresh_token_hash as string,
+		clientId: row.client_id as string,
+		userId: String(row.user_id),
+		scope: row.scope as string | null,
+		resource: row.resource as string,
+		accessTokenHash: row.access_token_hash as string,
+		familyId: row.family_id as string,
+		expiresAt: row.expires_at as Date,
+		revokedAt: row.revoked_at as Date | null,
+		createdAt: row.created_at as Date,
+	};
+}

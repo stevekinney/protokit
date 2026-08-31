@@ -126,6 +126,7 @@ import { logger as subpathLogger, getLogger as subpathGetLogger } from '@lostgra
 import * as oauthContract from '@lostgradient/mcp/oauth';
 import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
 import { createInMemoryOAuthStores, InMemoryClientStore, InMemoryCodeStore, InMemoryTokenStore, InMemoryTransactionStore } from '@lostgradient/mcp/oauth/testing';
+import { createPostgresOAuthSchema, createPostgresOAuthStores, PostgresClientStore, PostgresCodeStore, PostgresTokenStore, PostgresTransactionStore } from '@lostgradient/mcp/oauth/postgres';
 
 const problems = [];
 const require = (condition, message) => { if (!condition) problems.push(message); };
@@ -143,7 +144,7 @@ require(rootLogger === subpathLogger, 'logger differs between the root export an
 require(rootGetLogger === subpathGetLogger, 'getLogger differs between the root export and the /logger subpath');
 
 // Every subpath in the exports map must resolve under Node.
-for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing']) {
+for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres']) {
   try { await import('@lostgradient/mcp' + subpath); }
   catch (error) { problems.push('subpath "' + (subpath || '.') + '" failed to import: ' + error.message); }
 }
@@ -160,6 +161,12 @@ require(typeof InMemoryTransactionStore === 'function', 'InMemoryTransactionStor
 require(typeof InMemoryCodeStore === 'function', 'InMemoryCodeStore is not a constructor');
 require(typeof InMemoryTokenStore === 'function', 'InMemoryTokenStore is not a constructor');
 require(typeof InMemoryClientStore === 'function', 'InMemoryClientStore is not a constructor');
+require(typeof createPostgresOAuthSchema === 'function', 'createPostgresOAuthSchema is not a function');
+require(typeof createPostgresOAuthStores === 'function', 'createPostgresOAuthStores is not a function');
+require(typeof PostgresTransactionStore === 'function', 'PostgresTransactionStore is not a constructor');
+require(typeof PostgresCodeStore === 'function', 'PostgresCodeStore is not a constructor');
+require(typeof PostgresTokenStore === 'function', 'PostgresTokenStore is not a constructor');
+require(typeof PostgresClientStore === 'function', 'PostgresClientStore is not a constructor');
 
 if (problems.length > 0) {
   console.error('Packaged artifact is not consumable:');
