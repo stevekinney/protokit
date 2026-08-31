@@ -29,7 +29,7 @@ export class PostgresCodeStore implements CodeStore {
 
 	async consume(codeHash: string, now: Date): Promise<ConsumedAuthorizationCode | null> {
 		const result = await this.database
-			.execute(sql`UPDATE ${this.schema.codes} SET used_at = clock_timestamp()
+			.execute(sql`UPDATE ${this.schema.codes} SET used_at = date_trunc('milliseconds', clock_timestamp())
 			WHERE code_hash = ${codeHash} AND used_at IS NULL AND expires_at > ${now} RETURNING ${returnedCode}`);
 		return resultRows<ConsumedAuthorizationCode>(result)[0] ?? null;
 	}

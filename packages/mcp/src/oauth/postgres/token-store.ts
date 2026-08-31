@@ -45,6 +45,8 @@ export class PostgresTokenStore implements TokenStore {
 				AND client_id = ${input.clientId} AND resource = ${input.resource} FOR UPDATE
 		), live AS (
 			SELECT * FROM prior WHERE revoked_at IS NULL AND expires_at > ${input.createdAt}
+		), replayable AS (
+			SELECT * FROM prior WHERE revoked_at IS NOT NULL AND expires_at > ${input.createdAt}
 		), eligible AS (
 			SELECT * FROM live WHERE (${input.requestedScope ?? null}::text IS NULL OR NOT EXISTS (
 					SELECT requested_scope FROM unnest(string_to_array(${input.requestedScope ?? ''}, ' ')) requested_scope
@@ -69,14 +71,14 @@ export class PostgresTokenStore implements TokenStore {
 			FROM revoked_prior prior CROSS JOIN inserted_access RETURNING *
 		), replay_refresh AS (
 			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, ${input.createdAt})
-			WHERE family_id IN (SELECT family_id FROM prior WHERE revoked_at IS NOT NULL) RETURNING access_token_hash
+			WHERE family_id IN (SELECT family_id FROM replayable) AND revoked_at IS NULL RETURNING access_token_hash
 		), replay_access AS (
 			UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, ${input.createdAt})
 			WHERE access_token_hash IN (SELECT access_token_hash FROM replay_refresh) RETURNING access_token_hash
 		)
 		SELECT CASE
 			WHEN EXISTS (SELECT 1 FROM inserted_refresh) THEN 'rotated'
-			WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
+			WHEN EXISTS (SELECT 1 FROM replayable) THEN 'replay_revoked'
 			WHEN EXISTS (SELECT 1 FROM live) AND ${input.requestedScope ?? null}::text IS NOT NULL THEN 'scope_rejected'
 			ELSE 'invalid' END AS status,
 			(SELECT user_id::text FROM prior LIMIT 1) AS "userId",
@@ -114,32 +116,46 @@ export class PostgresTokenStore implements TokenStore {
 		tokenHash: string,
 		clientId: string,
 	): ReturnType<TokenStore['revokeRefreshToken']> {
-		const lookup = await this.database
-			.execute(sql`SELECT user_id::text AS "userId", family_id AS "familyId", revoked_at AS "revokedAt"
-			FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash} AND client_id = ${clientId}`);
-		const token = resultRows<{ userId: string; familyId: string; revokedAt: Date | null }>(
-			lookup,
-		)[0];
-		if (!token) return Promise.resolve({ status: 'invalid' });
-		if (token.revokedAt) {
-			await this.revokeFamily(token.familyId);
-			return Promise.resolve({ status: 'replay_revoked', userId: token.userId });
-		}
-		await this.database.execute(sql`WITH revoked_refresh AS (
+		const result = await this.database.execute(sql`WITH prior AS MATERIALIZED (
+			SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash}
+				AND client_id = ${clientId} AND expires_at > clock_timestamp() FOR UPDATE
+		), family_members AS MATERIALIZED (
+			SELECT access_token_hash FROM ${this.schema.refreshTokens}
+			WHERE family_id IN (SELECT family_id FROM prior WHERE revoked_at IS NOT NULL)
+		), revoked_family_refresh AS (
 			UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
-			WHERE refresh_token_hash = ${tokenHash} AND client_id = ${clientId} AND revoked_at IS NULL RETURNING access_token_hash
-		) UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
-			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_refresh)`);
-		return Promise.resolve({ status: 'revoked', userId: token.userId });
+			WHERE family_id IN (SELECT family_id FROM prior WHERE revoked_at IS NOT NULL) AND revoked_at IS NULL
+		), revoked_family_access AS (
+			UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
+			WHERE access_token_hash IN (SELECT access_token_hash FROM family_members) AND revoked_at IS NULL
+		), revoked_refresh AS (
+			UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
+			WHERE refresh_token_hash IN (SELECT refresh_token_hash FROM prior WHERE revoked_at IS NULL)
+			RETURNING access_token_hash
+		), revoked_access AS (
+			UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
+			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_refresh) AND revoked_at IS NULL
+		)
+		SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM prior) THEN 'invalid'
+			WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
+			ELSE 'revoked' END AS status, (SELECT user_id::text FROM prior LIMIT 1) AS "userId"`);
+		const row = resultRows<{
+			status: 'invalid' | 'revoked' | 'replay_revoked';
+			userId: string | null;
+		}>(result)[0];
+		if (!row || row.status === 'invalid') return Promise.resolve({ status: 'invalid' });
+		return Promise.resolve({ status: row.status, userId: row.userId! });
 	}
 
 	async revokeFamily(familyId: string): Promise<number> {
-		const result = await this.database.execute(sql`WITH revoked_refresh AS (
-			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
-			WHERE family_id = ${familyId} RETURNING access_token_hash
+		const result = await this.database.execute(sql`WITH family_members AS MATERIALIZED (
+			SELECT access_token_hash FROM ${this.schema.refreshTokens} WHERE family_id = ${familyId}
+		), revoked_refresh AS (
+			UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
+			WHERE family_id = ${familyId} AND revoked_at IS NULL RETURNING 1
 		), revoked_access AS (
-			UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
-			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_refresh) RETURNING 1
+			UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
+			WHERE access_token_hash IN (SELECT access_token_hash FROM family_members) AND revoked_at IS NULL RETURNING 1
 		) SELECT (SELECT count(*) FROM revoked_refresh) + (SELECT count(*) FROM revoked_access) AS count`);
 		return countRows(result);
 	}
@@ -157,7 +173,9 @@ export class PostgresTokenStore implements TokenStore {
 		const result = await this.database.execute(sql`WITH deleted_refresh AS (
 			DELETE FROM ${this.schema.refreshTokens} WHERE expires_at <= ${now} RETURNING 1
 		), deleted_access AS (
-			DELETE FROM ${this.schema.accessTokens} WHERE expires_at <= ${now} RETURNING 1
+			DELETE FROM ${this.schema.accessTokens} access WHERE expires_at <= ${now}
+				AND NOT EXISTS (SELECT 1 FROM ${this.schema.refreshTokens} refresh
+					WHERE refresh.access_token_hash = access.access_token_hash AND refresh.expires_at > ${now}) RETURNING 1
 		) SELECT (SELECT count(*) FROM deleted_refresh) + (SELECT count(*) FROM deleted_access) AS count`);
 		return countRows(result);
 	}
@@ -170,9 +188,9 @@ function mapAccess(row: Record<string, unknown>): AccessToken {
 		userId: String(row.user_id),
 		scope: row.scope as string | null,
 		resource: row.resource as string,
-		expiresAt: row.expires_at as Date,
-		revokedAt: row.revoked_at as Date | null,
-		createdAt: row.created_at as Date,
+		expiresAt: new Date(row.expires_at as string),
+		revokedAt: row.revoked_at ? new Date(row.revoked_at as string) : null,
+		createdAt: new Date(row.created_at as string),
 	};
 }
 
@@ -185,8 +203,8 @@ function mapRefresh(row: Record<string, unknown>): RefreshToken {
 		resource: row.resource as string,
 		accessTokenHash: row.access_token_hash as string,
 		familyId: row.family_id as string,
-		expiresAt: row.expires_at as Date,
-		revokedAt: row.revoked_at as Date | null,
-		createdAt: row.created_at as Date,
+		expiresAt: new Date(row.expires_at as string),
+		revokedAt: row.revoked_at ? new Date(row.revoked_at as string) : null,
+		createdAt: new Date(row.created_at as string),
 	};
 }

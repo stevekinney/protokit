@@ -33,7 +33,7 @@ export class PostgresTransactionStore implements TransactionStore {
 		binding: string,
 	): Promise<ConsumedAuthorizationTransaction | null> {
 		const result = await this.database.execute(sql`UPDATE ${this.schema.transactions}
-			SET consumed_at = clock_timestamp()
+			SET consumed_at = date_trunc('milliseconds', clock_timestamp())
 			WHERE transaction_id_hash = ${hashOpaqueValue(transactionId)}
 				AND csrf_token_hash = ${hashOpaqueValue(csrfToken)}
 				AND consent_binding_hash = ${hashOpaqueValue(binding)}

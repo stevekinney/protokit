@@ -52,8 +52,38 @@ export class PostgresClientStore implements ClientStore {
 	}
 
 	async update(clientId: string, patch: Partial<RegisteredClient>): Promise<void> {
-		const current = await this.findById(clientId);
-		if (!current) return;
-		await this.upsert({ ...current, ...structuredClone(patch), clientId });
+		const columns = {
+			clientSecretHash: 'client_secret_hash',
+			clientName: 'client_name',
+			clientType: 'client_type',
+			tokenEndpointAuthMethod: 'token_endpoint_auth_method',
+			applicationType: 'application_type',
+			redirectUris: 'redirect_uris',
+			grantTypes: 'grant_types',
+			responseTypes: 'response_types',
+			clientIdMetadataUrl: 'client_id_metadata_url',
+			clientSecretExpiresAt: 'client_secret_expires_at',
+			createdAt: 'created_at',
+			updatedAt: 'updated_at',
+		} as const;
+		const jsonKeys = new Set<keyof RegisteredClient>([
+			'redirectUris',
+			'grantTypes',
+			'responseTypes',
+		]);
+		const assignments = Object.entries(patch).flatMap(([rawKey, value]) => {
+			if (rawKey === 'clientId' || value === undefined || !(rawKey in columns)) return [];
+			const key = rawKey as keyof typeof columns;
+			const column = sql.identifier(columns[key]);
+			return [
+				jsonKeys.has(key)
+					? sql`${column} = ${JSON.stringify(value)}::jsonb`
+					: sql`${column} = ${value}`,
+			];
+		});
+		if (assignments.length === 0) return;
+		await this.database.execute(
+			sql`UPDATE ${this.schema.clients} SET ${sql.join(assignments, sql`, `)} WHERE client_id = ${clientId}`,
+		);
 	}
 }

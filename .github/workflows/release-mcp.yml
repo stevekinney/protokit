@@ -41,6 +41,20 @@ jobs:
       # Required for npm provenance, which attests that this tarball was built
       # by this workflow from this commit. Nothing else here needs write.
       id-token: write
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: protokit
+          POSTGRES_PASSWORD: protokit
+          POSTGRES_DB: protokit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U protokit -d protokit_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -79,6 +93,9 @@ jobs:
       # package.json. Running it here means a mismatched pair cannot publish.
       - name: Test
         run: bun run --cwd packages/mcp test
+
+      - name: Test Postgres OAuth adapter
+        run: bun run --cwd packages/mcp test:postgres
 
       - name: Typecheck
         run: bun run --cwd packages/mcp typecheck

@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { integer, pgTable, serial, text, uuid } from 'drizzle-orm/pg-core';
 import { runOAuthStoreConformance } from '../../testing/oauth-store-conformance.js';
+import type { AccessToken, RefreshToken, RegisteredClient } from '../stores.js';
 import { createPostgresOAuthSchema, createPostgresOAuthStores } from './index.js';
 
 describe('createPostgresOAuthSchema', () => {
@@ -41,12 +42,13 @@ const schema = createPostgresOAuthSchema({
 
 const setup = (async () => {
 	await connection.query(`
+		DROP TABLE IF EXISTS mcp_postgres_test_refresh_tokens, mcp_postgres_test_access_tokens, mcp_postgres_test_codes, mcp_postgres_test_authorization_transactions, mcp_postgres_test_clients, mcp_postgres_test_users CASCADE;
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_users (id text PRIMARY KEY);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_clients (client_id text PRIMARY KEY, client_secret_hash text, client_name text NOT NULL, client_type text NOT NULL, token_endpoint_auth_method text NOT NULL, application_type text, redirect_uris jsonb NOT NULL, grant_types jsonb NOT NULL, response_types jsonb NOT NULL, client_id_metadata_url text, client_secret_expires_at timestamptz, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_authorization_transactions (transaction_id_hash text PRIMARY KEY, csrf_token_hash text NOT NULL, consent_binding_hash text NOT NULL, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, state text, issuer text NOT NULL, resource text NOT NULL, scope text NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz, created_at timestamptz NOT NULL);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_codes (code_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, scope text, state text, resource text NOT NULL, expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_access_tokens (access_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
-		CREATE TABLE IF NOT EXISTS mcp_postgres_test_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES mcp_postgres_test_access_tokens(access_token_hash) ON DELETE CASCADE, family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+		CREATE TABLE IF NOT EXISTS mcp_postgres_test_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES mcp_postgres_test_access_tokens(access_token_hash), family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
 	`);
 })();
 
@@ -58,7 +60,7 @@ afterAll(async () => {
 	await connection.end();
 });
 
-runOAuthStoreConformance('postgres', async () => {
+async function resetFixture(): Promise<void> {
 	await setup;
 	await connection.query(
 		'TRUNCATE mcp_postgres_test_refresh_tokens, mcp_postgres_test_access_tokens, mcp_postgres_test_codes, mcp_postgres_test_authorization_transactions, mcp_postgres_test_clients, mcp_postgres_test_users CASCADE',
@@ -66,6 +68,85 @@ runOAuthStoreConformance('postgres', async () => {
 	await connection.query(
 		"INSERT INTO mcp_postgres_test_users (id) VALUES ('user-one'), ('user-two')",
 	);
+}
+
+async function seedClient(): Promise<void> {
+	await connection.query(
+		`INSERT INTO mcp_postgres_test_clients (client_id, client_secret_hash, client_name, client_type, token_endpoint_auth_method, application_type, redirect_uris, grant_types, response_types, client_id_metadata_url, client_secret_expires_at, created_at, updated_at) VALUES ('client-one', 'secret-hash', 'Seed Client', 'confidential', 'client_secret_post', 'web', '["https://client.example/callback"]'::jsonb, '["authorization_code"]'::jsonb, '["code"]'::jsonb, NULL, NULL, now(), now()) ON CONFLICT DO NOTHING`,
+	);
+}
+
+function tokenRecord(accessTokenHash: string, expiresAt: Date): AccessToken {
+	return {
+		accessTokenHash,
+		clientId: 'client-one',
+		userId: 'user-one',
+		scope: '',
+		resource: 'resource',
+		expiresAt,
+		revokedAt: null,
+		createdAt: new Date('2026-01-01'),
+	};
+}
+
+function refreshRecord(
+	refreshTokenHash: string,
+	accessTokenHash: string,
+	expiresAt: Date,
+	familyId = 'family-one',
+): RefreshToken {
+	return {
+		refreshTokenHash,
+		clientId: 'client-one',
+		userId: 'user-one',
+		scope: '',
+		resource: 'resource',
+		accessTokenHash,
+		familyId,
+		expiresAt,
+		revokedAt: null,
+		createdAt: new Date('2026-01-01'),
+	};
+}
+
+function rotation(
+	priorHash: string,
+	nextAccessTokenHash: string,
+	nextRefreshTokenHash: string,
+	createdAt: Date,
+) {
+	return {
+		priorHash,
+		clientId: 'client-one',
+		resource: 'resource',
+		nextAccessTokenHash,
+		nextRefreshTokenHash,
+		accessTokenExpiresAt: new Date('2099-01-01'),
+		refreshTokenExpiresAt: new Date('2099-01-01'),
+		createdAt,
+	};
+}
+
+function clientRecord(): RegisteredClient {
+	return {
+		clientId: 'client-one',
+		clientSecretHash: 'old',
+		clientName: 'Old',
+		clientType: 'confidential',
+		tokenEndpointAuthMethod: 'client_secret_post',
+		applicationType: 'web',
+		redirectUris: [],
+		grantTypes: [],
+		responseTypes: [],
+		clientIdMetadataUrl: null,
+		clientSecretExpiresAt: null,
+		createdAt: new Date('2026-01-01'),
+		updatedAt: new Date('2026-01-01'),
+	};
+}
+
+runOAuthStoreConformance('postgres', async () => {
+	await resetFixture();
 	const stores = createPostgresOAuthStores(database, schema);
 	let placeholderClient = false;
 	const ensureClient = async () => {
@@ -101,6 +182,64 @@ runOAuthStoreConformance('postgres', async () => {
 });
 
 describe('Postgres OAuth durability', () => {
+	test('preserves an expired access token while its paired refresh token is live', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('short-access', new Date('2026-01-01')),
+			refreshToken: refreshRecord('long-refresh', 'short-access', new Date('2027-01-01')),
+		});
+		expect(await stores.tokens.purgeExpired(new Date('2026-06-01'))).toBe(0);
+		expect(await stores.tokens.findByHash('short-access')).not.toBeNull();
+		expect(await stores.tokens.purgeExpired(new Date('2028-01-01'))).toBe(2);
+	});
+
+	test('returns Date values and ignores replay after the ancestor expires', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('access-one', new Date('2099-01-01')),
+			refreshToken: refreshRecord('refresh-one', 'access-one', new Date('2099-01-01')),
+		});
+		const rotated = await stores.tokens.rotateRefreshToken(
+			rotation('refresh-one', 'access-two', 'refresh-two', new Date('2026-01-02')),
+		);
+		expect(rotated.status).toBe('rotated');
+		if (rotated.status !== 'rotated') throw new Error('Expected rotation');
+		expect(rotated.accessToken.expiresAt).toBeInstanceOf(Date);
+		expect(rotated.refreshToken.createdAt).toBeInstanceOf(Date);
+		await connection.query(
+			"UPDATE mcp_postgres_test_refresh_tokens SET expires_at = '2026-01-03' WHERE refresh_token_hash = 'refresh-one'",
+		);
+		expect(
+			await stores.tokens.rotateRefreshToken(
+				rotation('refresh-one', 'access-three', 'refresh-three', new Date('2026-01-04')),
+			),
+		).toEqual({ status: 'invalid' });
+		expect((await stores.tokens.findByHash('access-two'))?.revokedAt).toBeNull();
+	});
+
+	test('applies concurrent client patches and avoids repeat family writes', async () => {
+		await resetFixture();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.clients.register(clientRecord());
+		await Promise.all([
+			stores.clients.update('client-one', { clientName: 'New' }),
+			stores.clients.update('client-one', { clientSecretHash: 'rotated' }),
+		]);
+		expect(await stores.clients.findById('client-one')).toMatchObject({
+			clientName: 'New',
+			clientSecretHash: 'rotated',
+		});
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('access', new Date('2099-01-01')),
+			refreshToken: refreshRecord('refresh', 'access', new Date('2099-01-01'), 'family'),
+		});
+		expect(await stores.tokens.revokeFamily('family')).toBe(2);
+		expect(await stores.tokens.revokeFamily('family')).toBe(0);
+	});
 	test.each([
 		['uuid', 'uuid', `'00000000-0000-4000-8000-000000000001'`],
 		['integer', 'integer', '1'],
