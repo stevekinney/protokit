@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { resolveOauthNetworkIdentity, type TrustedProxyConfiguration } from './index.js';
-import { isAddressInCidr, isValidCidr } from '@lostgradient/mcp/oauth';
+import { isAddressInCidr, isValidCidr } from './index.js';
 
 function headersOf(entries: Record<string, string>): Headers {
 	return new Headers(entries);
