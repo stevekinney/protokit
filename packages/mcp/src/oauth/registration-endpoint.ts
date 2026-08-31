@@ -92,6 +92,11 @@ export async function handleOauthRegisterPost<Scope extends string>(
 		createdAt: now,
 		updatedAt: now,
 	});
+	seams.recordEvent?.({
+		category: 'registration',
+		outcome: 'success',
+		attributes: { clientId, isPublicClient: publicClient },
+	});
 	return oauthJson(
 		{
 			client_id: clientId,

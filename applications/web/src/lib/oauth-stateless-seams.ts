@@ -9,6 +9,8 @@ import type {
 	OAuthRequestContext,
 	OAuthStatelessHostSeams,
 } from '@lostgradient/mcp/oauth';
+import { logger } from '@lostgradient/mcp/logger';
+import { metricsCollector } from '@lostgradient/mcp/metrics';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@web/lib/credential-lifecycle-policy';
@@ -30,6 +32,14 @@ const oauthSlidingWindowStore: AtomicSlidingWindowStore = {
 	peek: async (input) => (await resolveOauthAtomicSlidingWindowStore()).peek(input),
 };
 
+const oauthLogEventNames = {
+	registration: 'oauth_client_registration',
+	client_authentication: 'oauth_client_authentication',
+	token_exchange: 'oauth_token_exchange',
+	refresh: 'oauth_token_exchange',
+	revocation: 'oauth_revocation',
+} as const;
+
 export function toOauthRequestContext(context: RequestContext): OAuthRequestContext {
 	return {
 		request: context.request,
@@ -49,6 +59,13 @@ export function createOauthStatelessHostSeams(
 		scopes,
 		hashCredential,
 		publishGrantRevocation,
+		recordEvent: ({ category, outcome, attributes }) => {
+			logger.info(
+				{ event: oauthLogEventNames[category], outcome, ...attributes },
+				'OAuth endpoint outcome',
+			);
+			metricsCollector.recordEvent(category, outcome);
+		},
 		configuration: {
 			issuer: baseUrl.href.replace(/\/$/, ''),
 			baseUrl,

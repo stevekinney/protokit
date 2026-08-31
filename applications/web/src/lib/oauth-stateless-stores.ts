@@ -196,11 +196,12 @@ const tokens: TokenStore = {
 				),
 			)
 			.limit(1);
-		if (!prior || prior.expiresAt <= input.createdAt) return { status: 'invalid' };
+		if (!prior) return { status: 'invalid' };
 		if (prior.revokedAt) {
 			await tokens.revokeFamily(prior.familyId);
 			return { status: 'replay_revoked', userId: prior.userId };
 		}
+		if (prior.expiresAt <= input.createdAt) return { status: 'invalid' };
 		if (input.requestedScope) {
 			const granted = new Set((prior.scope ?? '').split(/\s+/).filter(Boolean));
 			if (input.requestedScope.split(/\s+/).some((scope) => !granted.has(scope)))

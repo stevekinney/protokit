@@ -38,23 +38,35 @@ export async function handleOauthRevokePost<Scope extends string>(
 		);
 	const authentication = await authenticateOauthClient(clientId, clientSecret, seams);
 	if (!authentication.ok) {
+		seams.recordEvent?.({
+			category: 'client_authentication',
+			outcome: 'invalid_client',
+			attributes: { clientId },
+		});
 		await recordFailedAuthentication(context, seams);
 		return oauthJson({ error: 'invalid_client' }, 401);
 	}
 	const tokenHash = seams.hashCredential(token);
 	let subjectId: string | undefined;
+	let outcome = 'not_found_or_already_revoked';
 	const revokeRefresh = async (): Promise<boolean> => {
 		const result = await seams.stores.tokens.revokeRefreshToken(tokenHash, clientId);
 		if (result.status === 'invalid') return false;
 		subjectId = result.userId;
+		outcome = result.status === 'replay_revoked' ? 'replay_detected' : 'refresh_token_revoked';
 		return true;
 	};
-	const revokeAccess = () => seams.stores.tokens.revokeAccessToken(tokenHash, clientId);
+	const revokeAccess = async (): Promise<boolean> => {
+		const revoked = await seams.stores.tokens.revokeAccessToken(tokenHash, clientId);
+		if (revoked) outcome = 'access_token_revoked';
+		return revoked;
+	};
 	const attempts =
 		hint === 'refresh_token' ? [revokeRefresh, revokeAccess] : [revokeAccess, revokeRefresh];
 	for (const attempt of attempts) {
 		if (await attempt()) break;
 	}
+	seams.recordEvent?.({ category: 'revocation', outcome, attributes: { clientId } });
 	if (subjectId) await seams.publishGrantRevocation?.(subjectId);
 	return new Response(null, { status: 200, headers: oauthNoStoreHeaders });
 }

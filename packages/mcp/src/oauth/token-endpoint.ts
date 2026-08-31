@@ -60,7 +60,12 @@ async function authorizationCodeGrant<Scope extends string>(
 			{ error: 'invalid_request', error_description: 'A parameter exceeded its maximum length' },
 			400,
 		);
-	if (resource !== seams.configuration.resource.href)
+	if (resource !== seams.configuration.resource.href) {
+		seams.recordEvent?.({
+			category: 'token_exchange',
+			outcome: 'invalid_resource',
+			attributes: { grantType: 'authorization_code' },
+		});
 		return oauthJson(
 			{
 				error: 'invalid_target',
@@ -68,10 +73,18 @@ async function authorizationCodeGrant<Scope extends string>(
 			},
 			400,
 		);
+	}
 	if (!isValidPkceCodeVerifier(verifier))
 		return oauthJson({ error: 'invalid_grant', error_description: 'Malformed code_verifier' }, 400);
 	const authentication = await authenticateOauthClient(clientId, clientSecret, seams);
-	if (!authentication.ok) return oauthJson({ error: 'invalid_client' }, 401);
+	if (!authentication.ok) {
+		seams.recordEvent?.({
+			category: 'client_authentication',
+			outcome: 'invalid_client',
+			attributes: { clientId },
+		});
+		return oauthJson({ error: 'invalid_client' }, 401);
+	}
 	if (!authentication.client.grantTypes.includes('authorization_code'))
 		return oauthJson({ error: 'unauthorized_client' }, 400);
 
@@ -149,6 +162,7 @@ async function authorizationCodeGrant<Scope extends string>(
 		await seams.stores.codes.unconsume(codeHash, consumedCode.usedAt).catch(() => false);
 		throw error;
 	}
+	seams.recordEvent?.({ category: 'token_exchange', outcome: 'success' });
 	return oauthJson({
 		access_token: credentials.accessToken,
 		token_type: 'Bearer',
@@ -184,7 +198,12 @@ async function refreshTokenGrant<Scope extends string>(
 			{ error: 'invalid_request', error_description: 'A parameter exceeded its maximum length' },
 			400,
 		);
-	if (resource !== seams.configuration.resource.href)
+	if (resource !== seams.configuration.resource.href) {
+		seams.recordEvent?.({
+			category: 'refresh',
+			outcome: 'invalid_resource',
+			attributes: { grantType: 'refresh_token' },
+		});
 		return oauthJson(
 			{
 				error: 'invalid_target',
@@ -192,10 +211,18 @@ async function refreshTokenGrant<Scope extends string>(
 			},
 			400,
 		);
+	}
 	const parsedScope = parseRefreshScope(scope, seams.scopes.supportedScopes);
 	if (!parsedScope.ok) return oauthJson({ error: 'invalid_scope' }, 400);
 	const authentication = await authenticateOauthClient(clientId, clientSecret, seams);
-	if (!authentication.ok) return oauthJson({ error: 'invalid_client' }, 401);
+	if (!authentication.ok) {
+		seams.recordEvent?.({
+			category: 'client_authentication',
+			outcome: 'invalid_client',
+			attributes: { clientId },
+		});
+		return oauthJson({ error: 'invalid_client' }, 401);
+	}
 	if (!authentication.client.grantTypes.includes('refresh_token'))
 		return oauthJson({ error: 'unauthorized_client' }, 400);
 	const now = new Date();
@@ -214,6 +241,11 @@ async function refreshTokenGrant<Scope extends string>(
 		createdAt: now,
 	});
 	if (rotation.status === 'replay_revoked') {
+		seams.recordEvent?.({
+			category: 'refresh',
+			outcome: 'replay_detected',
+			attributes: { clientId },
+		});
 		await seams.publishGrantRevocation?.(rotation.userId);
 		return oauthJson(
 			{
@@ -236,6 +268,7 @@ async function refreshTokenGrant<Scope extends string>(
 			},
 			400,
 		);
+	seams.recordEvent?.({ category: 'refresh', outcome: 'success' });
 	return oauthJson({
 		access_token: credentials.accessToken,
 		token_type: 'Bearer',

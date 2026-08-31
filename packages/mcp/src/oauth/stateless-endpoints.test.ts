@@ -143,6 +143,8 @@ async function seedRefreshFamily(
 describe('stateless OAuth endpoints', () => {
 	test('registers confidential and public clients without a rate-limit store', async () => {
 		const host = seams();
+		const events: Array<{ category: string; outcome: string }> = [];
+		host.recordEvent = ({ category, outcome }) => events.push({ category, outcome });
 		const confidential = await registerClient(host);
 		expect(confidential.response.status).toBe(201);
 		expect(confidential.body.client_secret).toBeString();
@@ -157,6 +159,10 @@ describe('stateless OAuth endpoints', () => {
 		expect(
 			(await host.stores.clients.findById(publicClient.body.client_id))?.clientSecretHash,
 		).toBeNull();
+		expect(events).toEqual([
+			{ category: 'registration', outcome: 'success' },
+			{ category: 'registration', outcome: 'success' },
+		]);
 	});
 
 	test('uses one authentication choke point and rejects wrong, expired, and forbidden secrets', async () => {
@@ -196,6 +202,8 @@ describe('stateless OAuth endpoints', () => {
 
 	test('exchanges an authorization code only with matching PKCE and resource', async () => {
 		const host = seams();
+		const events: Array<{ category: string; outcome: string }> = [];
+		host.recordEvent = ({ category, outcome }) => events.push({ category, outcome });
 		const client = await registerClient(host);
 		const verifier = 'a'.repeat(43);
 		const challenge = createHash('sha256').update(verifier).digest('base64url');
@@ -261,6 +269,8 @@ describe('stateless OAuth endpoints', () => {
 			resource,
 		);
 		expect(body.refresh_token).toBeString();
+		expect(events).toContainEqual({ category: 'token_exchange', outcome: 'invalid_resource' });
+		expect(events).toContainEqual({ category: 'token_exchange', outcome: 'success' });
 	});
 
 	test('allows at most one concurrent refresh', async () => {
@@ -284,6 +294,8 @@ describe('stateless OAuth endpoints', () => {
 
 	test('concurrent refresh replay revokes the winning replacement', async () => {
 		const host = seams();
+		const events: Array<{ category: string; outcome: string }> = [];
+		host.recordEvent = ({ category, outcome }) => events.push({ category, outcome });
 		const client = await registerClient(host);
 		const seeded = await seedRefreshFamily(host, client.body.client_id, client.body.client_secret!);
 		const request = () =>
@@ -314,6 +326,7 @@ describe('stateless OAuth endpoints', () => {
 			host,
 		);
 		expect(descendant.status).toBe(400);
+		expect(events).toContainEqual({ category: 'refresh', outcome: 'replay_detected' });
 	});
 
 	test('ancestor replay revokes an orphaned ancestor access token', async () => {
@@ -397,6 +410,8 @@ describe('stateless OAuth endpoints', () => {
 
 	test('revokes either token kind regardless of a wrong hint and binds mutation to the client', async () => {
 		const host = seams();
+		const events: Array<{ category: string; outcome: string }> = [];
+		host.recordEvent = ({ category, outcome }) => events.push({ category, outcome });
 		const client = await registerClient(host);
 		const other = await registerClient(host);
 		const seeded = await seedRefreshFamily(host, client.body.client_id, client.body.client_secret!);
@@ -444,5 +459,10 @@ describe('stateless OAuth endpoints', () => {
 		expect(
 			(await host.stores.tokens.findByHash(hashCredential(replacement.access_token)))?.revokedAt,
 		).not.toBeNull();
+		expect(events).toContainEqual({
+			category: 'revocation',
+			outcome: 'not_found_or_already_revoked',
+		});
+		expect(events).toContainEqual({ category: 'revocation', outcome: 'refresh_token_revoked' });
 	});
 });

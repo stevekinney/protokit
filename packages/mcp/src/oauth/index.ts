@@ -225,6 +225,13 @@ export type OAuthStatelessHostSeams<Scope extends string> = Pick<
 	hashCredential(value: string): string;
 	/** Disconnect or notify live grants after a replay or explicit revocation. */
 	publishGrantRevocation?(subjectId: string): Promise<void>;
+	/** Preserve host metrics and structured logs without coupling the library to a logger. */
+	recordEvent?(event: {
+		category:
+			'registration' | 'client_authentication' | 'token_exchange' | 'refresh' | 'revocation';
+		outcome: string;
+		attributes?: Readonly<Record<string, string | boolean>>;
+	}): void;
 };
 
 export { authenticateOauthClient } from './client-authentication.js';
