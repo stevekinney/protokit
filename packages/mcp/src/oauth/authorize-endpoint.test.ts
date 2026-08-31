@@ -32,6 +32,7 @@ const scopes = defineOAuthScopeConfiguration({
 
 let presentations: ConsentPresentation[];
 let seams: OAuthHostSeams<'read' | 'write' | 'custom'>;
+let recordedEvents: Parameters<NonNullable<OAuthHostSeams<string>['recordEvent']>>[0][];
 
 function context(url: string, request?: Request): OAuthRequestContext {
 	return {
@@ -80,6 +81,7 @@ async function prompt(overrides: Record<string, string | null> = {}) {
 
 beforeEach(async () => {
 	presentations = [];
+	recordedEvents = [];
 	const stores = createInMemoryOAuthStores();
 	await stores.clients.register({
 		clientId: 'client-1',
@@ -130,12 +132,19 @@ beforeEach(async () => {
 			mcpUiExtension: { enabled: false },
 		},
 		resolveIdentityBinding: async () => ({ subjectId: 'user-1', consentBinding: 'session-1' }),
-		resolveUserProfile: async () => null,
+		resolveUserProfile: async (subjectId) => ({
+			id: subjectId,
+			email: 'user@example.com',
+			name: 'Test User',
+			image: null,
+			role: 'user',
+		}),
 		handleUnauthenticatedAuthorization: () => new Response(null, { status: 302 }),
 		renderConsent: (presentation) => {
 			presentations.push(presentation);
 			return new Response(null, { status: presentation.mode === 'error' ? 400 : 200 });
 		},
+		recordEvent: (event) => recordedEvents.push(event),
 	};
 });
 
@@ -189,9 +198,28 @@ describe('authorize endpoint extraction', () => {
 
 	test('grants the injected vocabulary by default and accepts a consumer-only scope', async () => {
 		const all = await prompt();
+		expect(all.requester).toEqual({
+			id: 'user-1',
+			email: 'user@example.com',
+			name: 'Test User',
+			image: null,
+			role: 'user',
+		});
 		expect(all.scopes.map(({ scope }) => scope)).toEqual(['custom', 'read', 'write']);
 		const custom = await prompt({ scope: 'custom' });
 		expect(custom.scopes).toEqual([{ scope: 'custom', description: 'Custom access.' }]);
+	});
+
+	test('resolves host identity when request context does not provide it', async () => {
+		let resolutions = 0;
+		seams.resolveIdentityBinding = async () => {
+			resolutions += 1;
+			return { subjectId: 'user-1', consentBinding: 'session-1' };
+		};
+		const unresolved = context(authorizeUrl());
+		unresolved.identity = null;
+		expect((await handleOauthAuthorizeGet(unresolved, seams)).status).toBe(200);
+		expect(resolutions).toBe(1);
 	});
 
 	test('distinguishes an omitted scope from an empty or unknown scope and redirects verified failures', async () => {
@@ -253,6 +281,25 @@ describe('authorize endpoint extraction', () => {
 		).toBe(403);
 	});
 
+	test('accepts the canonical authorization-server origin independently of the MCP allow-list', async () => {
+		const presentation = await prompt({ scope: 'read' });
+		seams.configuration.isTrustedOrigin = () => false;
+		expect(
+			(await handleOauthAuthorizeApprove(approval(presentation, `${issuer}/`), seams)).status,
+		).toBe(302);
+	});
+
+	test('rejects approval after the authenticated subject changes within one consent binding', async () => {
+		const presentation = await prompt({ scope: 'read' });
+		const switched = approval(presentation);
+		switched.identity = null;
+		seams.resolveIdentityBinding = async () => ({
+			subjectId: 'user-2',
+			consentBinding: 'session-1',
+		});
+		expect((await handleOauthAuthorizeApprove(switched, seams)).status).toBe(400);
+	});
+
 	test('approving with the exact issued transaction id and csrf token succeeds exactly once', async () => {
 		const presentation = await prompt({ scope: 'read' });
 		const response = await handleOauthAuthorizeApprove(approval(presentation), seams);
@@ -268,6 +315,11 @@ describe('authorize endpoint extraction', () => {
 		expect(location.searchParams.get('error')).toBe('access_denied');
 		expect(location.searchParams.get('state')).toBe('client-state');
 		expect(location.searchParams.get('iss')).toBe(issuer);
+		expect(recordedEvents).toContainEqual({
+			category: 'authorization',
+			outcome: 'user_denied',
+			attributes: { clientId: 'client-1' },
+		});
 		expect((await handleOauthAuthorizeDeny(approval(presentation), seams)).status).toBe(400);
 	});
 

@@ -33,6 +33,7 @@ const oauthSlidingWindowStore: AtomicSlidingWindowStore = {
 };
 
 const oauthLogEventNames = {
+	authorization: 'oauth_authorization',
 	registration: 'oauth_client_registration',
 	client_authentication: 'oauth_client_authentication',
 	token_exchange: 'oauth_token_exchange',

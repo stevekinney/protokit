@@ -34,7 +34,6 @@ export function createOauthAuthorizeHostSeams(context: RequestContext): OAuthHos
 					props: presentation,
 				});
 			}
-			if (!context.user) throw new Error('Consent rendering requires a resolved user');
 			return createStaticHtmlResponse({
 				metadata: { title: 'OAuth Authorize' },
 				component: OauthAuthorizePage,
@@ -44,7 +43,7 @@ export function createOauthAuthorizeHostSeams(context: RequestContext): OAuthHos
 					redirectUri: presentation.redirectUri,
 					transactionId: presentation.transactionId,
 					csrfToken: presentation.csrfToken,
-					user: context.user,
+					user: presentation.requester,
 					scopes: presentation.scopes,
 				},
 			});

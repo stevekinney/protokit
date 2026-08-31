@@ -83,6 +83,7 @@ export type ConsentPresentation =
 			/** Verified client redirect URI shown as consent destination context. */
 			redirectUri: string;
 			client: { id: string; name: string };
+			requester: McpUserProfile;
 			scopes: Array<{ scope: string; description: string }>;
 	  };
 
@@ -215,25 +216,30 @@ export type OAuthHostSeams<Scope extends string> = {
 	/** Existing host credential hash function; plaintext authorization codes never enter stores. */
 	hashCredential(value: string): string;
 	crossInstanceMessaging?: CrossInstanceMessaging;
+	/** Preserve host metrics and structured logs without coupling the library to a logger. */
+	recordEvent?(event: {
+		category:
+			| 'authorization'
+			| 'registration'
+			| 'client_authentication'
+			| 'token_exchange'
+			| 'refresh'
+			| 'revocation';
+		outcome: string;
+		attributes?: Readonly<Record<string, string | boolean>>;
+	}): void;
 };
 
 /** Host capabilities needed by endpoints that do not render application UI. */
 export type OAuthStatelessHostSeams<Scope extends string> = Pick<
 	OAuthHostSeams<Scope>,
-	'scopes' | 'configuration' | 'crossInstanceMessaging'
+	'scopes' | 'configuration' | 'crossInstanceMessaging' | 'recordEvent'
 > & {
 	stores: { clients: ClientStore; codes: CodeStore; tokens: TokenStore };
 	/** Existing host credential hash function; plaintext credentials never cross into stores. */
 	hashCredential(value: string): string;
 	/** Disconnect or notify live grants after a replay or explicit revocation. */
 	publishGrantRevocation?(subjectId: string): Promise<void>;
-	/** Preserve host metrics and structured logs without coupling the library to a logger. */
-	recordEvent?(event: {
-		category:
-			'registration' | 'client_authentication' | 'token_exchange' | 'refresh' | 'revocation';
-		outcome: string;
-		attributes?: Readonly<Record<string, string | boolean>>;
-	}): void;
 };
 
 export { authenticateOauthClient } from './client-authentication.js';

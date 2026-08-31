@@ -80,13 +80,29 @@ function formError(error: unknown): Response {
 	return oauthJson({ error: 'invalid_request', message: 'Request body is not valid UTF-8.' }, 400);
 }
 
+async function resolveIdentity<Scope extends string>(
+	context: OAuthRequestContext,
+	seams: OAuthHostSeams<Scope>,
+) {
+	return context.identity ?? seams.resolveIdentityBinding(context.request);
+}
+
+function isAuthorizationServerOrigin(origin: string, baseUrl: URL): boolean {
+	try {
+		return new URL(origin).origin === baseUrl.origin;
+	} catch {
+		return false;
+	}
+}
+
 export async function handleOauthAuthorizeGet<Scope extends string>(
 	context: OAuthRequestContext,
 	seams: OAuthHostSeams<Scope>,
 ): Promise<Response> {
 	const limited = await rateLimitResponse({ context, seams, category: 'oauth_authorize' });
 	if (limited) return limited;
-	if (!context.identity) return seams.handleUnauthenticatedAuthorization(context.request);
+	const identity = await resolveIdentity(context, seams);
+	if (!identity) return seams.handleUnauthenticatedAuthorization(context.request);
 
 	const duplicate = duplicateParameter(context.requestUrl.searchParams, authorizeParameterNames);
 	if (duplicate)
@@ -219,9 +235,9 @@ export async function handleOauthAuthorizeGet<Scope extends string>(
 	await seams.stores.transactions.create({
 		transactionId,
 		csrfToken,
-		consentBinding: context.identity.consentBinding,
+		consentBinding: identity.consentBinding,
 		record: {
-			userId: context.identity.subjectId,
+			userId: identity.subjectId,
 			clientId,
 			redirectUri,
 			codeChallenge,
@@ -238,12 +254,19 @@ export async function handleOauthAuthorizeGet<Scope extends string>(
 	const clientName = isValidClientName(client.clientName)
 		? client.clientName
 		: 'the requesting application';
+	const requester = await seams.resolveUserProfile(identity.subjectId);
+	if (!requester)
+		return seams.renderConsent({
+			mode: 'error',
+			error: 'The authenticated account profile could not be resolved.',
+		});
 	return seams.renderConsent({
 		mode: 'prompt',
 		transactionId,
 		csrfToken,
 		redirectUri,
 		client: { id: client.clientId, name: clientName },
+		requester,
 		scopes: splitScopes(requestedScope.scope).map((scope) => ({
 			scope,
 			description: seams.scopes.vocabulary.descriptions[scope as Scope] ?? scope,
@@ -259,16 +282,20 @@ async function consumeForm<Scope extends string>(input: {
 	| {
 			transactionId: string;
 			transaction: Awaited<ReturnType<typeof input.seams.stores.transactions.consume>>;
+			identity: NonNullable<OAuthRequestContext['identity']>;
 	  }
 	| Response
 > {
-	if (!input.context.identity) return oauthJson({ error: 'unauthorized' }, 401);
+	const identity = await resolveIdentity(input.context, input.seams);
+	if (!identity) return oauthJson({ error: 'unauthorized' }, 401);
 	const fetchSite = input.context.request.headers.get('sec-fetch-site')?.toLowerCase();
 	const origin = input.context.request.headers.get('origin');
 	const trustedRequest =
 		fetchSite === 'same-origin' ||
 		fetchSite === 'none' ||
-		(!fetchSite && origin !== null && input.seams.configuration.isTrustedOrigin(origin));
+		(!fetchSite &&
+			origin !== null &&
+			isAuthorizationServerOrigin(origin, input.seams.configuration.baseUrl));
 	if (!trustedRequest)
 		return oauthJson({ error: 'invalid_request', message: 'Cross-site request rejected.' }, 403);
 	let parameters: URLSearchParams;
@@ -298,7 +325,8 @@ async function consumeForm<Scope extends string>(input: {
 	const transaction = await input.seams.stores.transactions.consume(
 		transactionId,
 		csrfToken,
-		input.context.identity.consentBinding,
+		identity.consentBinding,
+		identity.subjectId,
 	);
 	if (!transaction)
 		return oauthJson(
@@ -308,7 +336,7 @@ async function consumeForm<Scope extends string>(input: {
 			},
 			400,
 		);
-	return { transactionId, transaction };
+	return { transactionId, transaction, identity };
 }
 
 export async function handleOauthAuthorizeApprove<Scope extends string>(
@@ -322,13 +350,13 @@ export async function handleOauthAuthorizeApprove<Scope extends string>(
 	});
 	if (consumed instanceof Response) return consumed;
 	const { transactionId, transaction } = consumed;
-	if (!transaction || !context.identity) throw new Error('Authorization invariant violated');
+	if (!transaction) throw new Error('Authorization invariant violated');
 	const code = randomBytes(32).toString('hex');
 	try {
 		await seams.stores.codes.issue({
 			codeHash: seams.hashCredential(code),
 			clientId: transaction.clientId,
-			userId: context.identity.subjectId,
+			userId: consumed.identity.subjectId,
 			redirectUri: transaction.redirectUri,
 			codeChallenge: transaction.codeChallenge,
 			codeChallengeMethod: transaction.codeChallengeMethod,
@@ -363,6 +391,11 @@ export async function handleOauthAuthorizeDeny<Scope extends string>(
 	});
 	if (consumed instanceof Response) return consumed;
 	if (!consumed.transaction) throw new Error('Authorization invariant violated');
+	seams.recordEvent?.({
+		category: 'authorization',
+		outcome: 'user_denied',
+		attributes: { clientId: consumed.transaction.clientId },
+	});
 	const redirectUrl = new URL(consumed.transaction.redirectUri);
 	redirectUrl.searchParams.set('error', 'access_denied');
 	redirectUrl.searchParams.set('error_description', 'The user denied the authorization request.');

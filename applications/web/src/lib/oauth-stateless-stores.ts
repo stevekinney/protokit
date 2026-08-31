@@ -127,7 +127,7 @@ const transactions: TransactionStore = {
 			createdAt: record.createdAt,
 		});
 	},
-	async consume(transactionId, csrfToken, consentBinding) {
+	async consume(transactionId, csrfToken, consentBinding, subjectId) {
 		const [record] = await database
 			.update(schema.oauthAuthorizationTransactions)
 			.set({ consumedAt: new Date() })
@@ -139,6 +139,7 @@ const transactions: TransactionStore = {
 						schema.oauthAuthorizationTransactions.sessionTokenHash,
 						hashCredential(consentBinding),
 					),
+					eq(schema.oauthAuthorizationTransactions.userId, subjectId),
 					isNull(schema.oauthAuthorizationTransactions.consumedAt),
 					gt(schema.oauthAuthorizationTransactions.expiresAt, new Date()),
 				),

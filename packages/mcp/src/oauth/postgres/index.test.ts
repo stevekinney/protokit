@@ -416,8 +416,14 @@ describe('Postgres OAuth durability', () => {
 				createdAt: new Date('2026-01-01'),
 			});
 			expect(
-				(await stores.transactions.consume('bigint-transaction', 'bigint-csrf', 'bigint-binding'))
-					?.userId,
+				(
+					await stores.transactions.consume(
+						'bigint-transaction',
+						'bigint-csrf',
+						'bigint-binding',
+						largeUserId,
+					)
+				)?.userId,
 			).toBe(largeUserId);
 			expect((await stores.codes.findByHash('bigint-code'))?.userId).toBe(largeUserId);
 			await stores.tokens.issueAuthorizationGrant({

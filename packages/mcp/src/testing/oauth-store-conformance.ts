@@ -115,17 +115,22 @@ export function runOAuthStoreConformance(
 				csrfToken: 'csrf-one',
 				consentBinding: 'binding-one',
 			});
-			expect(await transactions.consume('transaction-one', 'csrf-one', 'wrong-binding')).toBeNull();
+			expect(
+				await transactions.consume('transaction-one', 'csrf-one', 'wrong-binding', 'user-one'),
+			).toBeNull();
+			expect(
+				await transactions.consume('transaction-one', 'csrf-one', 'binding-one', 'wrong-user'),
+			).toBeNull();
 			const results = await Promise.all([
-				transactions.consume('transaction-one', 'csrf-one', 'binding-one'),
-				transactions.consume('transaction-one', 'csrf-one', 'binding-one'),
+				transactions.consume('transaction-one', 'csrf-one', 'binding-one', 'user-one'),
+				transactions.consume('transaction-one', 'csrf-one', 'binding-one', 'user-one'),
 			]);
 			const consumed = results.filter((result) => result !== null);
 			expect(consumed).toHaveLength(1);
 			expect(await transactions.unconsume('transaction-one', new Date(0))).toBe(false);
 			expect(await transactions.unconsume('transaction-one', consumed[0]!.consumedAt)).toBe(true);
 			expect(
-				await transactions.consume('transaction-one', 'csrf-one', 'binding-one'),
+				await transactions.consume('transaction-one', 'csrf-one', 'binding-one', 'user-one'),
 			).not.toBeNull();
 		});
 
@@ -162,7 +167,7 @@ export function runOAuthStoreConformance(
 				consentBinding: 'binding',
 			});
 			expect(await transactions.purgeExpired(baseTime)).toBe(1);
-			expect(await transactions.consume('live', 'csrf', 'binding')).not.toBeNull();
+			expect(await transactions.consume('live', 'csrf', 'binding', 'user-one')).not.toBeNull();
 		});
 
 		test('authorization code consume is concurrent-single-use and compensation is marker-fenced', async () => {
