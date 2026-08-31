@@ -144,7 +144,7 @@ jobs:
 
       - name: Start conformance server
         run: |
-          (cd packages/mcp && MCP_CONFORMANCE_PORT=3137 NODE_ENV=test bun ./src/conformance-server.ts) &
+          (cd packages/mcp && MCP_CONFORMANCE_PORT=3137 MCP_SERVER_NAME=protokit-conformance-server NODE_ENV=test bun ./src/conformance-server.ts) &
           echo $! > /tmp/conformance-server.pid
 
       # Replaces a fixed `sleep` with a real, bounded readiness probe --
@@ -185,7 +185,7 @@ jobs:
 
       - name: Start conformance server
         run: |
-          (cd packages/mcp && MCP_CONFORMANCE_PORT=3138 NODE_ENV=test bun ./src/conformance-server.ts) &
+          (cd packages/mcp && MCP_CONFORMANCE_PORT=3138 MCP_SERVER_NAME=protokit-conformance-server NODE_ENV=test bun ./src/conformance-server.ts) &
           echo $! > /tmp/conformance-server.pid
 
       - name: Wait for conformance server
