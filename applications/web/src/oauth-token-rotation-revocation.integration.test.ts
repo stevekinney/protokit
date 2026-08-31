@@ -835,6 +835,10 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			access_token: string;
 			refresh_token: string;
 		};
+		await database
+			.update(schema.oauthRefreshTokens)
+			.set({ expiresAt: new Date(Date.now() - 1000) })
+			.where(eq(schema.oauthRefreshTokens.refreshToken, hashCredential(originalRefreshToken)));
 
 		// Revoke the now-dead original refresh token instead of replaying it
 		// through /oauth/token.

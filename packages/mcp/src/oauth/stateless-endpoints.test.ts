@@ -278,6 +278,33 @@ describe('stateless OAuth endpoints', () => {
 			host,
 		);
 		expect((await wrongResource.json()).error).toBe('invalid_target');
+		await host.stores.codes.issue({
+			codeHash: hashCredential('stored-resource-code'),
+			clientId: client.body.client_id,
+			userId: 'user-1',
+			redirectUri: 'https://client.example.com/callback',
+			codeChallenge: challenge,
+			codeChallengeMethod: 'S256',
+			scope: 'read',
+			state: null,
+			resource: 'https://previous.example.com/mcp',
+			expiresAt: new Date(Date.now() + 60_000),
+			usedAt: null,
+			createdAt: new Date(),
+		});
+		const storedResourceMismatch = await handleOauthTokenPost(
+			tokenRequest({
+				grant_type: 'authorization_code',
+				code: 'stored-resource-code',
+				redirect_uri: 'https://client.example.com/callback',
+				client_id: client.body.client_id,
+				client_secret: client.body.client_secret!,
+				code_verifier: verifier,
+				resource,
+			}),
+			host,
+		);
+		expect((await storedResourceMismatch.json()).error).toBe('invalid_target');
 
 		const success = await handleOauthTokenPost(
 			tokenRequest({
@@ -297,7 +324,11 @@ describe('stateless OAuth endpoints', () => {
 			resource,
 		);
 		expect(body.refresh_token).toBeString();
-		expect(events).toContainEqual({ category: 'token_exchange', outcome: 'invalid_resource' });
+		expect(
+			events.filter(
+				(event) => event.category === 'token_exchange' && event.outcome === 'invalid_resource',
+			),
+		).toHaveLength(2);
 		expect(events).toContainEqual({ category: 'token_exchange', outcome: 'success' });
 	});
 

@@ -106,7 +106,12 @@ async function authorizationCodeGrant<Scope extends string>(
 		);
 	if (authorizationCode.redirectUri !== redirectUri)
 		return oauthJson({ error: 'invalid_grant', error_description: 'Redirect URI mismatch' }, 400);
-	if (authorizationCode.resource !== resource)
+	if (authorizationCode.resource !== resource) {
+		seams.recordEvent?.({
+			category: 'token_exchange',
+			outcome: 'invalid_resource',
+			attributes: { grantType: 'authorization_code' },
+		});
 		return oauthJson(
 			{
 				error: 'invalid_target',
@@ -114,6 +119,7 @@ async function authorizationCodeGrant<Scope extends string>(
 			},
 			400,
 		);
+	}
 	const challenge = createHash('sha256').update(verifier).digest('base64url');
 	if (!constantTimeEquals(challenge, authorizationCode.codeChallenge))
 		return oauthJson(

@@ -312,6 +312,7 @@ const tokens: TokenStore = {
 		return rows(result).length === 1;
 	},
 	async revokeRefreshToken(tokenHash, clientId) {
+		const now = new Date();
 		const [prior] = await database
 			.select()
 			.from(schema.oauthRefreshTokens)
@@ -319,7 +320,6 @@ const tokens: TokenStore = {
 				and(
 					eq(schema.oauthRefreshTokens.refreshToken, tokenHash),
 					eq(schema.oauthRefreshTokens.clientId, clientId),
-					gt(schema.oauthRefreshTokens.expiresAt, new Date()),
 				),
 			)
 			.limit(1);
@@ -328,9 +328,10 @@ const tokens: TokenStore = {
 			await tokens.revokeFamily(prior.familyId);
 			return { status: 'replay_revoked', userId: prior.userId, familyId: prior.familyId };
 		}
+		if (prior.expiresAt <= now) return { status: 'invalid' };
 		const [revoked] = await database
 			.update(schema.oauthRefreshTokens)
-			.set({ revokedAt: new Date() })
+			.set({ revokedAt: now })
 			.where(
 				and(
 					eq(schema.oauthRefreshTokens.refreshToken, tokenHash),
@@ -346,7 +347,7 @@ const tokens: TokenStore = {
 		try {
 			await database
 				.update(schema.oauthTokens)
-				.set({ revokedAt: new Date() })
+				.set({ revokedAt: now })
 				.where(
 					and(
 						eq(schema.oauthTokens.accessToken, revoked.accessTokenHash),
