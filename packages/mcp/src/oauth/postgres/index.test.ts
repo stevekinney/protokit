@@ -279,7 +279,7 @@ describe('Postgres OAuth durability', () => {
 		expect(await stores.tokens.purgeExpired(new Date('2028-01-01'))).toBe(2);
 	});
 
-	test('returns Date values and ignores replay after the ancestor expires', async () => {
+	test('returns Date values and detects replay after the ancestor expires', async () => {
 		await resetFixture();
 		await seedClient();
 		const stores = createPostgresOAuthStores(database, schema);
@@ -301,8 +301,8 @@ describe('Postgres OAuth durability', () => {
 			await stores.tokens.rotateRefreshToken(
 				rotation('refresh-one', 'access-three', 'refresh-three', new Date('2026-01-04')),
 			),
-		).toEqual({ status: 'invalid' });
-		expect((await stores.tokens.findByHash('access-two'))?.revokedAt).toBeNull();
+		).toEqual({ status: 'replay_revoked', userId: 'user-one', familyId: 'family-one' });
+		expect((await stores.tokens.findByHash('access-two'))?.revokedAt).not.toBeNull();
 	});
 
 	test('honors a custom bigint user column name across every store', async () => {

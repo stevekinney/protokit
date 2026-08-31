@@ -413,7 +413,7 @@ describe('stateless OAuth endpoints', () => {
 				resource,
 				accessTokenHash: hashCredential(accessToken),
 				familyId: 'orphaned-family',
-				expiresAt: new Date(now.getTime() + 86_400_000),
+				expiresAt: new Date(now.getTime() - 1000),
 				revokedAt: now,
 				createdAt: now,
 			},

@@ -203,12 +203,7 @@ export class InMemoryTokenStore implements TokenStore {
 		createdAt: Date;
 	}): ReturnType<TokenStore['rotateRefreshToken']> {
 		const prior = this.#refreshTokens.get(input.priorHash);
-		if (
-			!prior ||
-			prior.clientId !== input.clientId ||
-			prior.resource !== input.resource ||
-			prior.expiresAt <= input.createdAt
-		)
+		if (!prior || prior.clientId !== input.clientId || prior.resource !== input.resource)
 			return Promise.resolve({ status: 'invalid' });
 		if (prior.revokedAt) {
 			this.#revokeFamily(prior.familyId, input.createdAt);
@@ -218,6 +213,7 @@ export class InMemoryTokenStore implements TokenStore {
 				familyId: prior.familyId,
 			});
 		}
+		if (prior.expiresAt <= input.createdAt) return Promise.resolve({ status: 'invalid' });
 		if (input.requestedScope && !isScopeSubset(input.requestedScope, prior.scope))
 			return Promise.resolve({ status: 'scope_rejected' });
 		prior.revokedAt = cloneDate(input.createdAt);

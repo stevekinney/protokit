@@ -194,6 +194,22 @@ export const LINE_COVERAGE_WAIVED_FILES: ReadonlySet<string> = new Set([
  */
 export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>> = new Map([
 	[
+		// Bun attributes every exercised statement inside these two catch
+		// blocks, including the returned OAuth error response, but never marks
+		// the `catch (error)` clause itself. The package endpoint error suite
+		// drives unsupported content types, malformed bodies, and oversized
+		// bodies through both handlers; only the clause line remains at zero.
+		'packages/mcp/src/oauth/token-endpoint.ts',
+		new Set([301]),
+	],
+	[
+		// Same Bun/SWC catch-clause instrumentation artifact as the token
+		// endpoint immediately above, proven through the revocation endpoint's
+		// package-level malformed-body cases.
+		'packages/mcp/src/oauth/revocation-endpoint.ts',
+		new Set([25]),
+	],
+	[
 		// Two defense-in-depth guards inside the SDK server factory, both
 		// unreachable through the only entry point that reaches them.
 		// `handleMcpRequest` calls `readMcpRequestAuthExtra(authInfo)` and

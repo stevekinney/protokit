@@ -75,7 +75,7 @@ export class PostgresTokenStore implements TokenStore {
 		), live AS (
 			SELECT * FROM prior WHERE revoked_at IS NULL AND expires_at > ${input.createdAt}
 		), replayable AS (
-			SELECT * FROM prior WHERE revoked_at IS NOT NULL AND expires_at > ${input.createdAt}
+			SELECT * FROM prior WHERE revoked_at IS NOT NULL
 		), eligible AS (
 			SELECT * FROM live WHERE (${input.requestedScope ?? null}::text IS NULL OR NOT EXISTS (
 					SELECT requested_scope FROM unnest(string_to_array(${input.requestedScope ?? ''}, ' ')) requested_scope
