@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import {
-	isAddressInCidr,
-	isValidCidr,
-	resolveNetworkIdentity,
-	type TrustedProxyConfiguration,
-} from '@web/lib/trusted-proxy';
+import { resolveNetworkIdentity, type TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
+import { isAddressInCidr, isValidCidr } from '@lostgradient/mcp/oauth';
 
 function headersOf(entries: Record<string, string>): Headers {
 	return new Headers(entries);

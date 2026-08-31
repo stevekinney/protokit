@@ -16,7 +16,7 @@ import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceHealthProbeRateLimit } from '@web/lib/request-rate-limiter';
 import { isRedisConfigured, isRedisHealthy } from '@web/lib/redis-client';
-import { withDeadline } from '@web/lib/with-deadline';
+import { withDeadline } from '@lostgradient/mcp/oauth';
 
 /**
  * OPS-002 / S-15: `GET /health` — a public, unauthenticated liveness check.

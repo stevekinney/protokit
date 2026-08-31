@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { canonicalizeIpAddress, stripPort } from '@web/lib/canonicalize-ip-address';
+import { canonicalizeIpAddress, stripPort } from '@lostgradient/mcp/oauth';
 
 describe('canonicalizeIpAddress', () => {
 	it('returns an IPv4 address unchanged', () => {

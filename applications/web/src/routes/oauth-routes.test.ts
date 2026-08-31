@@ -239,11 +239,6 @@ mock.module('@web/lib/hash-credential', () => ({
 	hashCredential: (value: string) => `hashed:${value}`,
 }));
 
-mock.module('@web/lib/validate-redirect-uri', () => ({
-	isValidRedirectUri: (uri: string) =>
-		uri.startsWith('https://') || uri.startsWith('http://localhost'),
-}));
-
 // The actual fetch/DNS/SSRF/schema logic is covered directly and
 // exhaustively by client-metadata-documents.test.ts with injected
 // dependencies. Mocked here so this file's authorize-handler tests can
@@ -251,7 +246,7 @@ mock.module('@web/lib/validate-redirect-uri', () => ({
 // DNS activity.
 const mockCimdState: { document: Record<string, unknown> | null } = { document: null };
 let fetchClientIdMetadataDocumentCallCount = 0;
-mock.module('@web/lib/client-metadata-documents', () => ({
+mock.module('@lostgradient/mcp/oauth/client-metadata-documents', () => ({
 	isClientIdMetadataDocumentUrl: (clientId: string) => {
 		try {
 			const parsed = new URL(clientId);

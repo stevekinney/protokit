@@ -9,7 +9,6 @@
 		"./lib/session-authentication": "./src/lib/session-authentication.ts",
 		"./lib/production-startup-requirements": "./src/lib/production-startup-requirements.ts",
 		"./lib/redis-probe": "./src/lib/redis-probe.ts",
-		"./lib/with-deadline": "./src/lib/with-deadline.ts",
 		"./lib/credential-lifecycle-policy": "./src/lib/credential-lifecycle-policy.ts",
 		"./lib/scheduled-cleanup": "./src/lib/scheduled-cleanup.ts"
 	},

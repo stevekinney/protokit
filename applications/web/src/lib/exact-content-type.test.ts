@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { isExactContentType } from '@web/lib/exact-content-type';
+import { isExactContentType } from '@lostgradient/mcp/oauth';
 
 describe('isExactContentType', () => {
 	it('matches an exact media type', () => {

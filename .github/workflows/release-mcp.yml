@@ -103,6 +103,9 @@ jobs:
       - name: Build
         run: bun run --cwd packages/mcp build
 
+      - name: Verify Client ID Metadata Document SSRF boundary on Bun and Node
+        run: bun run --cwd packages/mcp verify:cimd-runtime
+
       # Proves the tarball is importable before it is published, not after.
       # Installs the packed artifact into a directory outside the workspace so
       # no workspace resolution can satisfy an import the published package

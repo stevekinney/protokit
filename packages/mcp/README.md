@@ -139,17 +139,25 @@ The shared `RateLimitConfiguration` owns exactly eight protocol categories: OAut
 
 Concurrency is a resource-lifetime concern, not a handler-promise concern. For a streaming response, pass the acquired slot to `attachConcurrencySlotToResponseLifetime` so it renews while the body remains open and releases only when the body closes, is canceled, or errors. A host that separately tracks requests must follow the same rule; Tribunal's other implementation is `applications/web/src/lib/in-flight-request-tracker.ts`.
 
+## Client ID Metadata Documents
+
+`@lostgradient/mcp/oauth` exports Client ID Metadata Document fetching and the shared OAuth security utilities. Use `safeFetchPublicHttpsUrl` for any client-supplied metadata URL. It applies the complete SSRF boundary as one operation: the URL must use HTTPS, literal private addresses are rejected, every DNS result must be public, and redirects are disabled. Do not recreate those checks at a host call site.
+
+The dedicated `@lostgradient/mcp/oauth/client-metadata-documents` subpath exposes the same safe fetch together with `fetchClientIdMetadataDocument` and `isClientIdMetadataDocumentUrl`. The general `/oauth` entry point also owns `isAddressInCidr`, `isValidCidr`, `isValidRedirectUri`, `isValidClientName`, `isExactContentType`, `withDeadline`, and IP canonicalization so an embedding host does not maintain a second security implementation.
+
 ## Subpaths
 
-| Subpath                                | Contents                                                               |
-| -------------------------------------- | ---------------------------------------------------------------------- |
-| `@lostgradient/mcp`                    | The engine: server factory, registries, scope vocabularies, primitives |
-| `@lostgradient/mcp/logger`             | The shared pino logger, built lazily on first use                      |
-| `@lostgradient/mcp/env`                | `parseMcpServerEnvironment` and `getEnvironment`                       |
-| `@lostgradient/mcp/environment-schema` | The raw Zod shape, side-effect free                                    |
-| `@lostgradient/mcp/metrics`            | The in-process metrics collector                                       |
-| `@lostgradient/mcp/rate-limit`         | Sliding-window policy, stores, concurrency slots, and `429` responses  |
-| `@lostgradient/mcp/version`            | The advertised package version                                         |
+| Subpath                                             | Contents                                                               |
+| --------------------------------------------------- | ---------------------------------------------------------------------- |
+| `@lostgradient/mcp`                                 | The engine: server factory, registries, scope vocabularies, primitives |
+| `@lostgradient/mcp/logger`                          | The shared pino logger, built lazily on first use                      |
+| `@lostgradient/mcp/env`                             | `parseMcpServerEnvironment` and `getEnvironment`                       |
+| `@lostgradient/mcp/environment-schema`              | The raw Zod shape, side-effect free                                    |
+| `@lostgradient/mcp/metrics`                         | The in-process metrics collector                                       |
+| `@lostgradient/mcp/oauth`                           | OAuth contracts, metadata fetching, and shared security utilities      |
+| `@lostgradient/mcp/oauth/client-metadata-documents` | Client ID Metadata Document validation and SSRF-safe fetching          |
+| `@lostgradient/mcp/rate-limit`                      | Sliding-window policy, stores, concurrency slots, and `429` responses  |
+| `@lostgradient/mcp/version`                         | The advertised package version                                         |
 
 ## License
 

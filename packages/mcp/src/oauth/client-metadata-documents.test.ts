@@ -4,7 +4,8 @@ import {
 	fetchClientIdMetadataDocument,
 	isClientIdMetadataDocumentUrl,
 	resetDnsLookupConcurrencyLimiterForTests,
-} from '@web/lib/client-metadata-documents';
+	safeFetchPublicHttpsUrl,
+} from './client-metadata-documents.js';
 
 const validDocumentUrl = 'https://app.example.com/oauth/client.json';
 
@@ -22,6 +23,75 @@ const publicAddress = { address: '93.184.216.34', family: 4 };
 function lookupResolvingTo(...addresses: { address: string; family: number }[]) {
 	return async () => addresses;
 }
+
+describe('safeFetchPublicHttpsUrl', () => {
+	it('rejects non-HTTPS URLs before DNS resolution or fetch', async () => {
+		let lookupCalled = false;
+		let fetchCalled = false;
+
+		await expect(
+			safeFetchPublicHttpsUrl('http://app.example.com/client.json', {
+				lookupImpl: async () => {
+					lookupCalled = true;
+					return [publicAddress];
+				},
+				fetchImpl: async () => {
+					fetchCalled = true;
+					return new Response();
+				},
+			}),
+		).rejects.toMatchObject({ reason: 'https_required' });
+		expect(lookupCalled).toBe(false);
+		expect(fetchCalled).toBe(false);
+	});
+
+	it('rejects a private literal before DNS resolution or fetch', async () => {
+		let lookupCalled = false;
+		let fetchCalled = false;
+
+		await expect(
+			safeFetchPublicHttpsUrl('https://127.0.0.1/client.json', {
+				lookupImpl: async () => {
+					lookupCalled = true;
+					return [publicAddress];
+				},
+				fetchImpl: async () => {
+					fetchCalled = true;
+					return new Response();
+				},
+			}),
+		).rejects.toMatchObject({ reason: 'blocked_address' });
+		expect(lookupCalled).toBe(false);
+		expect(fetchCalled).toBe(false);
+	});
+
+	it('rejects when any resolved address is private', async () => {
+		let fetchCalled = false;
+
+		await expect(
+			safeFetchPublicHttpsUrl(validDocumentUrl, {
+				lookupImpl: lookupResolvingTo(publicAddress, { address: '10.0.0.1', family: 4 }),
+				fetchImpl: async () => {
+					fetchCalled = true;
+					return new Response();
+				},
+			}),
+		).rejects.toMatchObject({ reason: 'blocked_address' });
+		expect(fetchCalled).toBe(false);
+	});
+
+	it('disables redirects on the fetch operation', async () => {
+		let receivedRedirect: RequestRedirect | undefined;
+		await safeFetchPublicHttpsUrl(validDocumentUrl, {
+			lookupImpl: lookupResolvingTo(publicAddress),
+			fetchImpl: async (_input, init) => {
+				receivedRedirect = init?.redirect;
+				return new Response();
+			},
+		});
+		expect(receivedRedirect).toBe('error');
+	});
+});
 
 describe('isClientIdMetadataDocumentUrl', () => {
 	it('accepts an https URL with a non-root path', () => {

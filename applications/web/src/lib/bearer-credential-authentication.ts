@@ -1,5 +1,5 @@
 import { parseBearerCredential } from '@web/lib/authorization-header';
-import { canonicalizeIpAddress } from '@web/lib/canonicalize-ip-address';
+import { canonicalizeIpAddress } from '@lostgradient/mcp/oauth';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import { isSocketPeerTrusted, type TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
 

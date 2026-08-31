@@ -22,11 +22,11 @@ import {
 	createAuthorizationTransaction,
 	unconsumeAuthorizationTransaction,
 } from '@web/lib/authorization-transaction';
-import { isValidClientName } from '@web/lib/client-name-validation';
+import { isValidClientName } from '@lostgradient/mcp/oauth';
 import {
 	fetchClientIdMetadataDocument,
 	isClientIdMetadataDocumentUrl,
-} from '@web/lib/client-metadata-documents';
+} from '@lostgradient/mcp/oauth/client-metadata-documents';
 import { isTrustedRequestOrigin } from '@web/lib/csrf-protection';
 import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@web/lib/credential-lifecycle-policy';
 import { hashCredential } from '@web/lib/hash-credential';
@@ -48,14 +48,14 @@ import {
 } from '@web/lib/request-rate-limiter';
 import type { RequestContext } from '@web/lib/request-context';
 import { redirectUriMatchesRegistered } from '@web/lib/redirect-uri-matching';
-import { isValidRedirectUri } from '@web/lib/validate-redirect-uri';
+import { isValidRedirectUri } from '@lostgradient/mcp/oauth';
 import OauthAuthorizePage from '@web/views/oauth-authorize-page.svelte';
 import {
 	PayloadTooLargeError,
 	readBoundedFormUrlEncoded,
 	readBoundedJson,
 } from '@web/lib/bounded-request-body';
-import { isExactContentType } from '@web/lib/exact-content-type';
+import { isExactContentType } from '@lostgradient/mcp/oauth';
 import { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from '@web/lib/pkce-validation';
 import {
 	canonicalizeScopes,

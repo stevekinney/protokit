@@ -124,6 +124,7 @@ try {
 import { logger as rootLogger, getLogger as rootGetLogger } from '@lostgradient/mcp';
 import { logger as subpathLogger, getLogger as subpathGetLogger } from '@lostgradient/mcp/logger';
 import * as oauthContract from '@lostgradient/mcp/oauth';
+import * as clientMetadataDocuments from '@lostgradient/mcp/oauth/client-metadata-documents';
 import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
 import { createInMemoryOAuthStores, InMemoryClientStore, InMemoryCodeStore, InMemoryTokenStore, InMemoryTransactionStore } from '@lostgradient/mcp/oauth/testing';
 import { createPostgresOAuthSchema, createPostgresOAuthStores, PostgresClientStore, PostgresCodeStore, PostgresTokenStore, PostgresTransactionStore } from '@lostgradient/mcp/oauth/postgres';
@@ -145,7 +146,7 @@ require(rootLogger === subpathLogger, 'logger differs between the root export an
 require(rootGetLogger === subpathGetLogger, 'getLogger differs between the root export and the /logger subpath');
 
 // Every subpath in the exports map must resolve under Node.
-for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres', '/rate-limit']) {
+for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres', '/oauth/client-metadata-documents', '/rate-limit']) {
   try { await import('@lostgradient/mcp' + subpath); }
   catch (error) { problems.push('subpath "' + (subpath || '.') + '" failed to import: ' + error.message); }
 }
@@ -155,7 +156,14 @@ const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata
 const registry = vocabulary.defineRegistry({ tools: [], resources: [], prompts: [] });
 require(Array.isArray(getSupportedScopes(registry)), 'getSupportedScopes did not return a list');
 require(parseMcpServerEnvironment({ NODE_ENV: 'test' }).NODE_ENV === 'test', 'environment parsing failed');
-require(Object.keys(oauthContract).length === 0, '/oauth must remain a type-only contract');
+require(typeof oauthContract.safeFetchPublicHttpsUrl === 'function', '/oauth safe fetch is not a function');
+require(typeof oauthContract.isAddressInCidr === 'function', '/oauth CIDR matcher is not a function');
+require(typeof oauthContract.isValidRedirectUri === 'function', '/oauth redirect validator is not a function');
+require(typeof oauthContract.isValidClientName === 'function', '/oauth client-name validator is not a function');
+require(typeof oauthContract.isExactContentType === 'function', '/oauth content-type validator is not a function');
+require(typeof oauthContract.withDeadline === 'function', '/oauth deadline helper is not a function');
+require(typeof clientMetadataDocuments.fetchClientIdMetadataDocument === 'function', '/oauth/client-metadata-documents fetcher is not a function');
+require(clientMetadataDocuments.safeFetchPublicHttpsUrl === oauthContract.safeFetchPublicHttpsUrl, 'safe fetch differs between /oauth and the dedicated subpath');
 require(Object.keys(oauthStoresContract).length === 0, '/oauth/stores must remain a type-only contract');
 require(typeof createInMemoryOAuthStores === 'function', 'createInMemoryOAuthStores is not a function');
 require(typeof InMemoryTransactionStore === 'function', 'InMemoryTransactionStore is not a constructor');
