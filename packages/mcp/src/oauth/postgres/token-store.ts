@@ -40,9 +40,15 @@ export class PostgresTokenStore implements TokenStore {
 	async rotateRefreshToken(
 		input: Parameters<TokenStore['rotateRefreshToken']>[0],
 	): ReturnType<TokenStore['rotateRefreshToken']> {
-		const result = await this.database.execute(sql`WITH prior AS MATERIALIZED (
+		const result = await this.database.execute(sql`WITH prior_family AS MATERIALIZED (
+			SELECT family_id FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${input.priorHash}
+				AND client_id = ${input.clientId} AND resource = ${input.resource}
+		), family_lock AS MATERIALIZED (
+			SELECT pg_advisory_xact_lock(hashtextextended(family_id, 0)) FROM prior_family
+		), prior AS MATERIALIZED (
 			SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${input.priorHash}
-				AND client_id = ${input.clientId} AND resource = ${input.resource} FOR UPDATE
+				AND client_id = ${input.clientId} AND resource = ${input.resource}
+				AND EXISTS (SELECT 1 FROM family_lock) FOR UPDATE
 		), live AS (
 			SELECT * FROM prior WHERE revoked_at IS NULL AND expires_at > ${input.createdAt}
 		), replayable AS (
@@ -116,9 +122,15 @@ export class PostgresTokenStore implements TokenStore {
 		tokenHash: string,
 		clientId: string,
 	): ReturnType<TokenStore['revokeRefreshToken']> {
-		const result = await this.database.execute(sql`WITH prior AS MATERIALIZED (
+		const result = await this.database.execute(sql`WITH prior_family AS MATERIALIZED (
+			SELECT family_id FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash}
+				AND client_id = ${clientId} AND expires_at > clock_timestamp()
+		), family_lock AS MATERIALIZED (
+			SELECT pg_advisory_xact_lock(hashtextextended(family_id, 0)) FROM prior_family
+		), prior AS MATERIALIZED (
 			SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash}
-				AND client_id = ${clientId} AND expires_at > clock_timestamp() FOR UPDATE
+				AND client_id = ${clientId} AND expires_at > clock_timestamp()
+				AND EXISTS (SELECT 1 FROM family_lock) FOR UPDATE
 		), family_members AS MATERIALIZED (
 			SELECT access_token_hash FROM ${this.schema.refreshTokens}
 			WHERE family_id IN (SELECT family_id FROM prior WHERE revoked_at IS NOT NULL)
@@ -148,11 +160,15 @@ export class PostgresTokenStore implements TokenStore {
 	}
 
 	async revokeFamily(familyId: string): Promise<number> {
-		const result = await this.database.execute(sql`WITH family_members AS MATERIALIZED (
+		const result = await this.database.execute(sql`WITH family_lock AS MATERIALIZED (
+			SELECT pg_advisory_xact_lock(hashtextextended(${familyId}, 0))
+		), family_members AS MATERIALIZED (
 			SELECT access_token_hash FROM ${this.schema.refreshTokens} WHERE family_id = ${familyId}
+				AND EXISTS (SELECT 1 FROM family_lock)
 		), revoked_refresh AS (
 			UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
-			WHERE family_id = ${familyId} AND revoked_at IS NULL RETURNING 1
+			WHERE family_id = ${familyId} AND revoked_at IS NULL
+				AND EXISTS (SELECT 1 FROM family_lock) RETURNING 1
 		), revoked_access AS (
 			UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
 			WHERE access_token_hash IN (SELECT access_token_hash FROM family_members) AND revoked_at IS NULL RETURNING 1

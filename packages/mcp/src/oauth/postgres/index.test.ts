@@ -182,6 +182,63 @@ runOAuthStoreConformance('postgres', async () => {
 });
 
 describe('Postgres OAuth durability', () => {
+	test('serializes refresh rotation and family revocation on the family lock', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('locked-access', new Date('2099-01-01')),
+			refreshToken: refreshRecord(
+				'locked-refresh',
+				'locked-access',
+				new Date('2099-01-01'),
+				'locked-family',
+			),
+		});
+
+		const lockOwner = await connection.connect();
+		try {
+			const waitForAdvisoryLock = async () => {
+				let waiting = 0;
+				for (let attempt = 0; attempt < 5 && waiting !== 1; attempt += 1) {
+					const waitingResult = await connection.query<{ waiting: string }>(`
+						SELECT count(*)::text AS waiting
+						FROM pg_stat_activity
+						WHERE datname = current_database() AND wait_event = 'advisory'
+					`);
+					waiting = Number(waitingResult.rows[0]?.waiting);
+				}
+				expect(waiting).toBe(1);
+			};
+
+			await lockOwner.query('BEGIN');
+			await lockOwner.query("SELECT pg_advisory_xact_lock(hashtextextended('locked-family', 0))");
+			const rotationPromise = stores.tokens.rotateRefreshToken(
+				rotation(
+					'locked-refresh',
+					'locked-next-access',
+					'locked-next-refresh',
+					new Date('2026-01-02'),
+				),
+			);
+			await waitForAdvisoryLock();
+			await lockOwner.query('COMMIT');
+			const rotationResult = await rotationPromise;
+			expect(rotationResult.status).toBe('rotated');
+
+			await lockOwner.query('BEGIN');
+			await lockOwner.query("SELECT pg_advisory_xact_lock(hashtextextended('locked-family', 0))");
+			const revocationPromise = stores.tokens.revokeFamily('locked-family');
+			await waitForAdvisoryLock();
+			await lockOwner.query('COMMIT');
+			expect(await revocationPromise).toBe(2);
+			expect((await stores.tokens.findByHash('locked-next-access'))?.revokedAt).not.toBeNull();
+		} finally {
+			await lockOwner.query('ROLLBACK');
+			lockOwner.release();
+		}
+	});
+
 	test('preserves an expired access token while its paired refresh token is live', async () => {
 		await resetFixture();
 		await seedClient();
