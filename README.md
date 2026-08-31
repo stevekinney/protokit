@@ -33,16 +33,16 @@ Install dependencies:
 bun install
 ```
 
-Create `.env.local` in the repository root. `NODE_ENV` has no default anywhere in this codebase —
-every entry point must set it explicitly:
+Create `.env.local` in the repository root. `NODE_ENV` and `MCP_SERVER_NAME` have no defaults—every entry point must set both explicitly:
 
 ```sh
 NODE_ENV=development
+MCP_SERVER_NAME=my-application-mcp-server
 DATABASE_URL=<pooled connection string, sslmode=verify-full>
 DATABASE_URL_UNPOOLED=<direct connection string, sslmode=verify-full>
 ```
 
-Everything else is optional in development: `SESSION_SIGNING_SECRET` is auto-generated if unset (sessions won't survive a restart), Google sign-in is optional (use `GET /auth/dev/login` instead, development-only and automatically disabled the moment a tunnel is active), and `REDIS_URL` falls back to a single-process in-memory limiter. See `.env.example` for the complete, currently accurate variable list with defaults and production requirements — that file, not this one, is the source of truth for any variable's exact default.
+The remaining variables are optional in development: `SESSION_SIGNING_SECRET` is auto-generated if unset (sessions won't survive a restart), Google sign-in is optional (use `GET /auth/dev/login` instead, development-only and automatically disabled the moment a tunnel is active), and `REDIS_URL` falls back to a single-process in-memory limiter. See `.env.example` for the complete, currently accurate variable list with defaults and production requirements—that file, not this one, is the source of truth for any variable's exact default.
 
 Run `bun run doctor` at any point to see exactly what's configured, what's missing, and what production would additionally require — it reads the same environment schemas the server validates against, so it never falls out of sync with what's actually enforced.
 
