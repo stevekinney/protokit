@@ -4,8 +4,6 @@ import { z } from 'zod';
 import { database, schema } from '@template/database';
 import {
 	getEnvironment as getMcpEnvironment,
-	getSupportedScopes,
-	hasRegisteredUiExtensionResource,
 	isMcpScope,
 	mcpScopeDescriptions,
 } from '@lostgradient/mcp';
@@ -15,7 +13,6 @@ import { metricsCollector } from '@lostgradient/mcp/metrics';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
-import { oauthCorsHeaders } from '@web/lib/cors';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import {
 	consumeAuthorizationTransaction,
@@ -23,6 +20,14 @@ import {
 	unconsumeAuthorizationTransaction,
 } from '@web/lib/authorization-transaction';
 import { isValidClientName } from '@lostgradient/mcp/oauth';
+import {
+	handleOauthAuthorizationMetadataGet as handleLibraryOauthAuthorizationMetadataGet,
+	handleOauthProtectedResourceMetadataGet as handleLibraryOauthProtectedResourceMetadataGet,
+	handleOauthProtectedResourceMcpMetadataGet as handleLibraryOauthProtectedResourceMcpMetadataGet,
+	type OAuthDiscoveryConfiguration,
+	type OAuthRequestContext,
+	oauthCorsHeaders,
+} from '@lostgradient/mcp/oauth';
 import {
 	fetchClientIdMetadataDocument,
 	isClientIdMetadataDocumentUrl,
@@ -32,10 +37,7 @@ import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@web/lib/credential-l
 import { hashCredential } from '@web/lib/hash-credential';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
-import {
-	mcpLatestProtocolVersion,
-	mcpUiExtensionIdentifier,
-} from '@web/lib/mcp-protocol-constants';
+import { mcpLatestProtocolVersion } from '@web/lib/mcp-protocol-constants';
 import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 import {
 	enforceOauthAuthorizeRateLimit,
@@ -2293,98 +2295,54 @@ export async function handleOauthTokenPost(context: RequestContext): Promise<Res
 export async function handleOauthAuthorizationMetadataGet(
 	context: RequestContext,
 ): Promise<Response> {
-	const baseUrl = getBaseUrl(context.request);
-	return jsonResponse(
-		{
-			issuer: baseUrl,
-			authorization_endpoint: `${baseUrl}/oauth/authorize`,
-			token_endpoint: `${baseUrl}/oauth/token`,
-			registration_endpoint: `${baseUrl}/oauth/register`,
-			revocation_endpoint: `${baseUrl}/oauth/revoke`,
-			response_types_supported: ['code'],
-			grant_types_supported: ['authorization_code', 'refresh_token'],
-			code_challenge_methods_supported: ['S256'],
-			token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-			// AUTHZ-001: the exact same list `handleOauthProtectedResourceMetadataGet`
-			// and `handleOauthProtectedResourceMcpMetadataGet` below publish —
-			// both derived from `getSupportedScopes(templateRegistry)`, never hand-duplicated,
-			// so "authorization server and protected-resource metadata publish
-			// the same supported scopes" is mechanically true rather than
-			// something that can drift.
-			scopes_supported: getSupportedScopes(templateRegistry),
-			// OAUTH-002 / MCP 2026-07-28: this is the exact key clients check
-			// per the spec's "Advertising CIMD Support" section before using an
-			// HTTPS URL as `client_id` instead of falling back to DCR.
-			client_id_metadata_document_supported: true,
-			// OAUTH-004 / RFC 9207: this server includes `iss` on every
-			// authorization response (see `handleOauthAuthorizeApprove` and
-			// `handleOauthAuthorizeDeny`), so it advertises the fact per the
-			// RFC's own registered metadata field.
-			authorization_response_iss_parameter_supported: true,
-			// DOCS-001 / RFC 8414 sec. 2: human-readable documentation and legal
-			// links, derived from the same canonical BASE_URL as every other
-			// metadata field here — never a hardcoded or placeholder domain, so
-			// they resolve against whatever host this server is actually
-			// deployed to.
-			service_documentation: `${baseUrl}/support`,
-			op_policy_uri: `${baseUrl}/privacy`,
-			op_tos_uri: `${baseUrl}/terms`,
-			// Review finding: the real `/mcp` server capabilities (`server.ts`)
-			// only advertise the UI extension when `MCP_ENABLE_UI_EXTENSION` is
-			// set *and* at least one registered resource is actually an MCP App
-			// (`hasRegisteredUiExtensionResource(templateRegistry)`) -- `packages/mcp-apps` ships
-			// no application today, so that predicate is always false in this
-			// repository. This metadata document must apply the exact same
-			// predicate; advertising the extension here on the flag alone would
-			// let a client discover UI-extension support in OAuth metadata and
-			// then receive server capabilities without it.
-			extensions: {
-				...(environment.mcpEnableUiExtension && hasRegisteredUiExtensionResource(templateRegistry)
-					? { [mcpUiExtensionIdentifier]: {} }
-					: {}),
-			},
-		},
-		{ headers: oauthCorsHeaders },
+	return handleLibraryOauthAuthorizationMetadataGet(
+		toOauthDiscoveryContext(context),
+		getOauthDiscoveryConfiguration(context.request),
+		templateRegistry,
 	);
 }
 
 export async function handleOauthProtectedResourceMetadataGet(
 	context: RequestContext,
 ): Promise<Response> {
-	const baseUrl = getBaseUrl(context.request);
-	return jsonResponse(
-		{
-			resource: getMcpResourceUrl(context.request),
-			authorization_servers: [baseUrl],
-			scopes_supported: getSupportedScopes(templateRegistry),
-			// DOCS-001 / RFC 9728 sec. 2: same documentation/legal links as the
-			// authorization server metadata above, under this RFC's own field
-			// names.
-			resource_name: getMcpEnvironment().MCP_SERVER_NAME,
-			resource_documentation: `${baseUrl}/support`,
-			resource_policy_uri: `${baseUrl}/privacy`,
-			resource_tos_uri: `${baseUrl}/terms`,
-		},
-		{ headers: oauthCorsHeaders },
+	return handleLibraryOauthProtectedResourceMetadataGet(
+		toOauthDiscoveryContext(context),
+		getOauthDiscoveryConfiguration(context.request),
+		templateRegistry,
 	);
 }
 
 export async function handleOauthProtectedResourceMcpMetadataGet(
 	context: RequestContext,
 ): Promise<Response> {
-	const baseUrl = getBaseUrl(context.request);
-	return jsonResponse(
-		{
-			resource: getMcpResourceUrl(context.request),
-			authorization_servers: [baseUrl],
-			bearer_methods_supported: ['header'],
-			mcp_protocol_version: mcpLatestProtocolVersion,
-			scopes_supported: getSupportedScopes(templateRegistry),
-			resource_name: getMcpEnvironment().MCP_SERVER_NAME,
-			resource_documentation: `${baseUrl}/support`,
-			resource_policy_uri: `${baseUrl}/privacy`,
-			resource_tos_uri: `${baseUrl}/terms`,
-		},
-		{ headers: oauthCorsHeaders },
+	return handleLibraryOauthProtectedResourceMcpMetadataGet(
+		toOauthDiscoveryContext(context),
+		getOauthDiscoveryConfiguration(context.request),
+		templateRegistry,
 	);
+}
+
+function toOauthDiscoveryContext(context: RequestContext): OAuthRequestContext {
+	return {
+		request: context.request,
+		requestUrl: context.requestUrl,
+		requestId: context.requestId,
+		socketAddress: context.clientAddress,
+		identity: null,
+	};
+}
+
+function getOauthDiscoveryConfiguration(request: Request): OAuthDiscoveryConfiguration {
+	const publicUrl = new URL(getBaseUrl(request));
+	return {
+		issuer: getBaseUrl(request),
+		baseUrl: publicUrl,
+		resource: new URL(getMcpResourceUrl(request)),
+		serverName: getMcpEnvironment().MCP_SERVER_NAME,
+		mcpProtocolVersion: mcpLatestProtocolVersion,
+		mcpUiExtension: { enabled: environment.mcpEnableUiExtension },
+		serviceDocumentation: new URL('/support', publicUrl),
+		privacyPolicy: new URL('/privacy', publicUrl),
+		termsOfService: new URL('/terms', publicUrl),
+	};
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { EXTENSION_ID, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { allTools, conformanceOnlyTools } from './tools/index.js';
 import { allResources } from './resources/index.js';
@@ -11,6 +12,14 @@ import { getSupportedScopes } from './supported-scopes.js';
 import { mcpScopes } from './scopes.js';
 import type { McpUserProfile } from './types/primitives.js';
 import { templateRegistry } from './template-registry.js';
+import {
+	handleOauthAuthorizationMetadataGet,
+	handleOauthProtectedResourceMetadataGet,
+	handleOauthProtectedResourceMcpMetadataGet,
+	type OAuthDiscoveryConfiguration,
+	type OAuthRequestContext,
+} from './oauth/index.js';
+import type { McpRegistry } from './scope-vocabulary.js';
 
 /**
  * META-001: the registry contract that turns a metadata gap into a review
@@ -189,6 +198,88 @@ describe('getSupportedScopes', () => {
 		// never part of `allTools` — its scope must never be advertised to a
 		// real OAuth client.
 		expect(getSupportedScopes(templateRegistry)).not.toContain('audit:read');
+	});
+});
+
+describe('OAuth discovery metadata handlers', () => {
+	const context = {
+		request: new Request('https://public.example.test/.well-known/oauth-authorization-server'),
+		requestUrl: new URL('https://public.example.test/.well-known/oauth-authorization-server'),
+		requestId: 'metadata-request',
+		identity: null,
+	} satisfies OAuthRequestContext;
+	const configuration = {
+		issuer: 'https://issuer.example.test/tenant/',
+		baseUrl: new URL('https://public.example.test/'),
+		resource: new URL('https://resource.example.test/custom-mcp'),
+		serverName: 'Example MCP server',
+		mcpProtocolVersion: '2026-07-28',
+		mcpUiExtension: { enabled: false },
+	} satisfies OAuthDiscoveryConfiguration;
+
+	async function body(response: Response): Promise<Record<string, unknown>> {
+		return (await response.json()) as Record<string, unknown>;
+	}
+
+	it('uses the injected issuer and base URL instead of a Protokit host', async () => {
+		const authorization = await body(
+			handleOauthAuthorizationMetadataGet(context, configuration, templateRegistry),
+		);
+		const resource = await body(
+			handleOauthProtectedResourceMetadataGet(context, configuration, templateRegistry),
+		);
+
+		expect(authorization.issuer).toBe('https://issuer.example.test/tenant/');
+		expect(authorization.authorization_endpoint).toBe(
+			'https://public.example.test/oauth/authorize',
+		);
+		expect(resource.authorization_servers).toEqual(['https://issuer.example.test/tenant/']);
+		expect(resource.resource).toBe('https://resource.example.test/custom-mcp');
+		expect(authorization.service_documentation).toBeUndefined();
+		expect(resource.resource_documentation).toBeUndefined();
+	});
+
+	it('derives both authorization and protected-resource scopes from the injected registry', async () => {
+		const customRegistry = {
+			...templateRegistry,
+			tools: templateRegistry.tools.map((tool) => ({ ...tool, requiredScope: 'custom:read' })),
+			resources: [],
+			prompts: [],
+		} satisfies McpRegistry<'custom:read'>;
+		const authorization = await body(
+			handleOauthAuthorizationMetadataGet(context, configuration, customRegistry),
+		);
+		const resource = await body(
+			handleOauthProtectedResourceMetadataGet(context, configuration, customRegistry),
+		);
+		const mcpResource = await body(
+			handleOauthProtectedResourceMcpMetadataGet(context, configuration, customRegistry),
+		);
+
+		expect(authorization.scopes_supported).toEqual(['custom:read']);
+		expect(resource.scopes_supported).toEqual(['custom:read']);
+		expect(mcpResource.scopes_supported).toEqual(['custom:read']);
+		expect(mcpResource.mcp_protocol_version).toBe('2026-07-28');
+	});
+
+	it('advertises the UI extension only when enabled and backed by a registered application', async () => {
+		const registryWithApplication = {
+			...templateRegistry,
+			resources: [{ ...templateRegistry.resources[0]!, mimeType: RESOURCE_MIME_TYPE }],
+		} satisfies McpRegistry;
+		const disabled = await body(
+			handleOauthAuthorizationMetadataGet(context, configuration, registryWithApplication),
+		);
+		const enabled = await body(
+			handleOauthAuthorizationMetadataGet(
+				context,
+				{ ...configuration, mcpUiExtension: { enabled: true } },
+				registryWithApplication,
+			),
+		);
+
+		expect(disabled.extensions).toEqual({});
+		expect(enabled.extensions).toEqual({ [EXTENSION_ID]: {} });
 	});
 });
 

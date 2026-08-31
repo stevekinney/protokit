@@ -103,7 +103,7 @@ const minimalRedisClient = {
 } satisfies MinimalRedisClient;
 
 export const configurationContractFixture = {
-	issuer: new URL('https://authorization.example.com'),
+	issuer: 'https://authorization.example.com',
 	baseUrl: new URL('https://application.example.com'),
 	accessTokenTtlSeconds: 3600,
 	refreshTokenTtlSeconds: 2_592_000,
@@ -129,7 +129,6 @@ export const configurationContractFixture = {
 	},
 	mcpUiExtension: {
 		enabled: true,
-		registryHasUiExtensionResource: true,
 	},
 	rateLimitStores: {
 		slidingWindow: {

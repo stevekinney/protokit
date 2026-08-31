@@ -4,6 +4,13 @@ import type { OAuthStores } from './stores.js';
 import * as clientMetadataDocuments from './client-metadata-documents.js';
 import * as securityUtilities from './security-utilities.js';
 import * as canonicalAddressUtilities from './canonicalize-ip-address.js';
+export {
+	handleOauthAuthorizationMetadataGet,
+	handleOauthProtectedResourceMetadataGet,
+	handleOauthProtectedResourceMcpMetadataGet,
+	oauthCorsHeaders,
+} from './discovery-metadata.js';
+export type { OAuthDiscoveryConfiguration } from './discovery-metadata.js';
 
 export const fetchClientIdMetadataDocument = clientMetadataDocuments.fetchClientIdMetadataDocument;
 export const isClientIdMetadataDocumentUrl = clientMetadataDocuments.isClientIdMetadataDocumentUrl;
@@ -168,7 +175,8 @@ export interface MinimalRedisClient {
 }
 
 export type OAuthConfiguration = {
-	issuer: URL;
+	/** Exact OAuth issuer identifier. Consumers must use this same value in authorization responses. */
+	issuer: string;
 	baseUrl: URL;
 	accessTokenTtlSeconds: number;
 	refreshTokenTtlSeconds: number;
@@ -177,12 +185,11 @@ export type OAuthConfiguration = {
 	trustedProxy: TrustedProxyConfiguration;
 	rateLimits: RateLimitConfiguration;
 	/**
-	 * Both values must be true before authorization-server metadata advertises
-	 * MCP Apps support, matching the capability exposed by the MCP server.
+	 * Authorization-server metadata advertises MCP Apps support only when this
+	 * is enabled and the injected registry contains an MCP App resource.
 	 */
 	mcpUiExtension: {
 		enabled: boolean;
-		registryHasUiExtensionResource: boolean;
 	};
 	rateLimitStores?: {
 		slidingWindow: AtomicSlidingWindowStore;
