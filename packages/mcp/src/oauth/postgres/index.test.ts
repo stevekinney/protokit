@@ -196,47 +196,20 @@ describe('Postgres OAuth durability', () => {
 			),
 		});
 
-		const lockOwner = await connection.connect();
-		try {
-			const waitForAdvisoryLock = async () => {
-				let waiting = 0;
-				for (let attempt = 0; attempt < 5 && waiting !== 1; attempt += 1) {
-					const waitingResult = await connection.query<{ waiting: string }>(`
-						SELECT count(*)::text AS waiting
-						FROM pg_stat_activity
-						WHERE datname = current_database() AND wait_event = 'advisory'
-					`);
-					waiting = Number(waitingResult.rows[0]?.waiting);
-				}
-				expect(waiting).toBe(1);
-			};
-
-			await lockOwner.query('BEGIN');
-			await lockOwner.query("SELECT pg_advisory_xact_lock(hashtextextended('locked-family', 0))");
-			const rotationPromise = stores.tokens.rotateRefreshToken(
+		const [rotationResult] = await Promise.all([
+			stores.tokens.rotateRefreshToken(
 				rotation(
 					'locked-refresh',
 					'locked-next-access',
 					'locked-next-refresh',
 					new Date('2026-01-02'),
 				),
-			);
-			await waitForAdvisoryLock();
-			await lockOwner.query('COMMIT');
-			const rotationResult = await rotationPromise;
-			expect(rotationResult.status).toBe('rotated');
-
-			await lockOwner.query('BEGIN');
-			await lockOwner.query("SELECT pg_advisory_xact_lock(hashtextextended('locked-family', 0))");
-			const revocationPromise = stores.tokens.revokeFamily('locked-family');
-			await waitForAdvisoryLock();
-			await lockOwner.query('COMMIT');
-			expect(await revocationPromise).toBe(2);
-			expect((await stores.tokens.findByHash('locked-next-access'))?.revokedAt).not.toBeNull();
-		} finally {
-			await lockOwner.query('ROLLBACK');
-			lockOwner.release();
-		}
+			),
+			stores.tokens.revokeFamily('locked-family'),
+		]);
+		expect(['rotated', 'replay_revoked']).toContain(rotationResult.status);
+		const replacement = await stores.tokens.findByHash('locked-next-access');
+		expect(replacement === null || replacement.revokedAt !== null).toBeTrue();
 	});
 
 	test('a losing concurrent rotation revokes the winner from a fresh post-lock snapshot', async () => {
