@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { constantTimeEquals } from '@web/lib/constant-time-equals';
+import { constantTimeEquals } from '@lostgradient/mcp/oauth';
 import { sessionSigningSecret, sessionSigningSecrets } from '@web/lib/session-signing-secret';
 
 /**

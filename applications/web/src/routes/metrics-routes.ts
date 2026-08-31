@@ -12,7 +12,7 @@ import { enforceMetricsRateLimit } from '@web/lib/request-rate-limiter';
 
 /**
  * OPS-002 / S-15: `GET /metrics` — gated by `METRICS_API_KEY`, compared in
- * constant time (`checkBearerCredential`, using `constant-time-equals.ts`)
+ * constant time (`checkBearerCredential`, using the package OAuth utility)
  * rather than the ordinary `!==` this route previously used. Every response
  * shape (not-found, unauthorized, rate-limited, success) carries
  * `Cache-Control: no-store` so no shared or CDN cache ever stores a

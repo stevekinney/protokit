@@ -1,7 +1,7 @@
 import { parseBearerCredential } from '@web/lib/authorization-header';
 import { canonicalizeIpAddress } from '@lostgradient/mcp/oauth';
-import { constantTimeEquals } from '@web/lib/constant-time-equals';
-import { isSocketPeerTrusted, type TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
+import { constantTimeEquals } from '@lostgradient/mcp/oauth';
+import { isSocketPeerTrusted, type TrustedProxyConfiguration } from '@lostgradient/mcp/oauth';
 
 /**
  * OPS-002 / S-15: shared bearer-credential check for `/metrics` and

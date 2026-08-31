@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { environment } from '@web/env';
-import { constantTimeEquals } from '@web/lib/constant-time-equals';
+import { constantTimeEquals, isValidPkceCodeVerifier } from '@lostgradient/mcp/oauth';
 import { parseCookies, serializeCookie } from '@web/lib/cookies';
 import { getBaseUrl } from '@web/lib/base-url';
 import {
@@ -12,7 +12,6 @@ import {
 	type GoogleOauthSingleUseStoreDependencies,
 } from '@web/lib/google-oauth-single-use-store';
 import { hashCredential } from '@web/lib/hash-credential';
-import { isValidPkceCodeVerifier } from '@web/lib/pkce-validation';
 import {
 	googleOauthStateCookieMaxCount,
 	googleTokenFetchTimeoutMs,

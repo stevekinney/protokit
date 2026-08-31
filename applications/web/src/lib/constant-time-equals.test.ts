@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { constantTimeEquals } from '@web/lib/constant-time-equals';
+import { constantTimeEquals } from '@lostgradient/mcp/oauth';
 
 describe('constantTimeEquals', () => {
 	it('returns true for equal strings', () => {

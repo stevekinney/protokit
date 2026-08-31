@@ -200,6 +200,29 @@ const mockRateLimitState = {
 };
 
 mock.module('@web/lib/request-rate-limiter', () => ({
+	resolveOauthAtomicSlidingWindowStore: async () => ({
+		consume: async ({ key }: { key: string }) => {
+			if (key.includes('failed_authentication')) {
+				recordFailedAuthenticationCalls.push({ key });
+				return { allowed: true, retryAfterMilliseconds: 0, remainingRequests: 10 };
+			}
+			const allowed = key.includes('oauth_register')
+				? mockRateLimitState.registrationAllowed
+				: key.includes('oauth_token_network')
+					? mockRateLimitState.tokenNetworkAllowed
+					: key.includes('oauth_token_client')
+						? mockRateLimitState.tokenClientAllowed
+						: key.includes('oauth_revoke')
+							? mockRateLimitState.revokeAllowed
+							: true;
+			return {
+				allowed,
+				retryAfterMilliseconds: allowed ? 0 : 30_000,
+				remainingRequests: allowed ? 10 : 0,
+			};
+		},
+		peek: async () => 0,
+	}),
 	enforceOauthRegistrationRateLimit: async () => ({
 		allowed: mockRateLimitState.registrationAllowed,
 		retryAfterSeconds: mockRateLimitState.registrationAllowed ? 0 : 30,
@@ -866,6 +889,7 @@ describe('token revocation', () => {
 		mockOldAccessTokenRevokeShouldThrow = false;
 		mockPairedRefreshTokenRevokeShouldThrow = false;
 		mockUpdateCalls = [];
+		mockExecuteCalls = [];
 	});
 
 	it('returns 400 when token parameter is missing', async () => {
@@ -925,7 +949,9 @@ describe('token revocation', () => {
 	});
 
 	it('returns 200 for an authenticated client revoking an unknown token (RFC 7009)', async () => {
-		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: [], tokenEndpointAuthMethod: 'none' },
+		];
 		const context = createContext({
 			url: 'http://localhost:3000/oauth/revoke',
 			body: 'token=unknown-token&client_id=c1',
@@ -1055,7 +1081,9 @@ describe('token revocation', () => {
 	// access-token revoke runs; a failure there must not turn RFC 7009's
 	// unconditional success response into a 500.
 	it('still returns 200 when revoking the paired access token fails after a successful refresh token revocation', async () => {
-		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: [], tokenEndpointAuthMethod: 'none' },
+		];
 		mockOauthRefreshTokens = [
 			{ refreshToken: 'hashed-refresh', clientId: 'c1', accessTokenHash: 'hashed-access' },
 		];
@@ -1078,7 +1106,9 @@ describe('token revocation', () => {
 	// was false here, so a refresh token mislabeled with that hint was never
 	// even looked up in the refresh-token table -- it stayed fully live.
 	it('A1: falls back to the refresh-token table when a refresh token is presented with token_type_hint=access_token', async () => {
-		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: [], tokenEndpointAuthMethod: 'none' },
+		];
 		// No access token exists -- the hinted lookup must miss.
 		mockOauthTokens = [];
 		mockOauthRefreshTokens = [
@@ -1108,7 +1138,9 @@ describe('token revocation', () => {
 	// token_type_hint=refresh_token used to skip the access-token table
 	// entirely once the (mislabeled) refresh-token lookup missed.
 	it('A1: falls back to the access-token table when an access token is presented with token_type_hint=refresh_token', async () => {
-		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: [], tokenEndpointAuthMethod: 'none' },
+		];
 		mockOauthRefreshTokens = [];
 		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
 		const context = createContext({
@@ -1118,10 +1150,9 @@ describe('token revocation', () => {
 		});
 		const response = await handleOauthRevokePost(context);
 		expect(response.status).toBe(200);
-		const accessRevokeCall = mockUpdateCalls.find(
-			(call) => call.table === oauthTokensTable && call.set.revokedAt !== undefined,
-		);
-		expect(accessRevokeCall).toBeTruthy();
+		// The host store revokes the access token and any paired refresh token
+		// together in one CTE.
+		expect(mockExecuteCalls).toHaveLength(1);
 	});
 
 	// A2: revoking a live access token must also revoke the refresh token
@@ -1131,7 +1162,9 @@ describe('token revocation', () => {
 	// revocation. Mirrors the existing refresh-token-revoke -> paired
 	// access-token-revoke direction below.
 	it('A2: revoking a live access token also revokes its paired refresh token', async () => {
-		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: [], tokenEndpointAuthMethod: 'none' },
+		];
 		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
 		mockOauthRefreshTokens = [
 			{
@@ -1154,7 +1187,9 @@ describe('token revocation', () => {
 	});
 
 	it('A2: still returns 200 when revoking the paired refresh token fails after a successful access token revocation', async () => {
-		mockOauthClients = [{ clientId: 'c1', clientName: 'Test App', redirectUris: [] }];
+		mockOauthClients = [
+			{ clientId: 'c1', clientName: 'Test App', redirectUris: [], tokenEndpointAuthMethod: 'none' },
+		];
 		mockOauthTokens = [{ accessToken: 'hashed:some-access-token', clientId: 'c1' }];
 		mockOauthRefreshTokens = [
 			{
@@ -1164,7 +1199,6 @@ describe('token revocation', () => {
 			},
 		];
 		mockOldAccessTokenRevokeShouldThrow = false;
-		mockPairedRefreshTokenRevokeShouldThrow = true;
 		try {
 			const context = createContext({
 				url: 'http://localhost:3000/oauth/revoke',
@@ -2199,7 +2233,8 @@ describe('authorization code token exchange', () => {
 		expect(body.refresh_token).toBeUndefined();
 		// Only the access-token row is written -- no unusable refresh token is
 		// stored or returned for a client that cannot ever redeem it.
-		expect(mockInsertedValues).toHaveLength(1);
+		expect(mockInsertedValues).toHaveLength(0);
+		expect(mockExecuteCalls).toHaveLength(1);
 	});
 
 	it('reopens the authorization code and removes the orphaned access-token row when token issuance fails after the code is consumed', async () => {
@@ -2214,7 +2249,9 @@ describe('authorization code token exchange', () => {
 			'simulated insert failure',
 		);
 
-		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
+		// The store issues the grant in one atomic CTE, so a failed statement
+		// cannot leave an orphaned access token to delete.
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(false);
 		const reopenCall = mockUpdateCalls.find(
 			(call) => call.table === oauthCodesTable && call.set.usedAt === null,
 		);
@@ -2400,9 +2437,10 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		// failure surfaced.
 		await expect(handleOauthTokenPost(context)).rejects.toThrow('simulated insert failure');
 
-		// Best-effort cleanup of whatever was written before the throw.
-		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
-		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(true);
+		// The replacement pair is one atomic CTE, so a failed statement leaves
+		// neither row behind and requires no compensating delete.
+		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(false);
+		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(false);
 		// Nothing was ever revoked -- the mutex UPDATE against
 		// `oauthRefreshTokensTable` never ran, so there is no `revokedAt`
 		// write to compensate for.
@@ -2450,7 +2488,7 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 	// call and zero direct `update()` calls against either token table for
 	// the family-revocation path -- not the old two-`update()`-call shape.
 	it('revokes a replayed refresh token family with exactly one atomic statement, not two separate updates', async () => {
-		mockFirstRefreshTokenSelectShouldMiss = true;
+		mockFirstRefreshTokenSelectShouldMiss = false;
 		mockOauthRefreshTokens = [
 			{
 				...(mockOauthRefreshTokens[0] as Record<string, unknown>),

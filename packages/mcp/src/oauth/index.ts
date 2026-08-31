@@ -1,6 +1,6 @@
 import type { McpScopeVocabulary } from '../scope-vocabulary.js';
 import type { McpUserProfile } from '../types/primitives.js';
-import type { OAuthStores } from './stores.js';
+import type { ClientStore, CodeStore, OAuthStores, TokenStore } from './stores.js';
 import * as clientMetadataDocuments from './client-metadata-documents.js';
 import * as securityUtilities from './security-utilities.js';
 import * as canonicalAddressUtilities from './canonicalize-ip-address.js';
@@ -178,6 +178,8 @@ export type OAuthConfiguration = {
 	/** Exact OAuth issuer identifier. Consumers must use this same value in authorization responses. */
 	issuer: string;
 	baseUrl: URL;
+	/** Canonical RFC 8707 resource identifier accepted by both token grants. */
+	resource: URL;
 	accessTokenTtlSeconds: number;
 	refreshTokenTtlSeconds: number;
 	clientSecretTtlSeconds: number;
@@ -193,7 +195,7 @@ export type OAuthConfiguration = {
 	};
 	rateLimitStores?: {
 		slidingWindow: AtomicSlidingWindowStore;
-		concurrencySlots: ConcurrencySlotStore;
+		concurrencySlots?: ConcurrencySlotStore;
 	};
 };
 
@@ -212,6 +214,26 @@ export type OAuthHostSeams<Scope extends string> = {
 	configuration: OAuthConfiguration;
 	crossInstanceMessaging?: CrossInstanceMessaging;
 };
+
+/** Host capabilities needed by endpoints that do not render application UI. */
+export type OAuthStatelessHostSeams<Scope extends string> = Pick<
+	OAuthHostSeams<Scope>,
+	'scopes' | 'configuration' | 'crossInstanceMessaging'
+> & {
+	stores: { clients: ClientStore; codes: CodeStore; tokens: TokenStore };
+	/** Existing host credential hash function; plaintext credentials never cross into stores. */
+	hashCredential(value: string): string;
+	/** Disconnect or notify live grants after a replay or explicit revocation. */
+	publishGrantRevocation?(subjectId: string): Promise<void>;
+};
+
+export { authenticateOauthClient } from './client-authentication.js';
+export { constantTimeEquals } from './security-utilities.js';
+export { handleOauthRegisterPost } from './registration-endpoint.js';
+export { handleOauthTokenPost } from './token-endpoint.js';
+export { handleOauthRevokePost } from './revocation-endpoint.js';
+export { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from './pkce-validation.js';
+export { isSocketPeerTrusted, resolveOauthNetworkIdentity } from './network-identity.js';
 
 export type {
 	AccessToken,

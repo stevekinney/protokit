@@ -105,6 +105,7 @@ const minimalRedisClient = {
 export const configurationContractFixture = {
 	issuer: 'https://authorization.example.com',
 	baseUrl: new URL('https://application.example.com'),
+	resource: new URL('https://application.example.com/mcp'),
 	accessTokenTtlSeconds: 3600,
 	refreshTokenTtlSeconds: 2_592_000,
 	clientSecretTtlSeconds: 15_552_000,

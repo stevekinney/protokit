@@ -1,4 +1,5 @@
-import { canonicalizeIpAddress, isAddressInCidr, stripPort } from '@lostgradient/mcp/oauth';
+import { canonicalizeIpAddress, stripPort } from './canonicalize-ip-address.js';
+import { isAddressInCidr } from './security-utilities.js';
 
 export type TrustedProxyHeader = 'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip';
 
@@ -111,7 +112,7 @@ function extractForwardedAddress(
  * chain) is trusted instead. Every result is canonicalized so IPv4,
  * IPv4-mapped IPv6, and alternate IPv6 spellings collapse to one identity.
  */
-export function resolveNetworkIdentity(input: {
+export function resolveOauthNetworkIdentity(input: {
 	socketAddress: string | undefined;
 	headers: Headers;
 	configuration: TrustedProxyConfiguration;
