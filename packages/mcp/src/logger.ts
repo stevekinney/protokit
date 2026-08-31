@@ -4,6 +4,18 @@ import type { DestinationStream, LoggerOptions } from 'pino';
 import { getEnvironment } from './env.js';
 
 /**
+ * The complete logging surface used by the MCP engine. Hosts can satisfy
+ * this structurally with their existing logger; no pino import or pino type
+ * is required. A child must preserve the same four-method contract.
+ */
+export interface McpLogger {
+	info(bindingsOrMessage: Record<string, unknown> | string, message?: string): void;
+	warn(bindingsOrMessage: Record<string, unknown> | string, message?: string): void;
+	error(bindingsOrMessage: Record<string, unknown> | string, message?: string): void;
+	child(bindings: Record<string, unknown>): McpLogger;
+}
+
+/**
  * OBS-001 / S-14: `logger.ts` previously declared no redaction paths at
  * all, so any structured field that happened to carry a credential-shaped
  * value would be written verbatim. This template's request boundary
@@ -197,11 +209,42 @@ function canResolvePrettyTransport(): boolean {
  * behave identically.
  */
 let cachedLogger: pino.Logger | undefined;
+let hostLogger: McpLogger | undefined;
+
+/**
+ * Replaces the engine's logging sink with a host-owned logger. Existing
+ * callers that never call `setLogger` continue to use the lazy pino logger.
+ * The exported `logger` and `getLogger()` retain their complete pino contract;
+ * injection changes only the engine's internal sink.
+ */
+export function setLogger(nextLogger: McpLogger): void {
+	hostLogger = nextLogger;
+}
 
 export function getLogger(): pino.Logger {
 	cachedLogger ??= createLogger();
 	return cachedLogger;
 }
+
+function getEngineLogger(): McpLogger {
+	return hostLogger ?? getLogger();
+}
+
+/** Package-internal facade that selects the host sink when one is configured. */
+export const engineLogger: McpLogger = {
+	info(bindingsOrMessage, message) {
+		getEngineLogger().info(bindingsOrMessage, message);
+	},
+	warn(bindingsOrMessage, message) {
+		getEngineLogger().warn(bindingsOrMessage, message);
+	},
+	error(bindingsOrMessage, message) {
+		getEngineLogger().error(bindingsOrMessage, message);
+	},
+	child(bindings) {
+		return getEngineLogger().child(bindings);
+	},
+};
 
 export const logger: pino.Logger = new Proxy({} as pino.Logger, {
 	// Only `get` and `set` are trapped. Reflecting `ownKeys`,

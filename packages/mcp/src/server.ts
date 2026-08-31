@@ -17,7 +17,7 @@ import { hasRegisteredUiExtensionResource } from './ui-extension-support.js';
 import { getEnvironment } from './env.js';
 import { PACKAGE_VERSION } from './version.js';
 import { metricsCollector } from './metrics.js';
-import { logger } from './logger.js';
+import { engineLogger as logger } from './logger.js';
 import type {
 	McpPromptDefinition,
 	McpResourceDefinition,

@@ -3,6 +3,7 @@ import { describe, it, expect } from 'bun:test';
 import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { areResourceSubscriptionsAuthorized, createMcpServer } from './server';
+import { getLogger, setLogger } from './logger.js';
 import { getSupportedScopes } from './supported-scopes.js';
 import { templateRegistry } from './template-registry.js';
 
@@ -66,6 +67,73 @@ describe('createMcpServer', () => {
 		expect(result.isError).toBe(true);
 
 		await client.close();
+	});
+
+	it('sends engine records exclusively to a host-supplied logger', async () => {
+		const hostRecords: Array<{ bindings: Record<string, unknown>; message?: string }> = [];
+		const defaultRecords: unknown[][] = [];
+		const defaultLogger = getLogger();
+		const originalDefaultWarn = defaultLogger.warn.bind(defaultLogger);
+		const recordingLogger = {
+			info() {},
+			warn(bindings: Record<string, unknown>, message?: string) {
+				expect(this).toBe(recordingLogger);
+				hostRecords.push({ bindings, message });
+			},
+			error() {},
+			child() {
+				return recordingLogger;
+			},
+		};
+
+		defaultLogger.warn = ((...arguments_: unknown[]) => {
+			defaultRecords.push(arguments_);
+		}) as typeof defaultLogger.warn;
+		setLogger(recordingLogger);
+		expect(getLogger()).toBe(defaultLogger);
+
+		try {
+			const server = createMcpServer(
+				{
+					userId: 'host-logger-user',
+					user: {
+						id: 'host-logger-user',
+						email: 'test@example.com',
+						name: 'Test User',
+						image: null,
+						role: 'user',
+					},
+					enableUiExtension: false,
+					enableConformanceMode: false,
+					scopes: [],
+				},
+				templateRegistry,
+			);
+			const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+			const client = new Client({ name: 'host-logger-client', version: '1.0.0' });
+			await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+			const result = await client.callTool({ name: 'get_user_profile', arguments: {} });
+
+			expect(result.isError).toBe(true);
+			expect(hostRecords).toEqual([
+				{
+					bindings: expect.objectContaining({
+						event: 'mcp_tool_call',
+						outcome: 'insufficient_scope',
+						tool: 'get_user_profile',
+						userId: 'host-logger-user',
+					}),
+					message: 'MCP tool call rejected: insufficient scope',
+				},
+			]);
+			expect(defaultRecords).toEqual([]);
+
+			await client.close();
+		} finally {
+			defaultLogger.warn = originalDefaultWarn;
+			setLogger(defaultLogger);
+		}
 	});
 });
 

@@ -8,7 +8,8 @@ export { cancellableOperationTestHooks } from './conformance-fixture-registratio
 export { getUserProfileTool, listAuditEventsTool, allTools } from './tools/index.js';
 export { userProfileResource, allResources } from './resources/index.js';
 export { summarizePrompt, allPrompts } from './prompts/index.js';
-export { logger, getLogger } from './logger.js';
+export { logger, getLogger, setLogger } from './logger.js';
+export type { McpLogger } from './logger.js';
 export {
 	createToolTextResponse,
 	createToolJsonResponse,
