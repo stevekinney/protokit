@@ -6,6 +6,7 @@ import { metricsCollector } from '@lostgradient/mcp/metrics';
 import { environment } from '@web/env';
 import { resolveMcpCrossInstanceMessaging } from '@web/lib/mcp-cross-instance-messaging';
 import { markAsServerOnlyCloseableStream } from '@web/lib/in-flight-request-tracker';
+import { mcpLatestProtocolVersion } from '@web/lib/mcp-protocol-constants';
 import { disconnectRedisSubscriberClient } from '@web/lib/redis-client';
 import {
 	mcpMaxSubscriptionsPerUserHandler,
@@ -24,7 +25,7 @@ export function shouldEnableConformanceMode(input: {
 const servingHandler = createMcpServingHandler({
 	registry: templateRegistry,
 	configuration: {
-		protocolVersion: '2026-07-28',
+		protocolVersion: mcpLatestProtocolVersion,
 		maximumRequestBodyBytes: mcpRequestMaxBodyBytes,
 		maximumSubscriptionsPerUser: mcpMaxSubscriptionsPerUserHandler,
 		userHandlerSweepIntervalMilliseconds: mcpUserHandlerSweepIntervalMs,
@@ -58,7 +59,6 @@ export function publishUserResourceUpdate(userId: string, uri: string): void {
 }
 
 export async function publishGrantRevocation(userId: string): Promise<void> {
-	await startup;
 	await servingHandler.publishGrantRevocation(userId);
 }
 
