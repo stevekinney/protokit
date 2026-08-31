@@ -125,6 +125,7 @@ import { logger as rootLogger, getLogger as rootGetLogger } from '@lostgradient/
 import { logger as subpathLogger, getLogger as subpathGetLogger } from '@lostgradient/mcp/logger';
 import * as oauthContract from '@lostgradient/mcp/oauth';
 import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
+import { createInMemoryOAuthStores, InMemoryClientStore, InMemoryCodeStore, InMemoryTokenStore, InMemoryTransactionStore } from '@lostgradient/mcp/oauth/testing';
 
 const problems = [];
 const require = (condition, message) => { if (!condition) problems.push(message); };
@@ -142,7 +143,7 @@ require(rootLogger === subpathLogger, 'logger differs between the root export an
 require(rootGetLogger === subpathGetLogger, 'getLogger differs between the root export and the /logger subpath');
 
 // Every subpath in the exports map must resolve under Node.
-for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores']) {
+for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing']) {
   try { await import('@lostgradient/mcp' + subpath); }
   catch (error) { problems.push('subpath "' + (subpath || '.') + '" failed to import: ' + error.message); }
 }
@@ -154,6 +155,11 @@ require(Array.isArray(getSupportedScopes(registry)), 'getSupportedScopes did not
 require(parseMcpServerEnvironment({ NODE_ENV: 'test' }).NODE_ENV === 'test', 'environment parsing failed');
 require(Object.keys(oauthContract).length === 0, '/oauth must remain a type-only contract');
 require(Object.keys(oauthStoresContract).length === 0, '/oauth/stores must remain a type-only contract');
+require(typeof createInMemoryOAuthStores === 'function', 'createInMemoryOAuthStores is not a function');
+require(typeof InMemoryTransactionStore === 'function', 'InMemoryTransactionStore is not a constructor');
+require(typeof InMemoryCodeStore === 'function', 'InMemoryCodeStore is not a constructor');
+require(typeof InMemoryTokenStore === 'function', 'InMemoryTokenStore is not a constructor');
+require(typeof InMemoryClientStore === 'function', 'InMemoryClientStore is not a constructor');
 
 if (problems.length > 0) {
   console.error('Packaged artifact is not consumable:');
