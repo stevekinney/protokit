@@ -105,9 +105,31 @@ describe('createSvelteKitMcpMount', () => {
 		['stores.clients', { ...oauthSeams, stores: { ...oauthSeams.stores, clients: undefined } }],
 		['scopes.vocabulary', { ...oauthSeams, scopes: {} }],
 		[
+			'scopes.supportedScopes[0]',
+			{ ...oauthSeams, scopes: { ...oauthSeams.scopes, supportedScopes: ['undeclared:scope'] } },
+		],
+		[
 			'configuration.baseUrl',
 			{ ...oauthSeams, configuration: { ...oauthSeams.configuration, baseUrl: undefined } },
 		],
+		[
+			'configuration.issuer',
+			{ ...oauthSeams, configuration: { ...oauthSeams.configuration, issuer: '' } },
+		],
+		[
+			'configuration.trustedProxy.trustedProxyCidrs[0]',
+			{
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyCidrs: [null],
+					},
+				},
+			},
+		],
+		['recordEvent', { ...oauthSeams, recordEvent: 'not-callable' }],
 	] as const)(
 		'refuses to start when the nested OAuth host seam %s is absent at runtime',
 		async (expectedPath, incompleteOauthSeams) => {

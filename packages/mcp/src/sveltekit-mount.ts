@@ -1,5 +1,6 @@
 import type { McpRegistry } from './scope-vocabulary.js';
 import { getSvelteKitMountState, setSvelteKitMountState } from './sveltekit-mount-state.js';
+import { isValidCidr } from './oauth/security-utilities.js';
 import {
 	handleOauthAuthorizationMetadataGet,
 	handleOauthAuthorizeApprove,
@@ -94,6 +95,16 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 			throw new Error(`The SvelteKit MCP mount requires the OAuth host seam "${name}".`);
 		}
 	}
+	if (seams.recordEvent !== undefined && typeof seams.recordEvent !== 'function') {
+		throw new Error('The SvelteKit MCP mount requires the OAuth host seam "recordEvent".');
+	}
+	if (seams.crossInstanceMessaging !== undefined) {
+		assertOauthSeamObject(seams.crossInstanceMessaging, 'crossInstanceMessaging');
+		assertOauthSeamFunctions(seams.crossInstanceMessaging, 'crossInstanceMessaging', [
+			'publish',
+			'subscribe',
+		]);
+	}
 	assertOauthSeamObject(seams.stores, 'stores');
 	assertOauthStore(seams.stores, 'transactions', [
 		'create',
@@ -144,15 +155,18 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 			'The SvelteKit MCP mount requires the OAuth host seam "scopes.supportedScopes".',
 		);
 	}
+	for (const [index, scope] of seams.scopes.supportedScopes.entries()) {
+		if (typeof scope !== 'string' || !seams.scopes.vocabulary.isScope(scope)) {
+			throw new Error(
+				`The SvelteKit MCP mount requires the OAuth host seam "scopes.supportedScopes[${index}]".`,
+			);
+		}
+	}
 
 	assertOauthSeamObject(seams.configuration, 'configuration');
 	const configuration = seams.configuration as unknown as RuntimeObject;
-	for (const name of ['issuer'] as const) {
-		if (typeof configuration[name] !== 'string') {
-			throw new Error(
-				`The SvelteKit MCP mount requires the OAuth host seam "configuration.${name}".`,
-			);
-		}
+	if (typeof configuration.issuer !== 'string' || configuration.issuer.trim().length === 0) {
+		throw new Error('The SvelteKit MCP mount requires the OAuth host seam "configuration.issuer".');
 	}
 	for (const name of ['baseUrl', 'resource'] as const) {
 		if (!(configuration[name] instanceof URL)) {
@@ -174,6 +188,13 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 		throw new Error(
 			'The SvelteKit MCP mount requires the OAuth host seam "configuration.trustedProxy.trustedProxyCidrs".',
 		);
+	}
+	for (const [index, cidr] of configuration.trustedProxy.trustedProxyCidrs.entries()) {
+		if (typeof cidr !== 'string' || !isValidCidr(cidr)) {
+			throw new Error(
+				`The SvelteKit MCP mount requires the OAuth host seam "configuration.trustedProxy.trustedProxyCidrs[${index}]".`,
+			);
+		}
 	}
 	assertOauthSeamNumber(
 		configuration.trustedProxy.trustedProxyHopCount,
