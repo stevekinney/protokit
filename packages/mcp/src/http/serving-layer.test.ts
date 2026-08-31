@@ -53,6 +53,7 @@ function harness(
 		concurrencyAllowed?: boolean;
 		handle?: () => Promise<Response>;
 		trustedProxy?: McpAuthenticationConfiguration['trustedProxy'];
+		allowedOrigins?: ReadonlySet<string>;
 	} = {},
 ) {
 	const operations: string[] = [];
@@ -83,6 +84,7 @@ function harness(
 		authenticationConfiguration: {
 			...configuration,
 			trustedProxy: input.trustedProxy ?? configuration.trustedProxy,
+			allowedOrigins: input.allowedOrigins ?? configuration.allowedOrigins,
 		},
 		authenticationSeams: {
 			tokens,
@@ -221,6 +223,35 @@ describe('MCP HTTP serving order', () => {
 			},
 		});
 		await expect(state.layer.handle(context())).rejects.toThrow('dispatch failed');
+		expect(state.releaseCount).toBe(1);
+	});
+
+	test('returns immutable-header responses with CORS and releases their concurrency slot', async () => {
+		const state = harness({
+			allowedOrigins: new Set(['https://client.example']),
+			handle: async () => {
+				const response = Response.redirect('https://client.example/complete');
+				Object.defineProperty(response.headers, 'set', {
+					value: () => {
+						throw new TypeError('immutable headers');
+					},
+				});
+				return response;
+			},
+		});
+		const requestContext = context();
+		requestContext.request = new Request(resource, {
+			method: 'POST',
+			headers: {
+				authorization: 'Bearer valid',
+				origin: 'https://client.example',
+			},
+		});
+		const response = await state.layer.handle(requestContext);
+		expect(response.status).toBe(302);
+		expect(response.headers.get('access-control-allow-origin')).toBe('https://client.example');
+		await response.text();
+		await Promise.resolve();
 		expect(state.releaseCount).toBe(1);
 	});
 });

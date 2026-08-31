@@ -93,6 +93,25 @@ function harness(input: { storedToken?: AccessToken | null; failedCount?: number
 }
 
 describe('authenticateMcpUser ordering', () => {
+	test('uses a combined token and profile lookup when the host provides one', async () => {
+		const state = harness();
+		let combinedLookups = 0;
+		const authInfo = await authenticateMcpUser({
+			context: requestContext({ headers: { authorization: 'Bearer valid' } }),
+			configuration,
+			seams: {
+				...state.seams,
+				findTokenAndUserProfileByHash: async () => {
+					combinedLookups += 1;
+					return { token: token(), profile };
+				},
+			},
+		});
+		expect(authInfo).not.toBeInstanceOf(Response);
+		expect(combinedLookups).toBe(1);
+		expect(state.tokenLookups).toBe(0);
+	});
+
 	test('rejects localhost rebinding before origin validation', async () => {
 		const state = harness({ failedCount: 99 });
 		const response = await authenticateMcpUser({

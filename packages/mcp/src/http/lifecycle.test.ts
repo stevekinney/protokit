@@ -231,4 +231,25 @@ describe('cross-instance MCP lifecycle', () => {
 		await channel.close();
 		expect(unsubscribeAttempts).toBe(2);
 	});
+
+	test('serializes revocation shutdown with an in-flight subscription startup', async () => {
+		let finishSubscription: ((unsubscribe: () => Promise<void>) => void) | undefined;
+		let unsubscribeCount = 0;
+		const messaging: CrossInstanceMessaging = {
+			publish: async () => {},
+			subscribe: async () =>
+				new Promise((resolve) => {
+					finishSubscription = resolve;
+				}),
+		};
+		const channel = new GrantRevocationChannel(() => {}, messaging);
+		const startup = channel.start();
+		await Promise.resolve();
+		const shutdown = channel.close();
+		finishSubscription?.(async () => {
+			unsubscribeCount += 1;
+		});
+		await Promise.all([startup, shutdown]);
+		expect(unsubscribeCount).toBe(1);
+	});
 });

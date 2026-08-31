@@ -83,15 +83,20 @@ export function createMcpHttpServingLayer(input: {
 					headers: protocolHeaders,
 				});
 			}
-			let response: Response;
 			try {
-				response = await input.handler.handle(context.request, authentication as AuthInfo);
+				const response = await input.handler.handle(context.request, authentication as AuthInfo);
+				const headers = new Headers(response.headers);
+				for (const [name, value] of Object.entries(corsHeaders)) headers.set(name, value);
+				const responseWithCorsHeaders = new Response(response.body, {
+					status: response.status,
+					statusText: response.statusText,
+					headers,
+				});
+				return attachConcurrencySlotToResponseLifetime(responseWithCorsHeaders, concurrencySlot);
 			} catch (error) {
 				await concurrencySlot.release();
 				throw error;
 			}
-			for (const [name, value] of Object.entries(corsHeaders)) response.headers.set(name, value);
-			return attachConcurrencySlotToResponseLifetime(response, concurrencySlot);
 		},
 	};
 }

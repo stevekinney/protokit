@@ -39,6 +39,49 @@ async function resolveUserProfile(subjectId: string) {
 	return user ?? null;
 }
 
+async function findTokenAndUserProfileByHash(tokenHash: string) {
+	const [record] = await database
+		.select({
+			accessTokenHash: schema.oauthTokens.accessToken,
+			clientId: schema.oauthTokens.clientId,
+			userId: schema.oauthTokens.userId,
+			scope: schema.oauthTokens.scope,
+			resource: schema.oauthTokens.resource,
+			expiresAt: schema.oauthTokens.expiresAt,
+			revokedAt: schema.oauthTokens.revokedAt,
+			createdAt: schema.oauthTokens.createdAt,
+			profileId: schema.users.id,
+			profileEmail: schema.users.email,
+			profileName: schema.users.name,
+			profileImage: schema.users.image,
+			profileRole: schema.users.role,
+		})
+		.from(schema.oauthTokens)
+		.innerJoin(schema.users, eq(schema.oauthTokens.userId, schema.users.id))
+		.where(eq(schema.oauthTokens.accessToken, tokenHash))
+		.limit(1);
+	if (!record) return null;
+	return {
+		token: {
+			accessTokenHash: record.accessTokenHash,
+			clientId: record.clientId,
+			userId: record.userId,
+			scope: record.scope,
+			resource: record.resource,
+			expiresAt: record.expiresAt,
+			revokedAt: record.revokedAt,
+			createdAt: record.createdAt,
+		},
+		profile: {
+			id: record.profileId,
+			email: record.profileEmail,
+			name: record.profileName,
+			image: record.profileImage,
+			role: record.profileRole,
+		},
+	};
+}
+
 export async function handleMcpRequestWithAuthentication(
 	context: RequestContext,
 ): Promise<Response> {
@@ -60,6 +103,7 @@ export async function handleMcpRequestWithAuthentication(
 		authenticationSeams: {
 			tokens: oauthStatelessStores.tokens,
 			resolveUserProfile,
+			findTokenAndUserProfileByHash,
 			hashCredential,
 			rateLimiter,
 			recordEvent: (outcome, requestId) => {

@@ -3,6 +3,7 @@ import type { OAuthRequestContext } from '@lostgradient/mcp/oauth';
 
 let capturedContext: OAuthRequestContext | undefined;
 let capturedServingLayerInput: Record<string, unknown> | undefined;
+let databaseQueryCount = 0;
 
 mock.module('@lostgradient/mcp/http', () => ({
 	createMcpHttpServingLayer: (input: Record<string, unknown>) => {
@@ -24,10 +25,47 @@ mock.module('@lostgradient/mcp', () => ({
 mock.module('@template/database', () => ({
 	database: {
 		select: () => ({
-			from: () => ({ where: () => ({ limit: async () => [] }) }),
+			from: () => ({
+				innerJoin: () => ({
+					where: () => ({
+						limit: async () => {
+							databaseQueryCount += 1;
+							return [
+								{
+									accessTokenHash: 'hashed-token',
+									clientId: 'client-1',
+									userId: 'user-1',
+									scope: 'profile:read',
+									resource: 'http://localhost:3000/mcp',
+									expiresAt: new Date('2099-01-01'),
+									revokedAt: null,
+									createdAt: new Date('2026-01-01'),
+									profileId: 'user-1',
+									profileEmail: 'user@example.com',
+									profileName: 'User',
+									profileImage: null,
+									profileRole: 'user',
+								},
+							];
+						},
+					}),
+				}),
+			}),
 		}),
 	},
-	schema: { users: { id: 'id', email: 'email', name: 'name', image: 'image', role: 'role' } },
+	schema: {
+		oauthTokens: {
+			accessToken: 'accessToken',
+			clientId: 'clientId',
+			userId: 'userId',
+			scope: 'scope',
+			resource: 'resource',
+			expiresAt: 'expiresAt',
+			revokedAt: 'revokedAt',
+			createdAt: 'createdAt',
+		},
+		users: { id: 'id', email: 'email', name: 'name', image: 'image', role: 'role' },
+	},
 }));
 
 mock.module('@web/env', () => ({
@@ -69,6 +107,7 @@ const { handleMcpRequestWithAuthentication, isDnsRebindingProtectionActive } =
 afterEach(() => {
 	capturedContext = undefined;
 	capturedServingLayerInput = undefined;
+	databaseQueryCount = 0;
 });
 
 describe('handleMcpRequestWithAuthentication', () => {
@@ -86,12 +125,36 @@ describe('handleMcpRequestWithAuthentication', () => {
 
 		expect(response.status).toBe(202);
 		expect(capturedServingLayerInput).toBeDefined();
+		expect(
+			typeof (capturedServingLayerInput?.authenticationSeams as Record<string, unknown>)
+				.findTokenAndUserProfileByHash,
+		).toBe('function');
 		expect(capturedContext).toMatchObject({
 			request,
 			requestId: 'request-1',
 			socketAddress: '10.0.0.8',
 			identity: null,
 		});
+
+		const findTokenAndUserProfileByHash = (
+			capturedServingLayerInput?.authenticationSeams as {
+				findTokenAndUserProfileByHash: (tokenHash: string) => Promise<unknown>;
+			}
+		).findTokenAndUserProfileByHash;
+		expect(await findTokenAndUserProfileByHash('hashed-token')).toMatchObject({
+			token: { accessTokenHash: 'hashed-token', userId: 'user-1' },
+			profile: { id: 'user-1', email: 'user@example.com' },
+		});
+		expect(databaseQueryCount).toBe(1);
+	});
+});
+
+describe('OAuth-only imports', () => {
+	it('do not statically import the MCP transport handler', async () => {
+		const source = await Bun.file(
+			new URL('../lib/oauth-stateless-seams.ts', import.meta.url),
+		).text();
+		expect(source).not.toMatch(/import\s+[^;]*['"]@web\/lib\/mcp-handler['"]/s);
 	});
 });
 

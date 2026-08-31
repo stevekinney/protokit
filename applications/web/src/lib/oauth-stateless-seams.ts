@@ -16,7 +16,6 @@ import { getBaseUrl } from '@web/lib/base-url';
 import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@web/lib/credential-lifecycle-policy';
 import { hashCredential } from '@web/lib/hash-credential';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
-import { publishGrantRevocation } from '@web/lib/mcp-handler';
 import { oauthStatelessStores } from '@web/lib/oauth-stateless-stores';
 import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier';
 import type { RequestContext } from '@web/lib/request-context';
@@ -40,6 +39,11 @@ const oauthLogEventNames = {
 	refresh: 'oauth_token_exchange',
 	revocation: 'oauth_revocation',
 } as const;
+
+async function publishGrantRevocation(userId: string): Promise<void> {
+	const mcpHandler = await import('@web/lib/mcp-handler');
+	await mcpHandler.publishGrantRevocation(userId);
+}
 
 export function toOauthRequestContext(context: RequestContext): OAuthRequestContext {
 	return {

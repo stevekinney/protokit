@@ -9,7 +9,7 @@ import type {
 	ResolveUserProfile,
 	TrustedProxyConfiguration,
 } from '../oauth/index.js';
-import type { TokenStore } from '../oauth/stores.js';
+import type { AccessToken, TokenStore } from '../oauth/stores.js';
 import type { RequestRateLimiter } from '../rate-limit/index.js';
 import { parseAuthorizationHeader } from './authorization-header.js';
 import { buildMcpAuthInfo } from './request-context.js';
@@ -35,6 +35,10 @@ export type McpAuthenticationConfiguration = {
 export type McpAuthenticationSeams = {
 	tokens: TokenStore;
 	resolveUserProfile: ResolveUserProfile;
+	findTokenAndUserProfileByHash?(tokenHash: string): Promise<{
+		token: AccessToken;
+		profile: NonNullable<Awaited<ReturnType<ResolveUserProfile>>>;
+	} | null>;
 	hashCredential(value: string): string;
 	rateLimiter: Pick<RequestRateLimiter, 'consume' | 'peek'>;
 	recordEvent(outcome: McpAuthenticationOutcome, requestId?: string): void;
@@ -149,7 +153,13 @@ export async function authenticateMcpUser(input: {
 			},
 		});
 	}
-	const token = await seams.tokens.findByHash(seams.hashCredential(bearerToken));
+	const tokenHash = seams.hashCredential(bearerToken);
+	const combinedAuthentication = seams.findTokenAndUserProfileByHash
+		? await seams.findTokenAndUserProfileByHash(tokenHash)
+		: undefined;
+	const token = seams.findTokenAndUserProfileByHash
+		? (combinedAuthentication?.token ?? null)
+		: await seams.tokens.findByHash(tokenHash);
 	const now = new Date();
 	if (!token || token.revokedAt || token.expiresAt <= now) {
 		await seams.rateLimiter.consume('failed_authentication', networkIdentity);
@@ -161,7 +171,9 @@ export async function authenticateMcpUser(input: {
 		seams.recordEvent('invalid_resource', context.requestId);
 		return invalidTokenResponse(configuration, corsHeaders);
 	}
-	const profile = await seams.resolveUserProfile(token.userId);
+	const profile = seams.findTokenAndUserProfileByHash
+		? combinedAuthentication?.profile
+		: await seams.resolveUserProfile(token.userId);
 	if (!profile) {
 		await seams.rateLimiter.consume('failed_authentication', networkIdentity);
 		seams.recordEvent('expired_or_invalid_token', context.requestId);

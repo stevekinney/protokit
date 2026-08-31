@@ -16,6 +16,8 @@ function readUserId(message: string): string | undefined {
 /** Coordinates live-stream closure after a committed grant revocation. */
 export class GrantRevocationChannel {
 	private unsubscribe: (() => Promise<void>) | undefined;
+	private startup: Promise<void> | undefined;
+	private closeRequested = false;
 
 	constructor(
 		private readonly closeLocalUser: (userId: string) => void | Promise<unknown>,
@@ -24,15 +26,15 @@ export class GrantRevocationChannel {
 	) {}
 
 	async start(): Promise<void> {
-		if (!this.messaging || this.unsubscribe) return;
-		try {
-			this.unsubscribe = await this.messaging.subscribe(grantRevocationChannel, (message) => {
-				const userId = readUserId(message);
-				if (userId) this.runLocalCloser(userId);
+		if (!this.messaging || this.unsubscribe || this.closeRequested) return;
+		if (!this.startup) {
+			const startup = this.subscribe();
+			this.startup = startup;
+			void startup.finally(() => {
+				if (this.startup === startup) this.startup = undefined;
 			});
-		} catch (error) {
-			this.onError(error);
 		}
+		await this.startup;
 	}
 
 	async publish(userId: string): Promise<void> {
@@ -49,11 +51,24 @@ export class GrantRevocationChannel {
 	}
 
 	async close(): Promise<void> {
+		this.closeRequested = true;
+		await this.startup;
 		const unsubscribe = this.unsubscribe;
 		if (!unsubscribe) return;
 		try {
 			await unsubscribe();
 			if (this.unsubscribe === unsubscribe) this.unsubscribe = undefined;
+		} catch (error) {
+			this.onError(error);
+		}
+	}
+
+	private async subscribe(): Promise<void> {
+		try {
+			this.unsubscribe = await this.messaging?.subscribe(grantRevocationChannel, (message) => {
+				const userId = readUserId(message);
+				if (userId) this.runLocalCloser(userId);
+			});
 		} catch (error) {
 			this.onError(error);
 		}
