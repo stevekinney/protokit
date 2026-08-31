@@ -130,6 +130,7 @@ import { createInMemoryOAuthStores, InMemoryClientStore, InMemoryCodeStore, InMe
 import { createPostgresOAuthSchema, createPostgresOAuthStores, PostgresClientStore, PostgresCodeStore, PostgresTokenStore, PostgresTransactionStore } from '@lostgradient/mcp/oauth/postgres';
 import { createInMemorySlidingWindowStore, createRateLimitedResponse, RequestRateLimiter } from '@lostgradient/mcp/rate-limit';
 import { createMcpHttpServingLayer, createMcpServingHandler, McpUserHandlerCache } from '@lostgradient/mcp/http';
+import * as svelteKitContract from '@lostgradient/mcp/sveltekit';
 
 const problems = [];
 const require = (condition, message) => { if (!condition) problems.push(message); };
@@ -147,7 +148,7 @@ require(rootLogger === subpathLogger, 'logger differs between the root export an
 require(rootGetLogger === subpathGetLogger, 'getLogger differs between the root export and the /logger subpath');
 
 // Every subpath in the exports map must resolve under Node.
-for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres', '/oauth/client-metadata-documents', '/rate-limit', '/http']) {
+for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres', '/oauth/client-metadata-documents', '/rate-limit', '/http', '/sveltekit']) {
   try { await import('@lostgradient/mcp' + subpath); }
   catch (error) { problems.push('subpath "' + (subpath || '.') + '" failed to import: ' + error.message); }
 }
@@ -191,6 +192,9 @@ require(typeof RequestRateLimiter === 'function', 'RequestRateLimiter is not a c
 require(typeof createMcpHttpServingLayer === 'function', '/http createMcpHttpServingLayer is not a function');
 require(typeof createMcpServingHandler === 'function', '/http createMcpServingHandler is not a function');
 require(typeof McpUserHandlerCache === 'function', '/http McpUserHandlerCache is not a constructor');
+require(typeof svelteKitContract.createSvelteKitMcpMount === 'function', '/sveltekit createSvelteKitMcpMount is not a function');
+require(typeof svelteKitContract.primeSvelteKitMcpIdentity === 'function', '/sveltekit primeSvelteKitMcpIdentity is not a function');
+require(!('svelteKitMountTestHooks' in svelteKitContract), '/sveltekit exposes internal test hooks');
 require(typeof PostgresCodeStore === 'function', 'PostgresCodeStore is not a constructor');
 require(typeof PostgresTokenStore === 'function', 'PostgresTokenStore is not a constructor');
 require(typeof PostgresClientStore === 'function', 'PostgresClientStore is not a constructor');

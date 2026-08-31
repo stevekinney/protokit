@@ -81,6 +81,11 @@
 			"import": "./dist/http/index.js",
 			"default": "./dist/http/index.js"
 		},
+		"./sveltekit": {
+			"types": "./dist/sveltekit-mount.d.ts",
+			"import": "./dist/sveltekit-mount.js",
+			"default": "./dist/sveltekit-mount.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"scripts": {

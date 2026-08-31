@@ -59,3 +59,13 @@ The handler cache is bounded by idleness rather than a numeric entry ceiling. Id
 Protocol CORS headers and bounded request-body handling belong to this serving layer. Host routes that also need those utilities import the package implementation; neither side keeps a second copy. The package answers allowed `OPTIONS` requests before authentication, while the outer serving layer skips only network admission for that method so preflight behavior remains in one ordered path.
 
 Trusted-proxy resolution follows the same ownership rule. The host supplies the raw socket peer and policy, and the library owns the security-sensitive resolution algorithm. Do not configure an adapter to replace the socket peer with a client-controlled forwarding header before the library sees it.
+
+## SvelteKit mounting
+
+Consumers import the framework-compatible mount from `@lostgradient/mcp/sveltekit`. The subpath has no SvelteKit or Vite dependency: its structural request-event and handle types preserve server-side rendering compatibility while allowing the package to remain usable in any equivalent Fetch API host.
+
+`createSvelteKitMcpMount` claims one process-wide lifecycle synchronously before its first asynchronous startup operation. A concurrent or later construction fails, disposal is permanent, and failed startup performs shutdown and prevents retry in the same process. The host must explicitly declare a long-lived process; request-scoped edge and serverless runtimes cannot retain subscriptions and fail construction. The mount never opens a listener, installs signal handlers, drains requests, or terminates the process. Those remain host responsibilities.
+
+The host identity handle must run before the mount and call `primeSvelteKitMcpIdentity` for every request. Passing `null` records an anonymous requester; omitting the call records a sequencing defect. The mount names the required prior handle in its runtime error so conditionally skipped authentication and a misordered `sequence()` chain fail at the boundary instead of silently changing authorization behavior.
+
+The mount calls `event.getClientAddress()` for each request and passes that immediate socket peer into the shared OAuth and MCP serving layers. The host must not cache or replace it with forwarding headers. On shutdown, the host must stop admission and cancel or await every response body before disposing the mount so long-lived MCP streams release their subscriptions and concurrency slots. This package verifies the mount contract and packed SSR import surface; TRI-56 owns the first adapter-node host deployment proof.

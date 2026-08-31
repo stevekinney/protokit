@@ -52,6 +52,9 @@ export const SAFE_TO_EXECUTE: Readonly<
 	'audit:documentation': { command: 'bun', args: ['run', 'audit:documentation'] },
 	'audit:production-content': { command: 'bun', args: ['run', 'audit:production-content'] },
 	'audit:logs': { command: 'bun', args: ['run', 'audit:logs'] },
+	// Pure comparison between checked-in environment schemas and turbo.json;
+	// it reads files and reports drift without writing artifacts.
+	'audit:turbo-env': { command: 'bun', args: ['run', 'audit:turbo-env'] },
 	'test:metadata': { command: 'bun', args: ['run', 'test:metadata'] },
 	// Pure packages/mcp registry consistency check -- no database, no Redis,
 	// no shared infrastructure, exactly like `test:metadata` above.
