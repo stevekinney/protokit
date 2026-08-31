@@ -11,7 +11,7 @@ import { createCoalescedProbe } from '@web/lib/coalesced-probe-cache';
 import { jsonResponse } from '@web/lib/http-response';
 import { instanceIdentifier } from '@web/lib/instance-identifier';
 import { mcpSupportedProtocolVersions } from '@web/lib/mcp-protocol-constants';
-import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier';
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceHealthProbeRateLimit } from '@web/lib/request-rate-limiter';

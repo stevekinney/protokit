@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { RedisClientType } from 'redis';
-import { createRedisSlidingWindowStore } from '@web/lib/redis-sliding-window-store';
+import { createRedisSlidingWindowStore } from '@lostgradient/mcp/rate-limit';
 
 /**
  * Regression coverage for the defect where missing rate-limit configuration

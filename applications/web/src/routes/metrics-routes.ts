@@ -6,7 +6,7 @@ import {
 	isPlaintextTransport,
 } from '@web/lib/bearer-credential-authentication';
 import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier';
-import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceMetricsRateLimit } from '@web/lib/request-rate-limiter';
 

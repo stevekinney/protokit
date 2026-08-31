@@ -26,7 +26,7 @@ import {
 	acquireMcpConcurrencySlot,
 	attachConcurrencySlotToResponseLifetime,
 } from '@web/lib/mcp-concurrency-limiter';
-import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 import {
 	enforceMcpNetworkRateLimit,
 	enforceMcpRateLimit,

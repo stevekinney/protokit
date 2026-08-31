@@ -131,6 +131,14 @@ const environment = parseMcpServerEnvironment(process.env);
 
 `areResourceSubscriptionsAuthorized(uris, scopes, registry)` is exported because `subscriptions/listen` is decided at the HTTP boundary, before a request reaches the server instance — so a host that mounts this engine must call it there. Omitting it means a client with any valid token can observe updates for a resource whose scope it was never granted.
 
+## Rate limiting and concurrency
+
+`@lostgradient/mcp/rate-limit` provides the protocol-level sliding-window policy, in-memory and Redis stores, MCP concurrency slots, and the standard `429` response. The Redis factories accept the `MinimalRedisClient` seam from `@lostgradient/mcp/oauth`; they do not require a particular Redis package or a full client object.
+
+The shared `RateLimitConfiguration` owns exactly eight protocol categories: OAuth authorize, registration, token network, token client, and revocation; MCP network and user; and failed authentication. Host-only routes such as sign-in, session creation, health, and metrics should use `SlidingWindowRateLimiter` directly with host-owned categories rather than extending the protocol category union.
+
+Concurrency is a resource-lifetime concern, not a handler-promise concern. For a streaming response, pass the acquired slot to `attachConcurrencySlotToResponseLifetime` so it renews while the body remains open and releases only when the body closes, is canceled, or errors. A host that separately tracks requests must follow the same rule; Tribunal's other implementation is `applications/web/src/lib/in-flight-request-tracker.ts`.
+
 ## Subpaths
 
 | Subpath                                | Contents                                                               |
@@ -140,6 +148,7 @@ const environment = parseMcpServerEnvironment(process.env);
 | `@lostgradient/mcp/env`                | `parseMcpServerEnvironment` and `getEnvironment`                       |
 | `@lostgradient/mcp/environment-schema` | The raw Zod shape, side-effect free                                    |
 | `@lostgradient/mcp/metrics`            | The in-process metrics collector                                       |
+| `@lostgradient/mcp/rate-limit`         | Sliding-window policy, stores, concurrency slots, and `429` responses  |
 | `@lostgradient/mcp/version`            | The advertised package version                                         |
 
 ## License

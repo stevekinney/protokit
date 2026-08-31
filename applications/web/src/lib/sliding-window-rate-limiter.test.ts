@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import {
-	inMemorySlidingWindowStore,
-	resetInMemorySlidingWindowStore,
-} from '@web/lib/in-memory-sliding-window-store';
-import { SlidingWindowRateLimiter } from '@web/lib/sliding-window-rate-limiter';
+	createInMemorySlidingWindowStore,
+	SlidingWindowRateLimiter,
+} from '@lostgradient/mcp/rate-limit';
 
 describe('SlidingWindowRateLimiter', () => {
+	let inMemorySlidingWindowStore = createInMemorySlidingWindowStore();
 	beforeEach(() => {
-		resetInMemorySlidingWindowStore();
+		inMemorySlidingWindowStore = createInMemorySlidingWindowStore();
 	});
 
 	it('allows requests until the maximum and then blocks', async () => {

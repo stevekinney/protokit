@@ -1,10 +1,10 @@
 import { describe, expect, it, beforeEach } from 'bun:test';
 import { createClient } from 'redis';
 import {
-	inMemorySlidingWindowStore,
-	resetInMemorySlidingWindowStore,
-} from '@web/lib/in-memory-sliding-window-store';
-import { SlidingWindowRateLimiter } from '@web/lib/sliding-window-rate-limiter';
+	createInMemorySlidingWindowStore,
+	createRedisSlidingWindowStore,
+	SlidingWindowRateLimiter,
+} from '@lostgradient/mcp/rate-limit';
 
 /**
  * This file backs `bun run test:rate-limit-concurrency` (SEC-003
@@ -42,8 +42,9 @@ async function raceAtWindowBoundary(input: {
 }
 
 describe('rate limit concurrency (in-memory store)', () => {
+	let inMemorySlidingWindowStore = createInMemorySlidingWindowStore();
 	beforeEach(() => {
-		resetInMemorySlidingWindowStore();
+		inMemorySlidingWindowStore = createInMemorySlidingWindowStore();
 	});
 
 	it('admits exactly the configured maximum when 2x that many requests race at the window boundary', async () => {
@@ -102,7 +103,6 @@ const describeWithRedis = redisAvailable
 
 describeWithRedis('rate limit concurrency (Redis-backed store, requires Redis)', () => {
 	it('admits exactly the configured maximum when 2x that many requests race at the window boundary', async () => {
-		const { createRedisSlidingWindowStore } = await import('@web/lib/redis-sliding-window-store');
 		const redisClient = createClient({ url: redisUrl });
 		await redisClient.connect();
 		const store = createRedisSlidingWindowStore(redisClient);
