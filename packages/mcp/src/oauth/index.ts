@@ -8,6 +8,7 @@ export {
 	handleOauthAuthorizationMetadataGet,
 	handleOauthProtectedResourceMetadataGet,
 	handleOauthProtectedResourceMcpMetadataGet,
+	oauthCorsHeaders,
 } from './discovery-metadata.js';
 export type { OAuthDiscoveryConfiguration } from './discovery-metadata.js';
 
@@ -174,7 +175,8 @@ export interface MinimalRedisClient {
 }
 
 export type OAuthConfiguration = {
-	issuer: URL;
+	/** Exact OAuth issuer identifier. Consumers must use this same value in authorization responses. */
+	issuer: string;
 	baseUrl: URL;
 	accessTokenTtlSeconds: number;
 	refreshTokenTtlSeconds: number;

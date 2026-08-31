@@ -209,8 +209,9 @@ describe('OAuth discovery metadata handlers', () => {
 		identity: null,
 	} satisfies OAuthRequestContext;
 	const configuration = {
-		issuer: new URL('https://issuer.example.test/tenant/'),
+		issuer: 'https://issuer.example.test/tenant/',
 		baseUrl: new URL('https://public.example.test/'),
+		resource: new URL('https://resource.example.test/custom-mcp'),
 		serverName: 'Example MCP server',
 		mcpProtocolVersion: '2026-07-28',
 		mcpUiExtension: { enabled: false },
@@ -228,12 +229,14 @@ describe('OAuth discovery metadata handlers', () => {
 			handleOauthProtectedResourceMetadataGet(context, configuration, templateRegistry),
 		);
 
-		expect(authorization.issuer).toBe('https://issuer.example.test/tenant');
+		expect(authorization.issuer).toBe('https://issuer.example.test/tenant/');
 		expect(authorization.authorization_endpoint).toBe(
 			'https://public.example.test/oauth/authorize',
 		);
-		expect(resource.authorization_servers).toEqual(['https://issuer.example.test/tenant']);
-		expect(resource.resource).toBe('https://public.example.test/mcp');
+		expect(resource.authorization_servers).toEqual(['https://issuer.example.test/tenant/']);
+		expect(resource.resource).toBe('https://resource.example.test/custom-mcp');
+		expect(authorization.service_documentation).toBeUndefined();
+		expect(resource.resource_documentation).toBeUndefined();
 	});
 
 	it('derives both authorization and protected-resource scopes from the injected registry', async () => {

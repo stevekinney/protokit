@@ -13,7 +13,6 @@ import { metricsCollector } from '@lostgradient/mcp/metrics';
 import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
-import { oauthCorsHeaders } from '@web/lib/cors';
 import { constantTimeEquals } from '@web/lib/constant-time-equals';
 import {
 	consumeAuthorizationTransaction,
@@ -27,6 +26,7 @@ import {
 	handleOauthProtectedResourceMcpMetadataGet as handleLibraryOauthProtectedResourceMcpMetadataGet,
 	type OAuthDiscoveryConfiguration,
 	type OAuthRequestContext,
+	oauthCorsHeaders,
 } from '@lostgradient/mcp/oauth';
 import {
 	fetchClientIdMetadataDocument,
@@ -2335,10 +2335,14 @@ function toOauthDiscoveryContext(context: RequestContext): OAuthRequestContext {
 function getOauthDiscoveryConfiguration(request: Request): OAuthDiscoveryConfiguration {
 	const publicUrl = new URL(getBaseUrl(request));
 	return {
-		issuer: publicUrl,
+		issuer: getBaseUrl(request),
 		baseUrl: publicUrl,
+		resource: new URL(getMcpResourceUrl(request)),
 		serverName: getMcpEnvironment().MCP_SERVER_NAME,
 		mcpProtocolVersion: mcpLatestProtocolVersion,
 		mcpUiExtension: { enabled: environment.mcpEnableUiExtension },
+		serviceDocumentation: new URL('/support', publicUrl),
+		privacyPolicy: new URL('/privacy', publicUrl),
+		termsOfService: new URL('/terms', publicUrl),
 	};
 }
