@@ -92,7 +92,7 @@ export interface TransactionStore {
 	}): Promise<void>;
 	/**
 	 * Atomically consumes a live, unused transaction matching the transaction
-	 * identifier, CSRF token, and identity binding. The implementation must
+	 * identifier, CSRF token, durable subject, and identity binding. The implementation must
 	 * enforce every predicate in one operation; read-then-write stores are
 	 * non-conforming because concurrent approvals could both succeed.
 	 */
@@ -100,6 +100,7 @@ export interface TransactionStore {
 		transactionId: string,
 		csrfToken: string,
 		binding: string,
+		subjectId: string,
 	): Promise<ConsumedAuthorizationTransaction | null>;
 	/** Reopens only the exact consumption returned by `consume`. */
 	unconsume(transactionId: string, consumedAt: Date): Promise<boolean>;

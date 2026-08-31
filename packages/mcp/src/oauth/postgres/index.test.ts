@@ -237,7 +237,7 @@ describe('Postgres OAuth durability', () => {
 		).not.toBeNull();
 	});
 
-	test('serializes access-token revocation with refresh rotation on the family lock', async () => {
+	test('revokes the rotated family when access-token revocation loses the family lock', async () => {
 		await resetFixture();
 		await seedClient();
 		const stores = createPostgresOAuthStores(database, schema);
@@ -251,19 +251,19 @@ describe('Postgres OAuth durability', () => {
 			),
 		});
 
-		const [revoked, rotationResult] = await Promise.all([
-			stores.tokens.revokeAccessToken('access-revocation-race', 'client-one'),
-			stores.tokens.rotateRefreshToken(
-				rotation(
-					'refresh-revocation-race',
-					'access-revocation-next',
-					'refresh-revocation-next',
-					new Date('2026-01-02'),
-				),
+		const rotationResult = await stores.tokens.rotateRefreshToken(
+			rotation(
+				'refresh-revocation-race',
+				'access-revocation-next',
+				'refresh-revocation-next',
+				new Date('2026-01-02'),
 			),
-		]);
+		);
+		expect(rotationResult.status).toBe('rotated');
+
+		const revoked = await stores.tokens.revokeAccessToken('access-revocation-race', 'client-one');
 		expect(revoked).toBeTrue();
-		expect(['rotated', 'replay_revoked']).toContain(rotationResult.status);
+		expect((await stores.tokens.findByHash('access-revocation-next'))?.revokedAt).not.toBeNull();
 	});
 
 	test('preserves an expired access token while its paired refresh token is live', async () => {
@@ -416,8 +416,14 @@ describe('Postgres OAuth durability', () => {
 				createdAt: new Date('2026-01-01'),
 			});
 			expect(
-				(await stores.transactions.consume('bigint-transaction', 'bigint-csrf', 'bigint-binding'))
-					?.userId,
+				(
+					await stores.transactions.consume(
+						'bigint-transaction',
+						'bigint-csrf',
+						'bigint-binding',
+						largeUserId,
+					)
+				)?.userId,
 			).toBe(largeUserId);
 			expect((await stores.codes.findByHash('bigint-code'))?.userId).toBe(largeUserId);
 			await stores.tokens.issueAuthorizationGrant({

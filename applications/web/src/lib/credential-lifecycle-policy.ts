@@ -49,7 +49,7 @@ export const credentialLifecyclePolicy: readonly CredentialLifecyclePolicyRow[] 
 		maxLifetimeMilliseconds: 10 * 60 * 1000,
 		rotationProcedure: 'None — single-use, consumed atomically by approve/deny.',
 		revocationPath:
-			'Consumed (marked `consumedAt`) by lib/authorization-transaction.ts consumeAuthorizationTransaction(); scheduled-cleanup.ts deletes expired rows.',
+			'Consumed atomically through the injected TransactionStore used by @lostgradient/mcp authorize handlers; scheduled-cleanup.ts deletes expired rows.',
 		owner:
 			'The signed-in user (implicitly, by approving or denying); the server (enforces the 10-minute window).',
 	},

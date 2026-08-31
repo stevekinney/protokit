@@ -33,6 +33,7 @@ const oauthSlidingWindowStore: AtomicSlidingWindowStore = {
 };
 
 const oauthLogEventNames = {
+	authorization: 'oauth_authorization',
 	registration: 'oauth_client_registration',
 	client_authentication: 'oauth_client_authentication',
 	token_exchange: 'oauth_token_exchange',
@@ -46,7 +47,10 @@ export function toOauthRequestContext(context: RequestContext): OAuthRequestCont
 		requestUrl: context.requestUrl,
 		requestId: context.requestId,
 		socketAddress: context.clientAddress,
-		identity: null,
+		identity:
+			context.user && context.sessionToken
+				? { subjectId: context.user.id, consentBinding: context.sessionToken }
+				: null,
 	};
 }
 

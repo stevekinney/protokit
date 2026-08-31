@@ -85,6 +85,7 @@ export class InMemoryTransactionStore implements TransactionStore {
 		transactionId: string,
 		csrfToken: string,
 		binding: string,
+		subjectId: string,
 	): Promise<ConsumedAuthorizationTransaction | null> {
 		const entry = this.#records.get(hash(transactionId));
 		const now = new Date();
@@ -93,7 +94,8 @@ export class InMemoryTransactionStore implements TransactionStore {
 			entry.record.consumedAt ||
 			entry.record.expiresAt <= now ||
 			entry.csrfTokenHash !== hash(csrfToken) ||
-			entry.consentBinding !== binding
+			entry.consentBinding !== binding ||
+			entry.record.userId !== subjectId
 		)
 			return Promise.resolve(null);
 		entry.record.consumedAt = now;

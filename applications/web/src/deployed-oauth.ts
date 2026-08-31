@@ -97,8 +97,8 @@ export function generatePkcePair(): { codeVerifier: string; codeChallenge: strin
  * back here -- or rejects if the operator abandons the flow or the
  * absolute timeout elapses. Registering `http://127.0.0.1/callback`
  * (portless) and presenting the same path with the real ephemeral port
- * both match: `redirect-uri-matching.ts` deliberately ignores port for a
- * loopback redirect URI, per RFC 8252 §7.3's "MUST allow any port".
+ * both match: the package authorization endpoint deliberately ignores port
+ * for a loopback redirect URI, per RFC 8252 §7.3's "MUST allow any port".
  */
 export function startLoopbackCallbackListener(timeoutMs: number): {
 	redirectUri: string;

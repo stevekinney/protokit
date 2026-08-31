@@ -30,7 +30,7 @@ export type SessionSigningSecretResolution = {
  * current+previous accepting both, previous cleared rejecting the retired
  * value) without needing to reload the `@web/env` module between states —
  * the same reason `client-metadata-documents.ts` and
- * `authorization-transaction.ts` structure their own logic around injected
+ * the OAuth TransactionStore adapter structures its own logic around injected
  * values instead of a module-level singleton.
  */
 export function resolveSessionSigningSecrets(input: {

@@ -147,15 +147,33 @@ export class PostgresTokenStore implements TokenStore {
 					sql`SELECT pg_advisory_xact_lock(hashtextextended(${familyId}, 0))`,
 				);
 			}
-			const result = await transaction.execute(sql`WITH revoked_access AS (
-				UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
-				WHERE access_token_hash = ${tokenHash} AND client_id = ${clientId} AND revoked_at IS NULL
-				RETURNING access_token_hash
-		), revoked_refresh AS (
-			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
-			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_access)
-		) SELECT count(*) AS count FROM revoked_access`);
-			return countRows(result) === 1;
+			const result = await transaction.execute(sql`WITH target AS MATERIALIZED (
+				SELECT access.revoked_at AS "revokedAt", refresh.family_id AS "familyId"
+				FROM ${this.schema.accessTokens} access
+				LEFT JOIN ${this.schema.refreshTokens} refresh
+					ON refresh.access_token_hash = access.access_token_hash
+					AND refresh.client_id = access.client_id
+				WHERE access.access_token_hash = ${tokenHash} AND access.client_id = ${clientId}
+			), family_members AS MATERIALIZED (
+				SELECT access_token_hash FROM ${this.schema.refreshTokens}
+				WHERE family_id IN (SELECT "familyId" FROM target WHERE "revokedAt" IS NOT NULL)
+			), revoked_refresh AS (
+				UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
+				WHERE revoked_at IS NULL AND (
+					access_token_hash IN (SELECT ${tokenHash} FROM target WHERE "revokedAt" IS NULL)
+					OR access_token_hash IN (SELECT access_token_hash FROM family_members)
+				)
+				RETURNING 1
+			), revoked_access AS (
+				UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
+				WHERE revoked_at IS NULL AND client_id = ${clientId} AND (
+					access_token_hash IN (SELECT ${tokenHash} FROM target)
+					OR access_token_hash IN (SELECT access_token_hash FROM family_members)
+				)
+				RETURNING 1
+			) SELECT
+				(SELECT count(*) FROM revoked_access) + (SELECT count(*) FROM revoked_refresh) AS count`);
+			return countRows(result) > 0;
 		});
 	}
 

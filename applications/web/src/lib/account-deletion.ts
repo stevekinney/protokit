@@ -42,7 +42,7 @@ type AccountDeletionRow = {
  * from every child table to `users` make a single `DELETE FROM users`
  * genuinely atomic (one Postgres statement, all-or-nothing, exactly this
  * codebase's established atomicity unit — the same one `OAUTH-003` and
- * `authorization-transaction.ts` rely on). But deleting only the user row
+ * the OAuth TransactionStore adapter relies on). But deleting only the user row
  * and trusting the cascade loses the per-table counts `AccountDeletionResult`
  * reports, which the audit log this function feeds depends on — a plain
  * `DELETE FROM users ... RETURNING id` cannot see what the cascade removed

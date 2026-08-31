@@ -8,7 +8,7 @@ import { sessionSigningSecret, sessionSigningSecrets } from '@web/lib/session-si
  * protection to every cookie-authenticated state-changing route, including
  * sign-out"). `/oauth/authorize/approve` and `/oauth/authorize/deny` use a
  * one-time value stored on their authorization transaction instead — see
- * `authorization-transaction.ts` — because those routes already have a
+ * the library OAuth transaction store — because those routes already have a
  * server-side record to bind a one-time value to.
  *
  * This token is an HMAC of the session token keyed by the server's session

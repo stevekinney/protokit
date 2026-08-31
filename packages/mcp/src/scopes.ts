@@ -40,7 +40,7 @@ export type McpScope = (typeof templateScopeVocabulary.scopes)[number];
 /**
  * The three exports below keep the exact shape every existing caller already
  * imports — `applications/web`'s authorize page renders
- * `mcpScopeDescriptions`, `oauth-scope.ts` narrows with `isMcpScope`, and
+ * `mcpScopeDescriptions`, the OAuth scope configuration narrows with its injected vocabulary, and
  * `request-limits.ts` sizes a bound against `mcpScopes`. Opening the
  * vocabulary changed how these are derived, not what they are.
  */

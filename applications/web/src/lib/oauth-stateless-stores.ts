@@ -5,9 +5,12 @@ import type {
 	ClientStore,
 	CodeStore,
 	ConsumedAuthorizationCode,
+	OAuthStores,
 	RegisteredClient,
 	TokenStore,
+	TransactionStore,
 } from '@lostgradient/mcp/oauth/stores';
+import { hashCredential } from '@web/lib/hash-credential';
 
 function rows<T>(result: unknown): T[] {
 	if (Array.isArray(result)) return result as T[];
@@ -101,6 +104,96 @@ const clients: ClientStore = {
 				...(patch.updatedAt !== undefined ? { updatedAt: patch.updatedAt } : {}),
 			})
 			.where(eq(schema.oauthClients.clientId, clientId));
+	},
+};
+
+const transactions: TransactionStore = {
+	async create({ record, transactionId, csrfToken, consentBinding }) {
+		await database.insert(schema.oauthAuthorizationTransactions).values({
+			transactionId: hashCredential(transactionId),
+			csrfTokenHash: hashCredential(csrfToken),
+			userId: record.userId,
+			sessionTokenHash: hashCredential(consentBinding),
+			clientId: record.clientId,
+			redirectUri: record.redirectUri,
+			codeChallenge: record.codeChallenge,
+			codeChallengeMethod: record.codeChallengeMethod,
+			state: record.state,
+			issuer: record.issuer,
+			resource: record.resource,
+			scope: record.scope,
+			expiresAt: record.expiresAt,
+			consumedAt: record.consumedAt,
+			createdAt: record.createdAt,
+		});
+	},
+	async consume(transactionId, csrfToken, consentBinding, subjectId) {
+		const [record] = await database
+			.update(schema.oauthAuthorizationTransactions)
+			.set({ consumedAt: new Date() })
+			.where(
+				and(
+					eq(schema.oauthAuthorizationTransactions.transactionId, hashCredential(transactionId)),
+					eq(schema.oauthAuthorizationTransactions.csrfTokenHash, hashCredential(csrfToken)),
+					eq(
+						schema.oauthAuthorizationTransactions.sessionTokenHash,
+						hashCredential(consentBinding),
+					),
+					eq(schema.oauthAuthorizationTransactions.userId, subjectId),
+					isNull(schema.oauthAuthorizationTransactions.consumedAt),
+					gt(schema.oauthAuthorizationTransactions.expiresAt, new Date()),
+				),
+			)
+			.returning();
+		return record
+			? {
+					...record,
+					transactionIdHash: record.transactionId,
+					consumedAt: record.consumedAt!,
+				}
+			: null;
+	},
+	async unconsume(transactionId, consumedAt) {
+		const [record] = await database
+			.update(schema.oauthAuthorizationTransactions)
+			.set({ consumedAt: null })
+			.where(
+				and(
+					eq(schema.oauthAuthorizationTransactions.transactionId, hashCredential(transactionId)),
+					eq(schema.oauthAuthorizationTransactions.consumedAt, consumedAt),
+				),
+			)
+			.returning({ transactionId: schema.oauthAuthorizationTransactions.transactionId });
+		return Boolean(record);
+	},
+	async deleteByBinding(consentBinding) {
+		return (
+			await database
+				.delete(schema.oauthAuthorizationTransactions)
+				.where(
+					eq(
+						schema.oauthAuthorizationTransactions.sessionTokenHash,
+						hashCredential(consentBinding),
+					),
+				)
+				.returning({ transactionId: schema.oauthAuthorizationTransactions.transactionId })
+		).length;
+	},
+	async deleteAllForUser(userId) {
+		return (
+			await database
+				.delete(schema.oauthAuthorizationTransactions)
+				.where(eq(schema.oauthAuthorizationTransactions.userId, userId))
+				.returning({ transactionId: schema.oauthAuthorizationTransactions.transactionId })
+		).length;
+	},
+	async purgeExpired(now) {
+		return (
+			await database
+				.delete(schema.oauthAuthorizationTransactions)
+				.where(sql`${schema.oauthAuthorizationTransactions.expiresAt} <= ${now}`)
+				.returning({ transactionId: schema.oauthAuthorizationTransactions.transactionId })
+		).length;
 	},
 };
 
@@ -385,3 +478,18 @@ const tokens: TokenStore = {
 };
 
 export const oauthStatelessStores = { clients, codes, tokens };
+
+export const oauthStores: OAuthStores = {
+	transactions,
+	codes,
+	tokens,
+	clients,
+	async deleteAllForUser(userId) {
+		const [transactionCount, codeCount, tokenCount] = await Promise.all([
+			transactions.deleteAllForUser(userId),
+			codes.deleteAllForUser(userId),
+			tokens.deleteAllForUser(userId),
+		]);
+		return { transactions: transactionCount, codes: codeCount, tokens: tokenCount };
+	},
+};
