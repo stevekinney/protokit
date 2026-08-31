@@ -46,7 +46,10 @@ export function toOauthRequestContext(context: RequestContext): OAuthRequestCont
 		requestUrl: context.requestUrl,
 		requestId: context.requestId,
 		socketAddress: context.clientAddress,
-		identity: null,
+		identity:
+			context.user && context.sessionToken
+				? { subjectId: context.user.id, consentBinding: context.sessionToken }
+				: null,
 	};
 }
 

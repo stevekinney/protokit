@@ -1,6 +1,7 @@
 import type { McpScopeVocabulary } from '../scope-vocabulary.js';
 import type { McpUserProfile } from '../types/primitives.js';
 import type { ClientStore, CodeStore, OAuthStores, TokenStore } from './stores.js';
+import type { ClientIdMetadataDocument } from './client-metadata-documents.js';
 import * as clientMetadataDocuments from './client-metadata-documents.js';
 import * as securityUtilities from './security-utilities.js';
 import * as canonicalAddressUtilities from './canonicalize-ip-address.js';
@@ -81,8 +82,6 @@ export type ConsentPresentation =
 			csrfToken: string;
 			/** Verified client redirect URI shown as consent destination context. */
 			redirectUri: string;
-			/** Authenticated host profile displayed as the account granting consent. */
-			requester: McpUserProfile;
 			client: { id: string; name: string };
 			scopes: Array<{ scope: string; description: string }>;
 	  };
@@ -205,6 +204,7 @@ export type CrossInstanceMessaging = {
 };
 
 export type OAuthHostSeams<Scope extends string> = {
+	fetchClientIdMetadataDocument(clientId: string): Promise<ClientIdMetadataDocument | null>;
 	resolveIdentityBinding: ResolveIdentityBinding;
 	resolveUserProfile: ResolveUserProfile;
 	handleUnauthenticatedAuthorization: HandleUnauthenticatedAuthorization;
@@ -212,6 +212,8 @@ export type OAuthHostSeams<Scope extends string> = {
 	stores: OAuthStores;
 	scopes: OAuthScopeConfiguration<Scope>;
 	configuration: OAuthConfiguration;
+	/** Existing host credential hash function; plaintext authorization codes never enter stores. */
+	hashCredential(value: string): string;
 	crossInstanceMessaging?: CrossInstanceMessaging;
 };
 
@@ -239,6 +241,12 @@ export { constantTimeEquals } from './security-utilities.js';
 export { handleOauthRegisterPost } from './registration-endpoint.js';
 export { handleOauthTokenPost } from './token-endpoint.js';
 export { handleOauthRevokePost } from './revocation-endpoint.js';
+export {
+	authorizeFormParameterNames,
+	handleOauthAuthorizeApprove,
+	handleOauthAuthorizeDeny,
+	handleOauthAuthorizeGet,
+} from './authorize-endpoint.js';
 export { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from './pkce-validation.js';
 export { isSocketPeerTrusted, resolveOauthNetworkIdentity } from './network-identity.js';
 

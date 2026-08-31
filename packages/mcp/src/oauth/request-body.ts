@@ -3,6 +3,8 @@ import { isExactContentType } from './security-utilities.js';
 export const oauthRegisterMaximumBodyBytes = 16 * 1024;
 export const oauthTokenMaximumBodyBytes = 8 * 1024;
 export const oauthRevokeMaximumBodyBytes = 4 * 1024;
+export const oauthAuthorizeApproveMaximumBodyBytes = 4 * 1024;
+export const oauthAuthorizeDenyMaximumBodyBytes = 4 * 1024;
 
 export class PayloadTooLargeError extends Error {}
 export class InvalidOauthRequestBodyError extends Error {
@@ -14,7 +16,7 @@ export class InvalidOauthRequestBodyError extends Error {
 	}
 }
 
-async function readBoundedText(request: Request, maximumBytes: number): Promise<string> {
+export async function readBoundedText(request: Request, maximumBytes: number): Promise<string> {
 	const declaredLength = request.headers.get('content-length');
 	if (declaredLength && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > maximumBytes)) {
 		throw new PayloadTooLargeError('Request body too large');

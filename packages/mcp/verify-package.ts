@@ -166,6 +166,10 @@ require(typeof oauthContract.isValidPkceCodeVerifier === 'function', '/oauth PKC
 require(typeof oauthContract.resolveOauthNetworkIdentity === 'function', '/oauth network identity resolver is not a function');
 require(typeof oauthContract.authenticateOauthClient === 'function', '/oauth client authenticator is not a function');
 require(typeof oauthContract.handleOauthRegisterPost === 'function', '/oauth registration handler is not a function');
+require(typeof oauthContract.handleOauthAuthorizeGet === 'function', '/oauth authorization GET handler is not a function');
+require(typeof oauthContract.handleOauthAuthorizeApprove === 'function', '/oauth authorization approval handler is not a function');
+require(typeof oauthContract.handleOauthAuthorizeDeny === 'function', '/oauth authorization denial handler is not a function');
+require(Array.isArray(oauthContract.authorizeFormParameterNames) && oauthContract.authorizeFormParameterNames.join(',') === 'transaction_id,csrf_token', '/oauth authorization form allowlist is incorrect');
 require(typeof oauthContract.handleOauthTokenPost === 'function', '/oauth token handler is not a function');
 require(typeof oauthContract.handleOauthRevokePost === 'function', '/oauth revocation handler is not a function');
 require(typeof oauthContract.withDeadline === 'function', '/oauth deadline helper is not a function');
