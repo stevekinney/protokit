@@ -144,6 +144,29 @@ describe('cross-instance MCP lifecycle', () => {
 		expect(receivedByB).toEqual([]);
 	});
 
+	test('delivers locally exactly once when messaging does not echo to the publisher', async () => {
+		const messaging: CrossInstanceMessaging = {
+			publish: async () => {},
+			subscribe: async () => async () => {},
+		};
+		const bus = new CrossInstanceUserServerEventBus('user-a', messaging);
+		const received: ServerEvent[] = [];
+		bus.subscribe((event) => received.push(event));
+		await bus.whenSubscribed();
+		bus.publish({ kind: 'resource_updated', uri: 'user://profile' });
+		expect(received).toEqual([{ kind: 'resource_updated', uri: 'user://profile' }]);
+	});
+
+	test('suppresses the broker echo after delivering a local event', async () => {
+		const bus = new CrossInstanceUserServerEventBus('user-a', createMessagingHub());
+		const received: ServerEvent[] = [];
+		bus.subscribe((event) => received.push(event));
+		await bus.whenSubscribed();
+		bus.publish({ kind: 'resource_updated', uri: 'user://profile' });
+		await Promise.resolve();
+		expect(received).toEqual([{ kind: 'resource_updated', uri: 'user://profile' }]);
+	});
+
 	test('closes a remote instance handler after grant revocation', async () => {
 		const messaging = createMessagingHub();
 		const closed: string[] = [];
@@ -191,5 +214,21 @@ describe('cross-instance MCP lifecycle', () => {
 		const channel = new GrantRevocationChannel((userId) => closed.push(userId));
 		await channel.publish('local-user');
 		expect(closed).toEqual(['local-user']);
+	});
+
+	test('retains a failed revocation unsubscribe handle for a later close retry', async () => {
+		let unsubscribeAttempts = 0;
+		const messaging: CrossInstanceMessaging = {
+			publish: async () => {},
+			subscribe: async () => async () => {
+				unsubscribeAttempts += 1;
+				if (unsubscribeAttempts === 1) throw new Error('temporary unsubscribe failure');
+			},
+		};
+		const channel = new GrantRevocationChannel(() => {}, messaging);
+		await channel.start();
+		await channel.close();
+		await channel.close();
+		expect(unsubscribeAttempts).toBe(2);
 	});
 });

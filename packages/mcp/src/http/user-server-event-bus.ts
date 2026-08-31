@@ -18,12 +18,17 @@ function channelForUser(userId: string): string {
 	return `mcp:events:user:${userId}`;
 }
 
-function readServerEvent(message: string): ServerEvent | undefined {
+function readServerEvent(message: string): { event: ServerEvent; sourceId?: string } | undefined {
 	const parsed: unknown = JSON.parse(message);
 	if (typeof parsed !== 'object' || parsed === null) return undefined;
-	return typeof (parsed as { kind?: unknown }).kind === 'string'
-		? (parsed as ServerEvent)
-		: undefined;
+	const envelope = parsed as { event?: unknown; sourceId?: unknown; kind?: unknown };
+	if (typeof envelope.sourceId === 'string' && envelope.event) {
+		const event = envelope.event as { kind?: unknown };
+		return typeof event.kind === 'string'
+			? { event: envelope.event as ServerEvent, sourceId: envelope.sourceId }
+			: undefined;
+	}
+	return typeof envelope.kind === 'string' ? { event: parsed as ServerEvent } : undefined;
 }
 
 /** A per-user event bus backed by the host's cross-instance messaging seam. */
@@ -33,6 +38,7 @@ export class CrossInstanceUserServerEventBus implements UserServerEventBus {
 	private transitionQueue: Promise<void> = Promise.resolve();
 	private retryTimer: ReturnType<typeof setTimeout> | undefined;
 	private retryDelayMilliseconds = initialRetryDelayMilliseconds;
+	private readonly sourceId = crypto.randomUUID();
 
 	constructor(
 		private readonly userId: string,
@@ -47,11 +53,12 @@ export class CrossInstanceUserServerEventBus implements UserServerEventBus {
 	publish(event: ServerEvent): void {
 		let message: string;
 		try {
-			message = JSON.stringify(event);
+			message = JSON.stringify({ sourceId: this.sourceId, event });
 		} catch (error) {
 			this.onError({ error, userId: this.userId, operation: 'publish' });
 			return;
 		}
+		for (const listener of this.listeners) listener(event);
 		void this.messaging
 			.publish(channelForUser(this.userId), message)
 			.catch((error: unknown) =>
@@ -109,8 +116,10 @@ export class CrossInstanceUserServerEventBus implements UserServerEventBus {
 					channelForUser(this.userId),
 					(message) => {
 						try {
-							const event = readServerEvent(message);
-							if (event) for (const listener of this.listeners) listener(event);
+							const received = readServerEvent(message);
+							if (received && received.sourceId !== this.sourceId) {
+								for (const listener of this.listeners) listener(received.event);
+							}
 						} catch (error) {
 							this.onError({ error, userId: this.userId, operation: 'deserialize' });
 						}

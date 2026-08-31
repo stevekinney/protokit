@@ -50,10 +50,10 @@ export class GrantRevocationChannel {
 
 	async close(): Promise<void> {
 		const unsubscribe = this.unsubscribe;
-		this.unsubscribe = undefined;
 		if (!unsubscribe) return;
 		try {
 			await unsubscribe();
+			if (this.unsubscribe === unsubscribe) this.unsubscribe = undefined;
 		} catch (error) {
 			this.onError(error);
 		}
