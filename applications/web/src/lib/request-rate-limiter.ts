@@ -80,7 +80,7 @@ async function consumeRateLimit(input: {
 	});
 }
 
-function createSharedRequestRateLimiter(): RequestRateLimiter {
+export function createSharedRequestRateLimiter(): RequestRateLimiter {
 	const sharedConfiguration: RateLimitConfiguration = {
 		keyNamespace: environment.rateLimitKeyNamespace || undefined,
 		maximumConcurrent: environment.rateLimitMcpConcurrentMax,

@@ -1,4 +1,4 @@
-import { parseBearerCredential } from '@web/lib/authorization-header';
+import { parseAuthorizationHeader } from '@lostgradient/mcp/http';
 import { canonicalizeIpAddress } from '@lostgradient/mcp/oauth';
 import { constantTimeEquals } from '@lostgradient/mcp/oauth';
 import { isSocketPeerTrusted, type TrustedProxyConfiguration } from '@lostgradient/mcp/oauth';
@@ -33,8 +33,9 @@ export function checkBearerCredential(input: {
 	//
 	// Round 17 review finding: the separator is `1*SP`, not exactly one
 	// space, and this parser is shared with `/mcp` rather than duplicated --
-	// see `authorization-header.ts` for both.
-	const presented = parseBearerCredential(input.authorizationHeader);
+	// see `@lostgradient/mcp/http`'s shared parser for both.
+	const { scheme, credential: presented } = parseAuthorizationHeader(input.authorizationHeader);
+	if (scheme?.toLowerCase() !== 'bearer') return 'unauthorized';
 
 	if (!presented || !constantTimeEquals(presented, input.configuredKey)) {
 		return 'unauthorized';

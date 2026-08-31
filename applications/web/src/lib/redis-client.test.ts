@@ -44,7 +44,7 @@ describe('redis-client against a real, reachable Redis', () => {
 		// see `null`, no-op, and leave the still-connecting subscriber open
 		// forever. Starting the connect and immediately disconnecting without
 		// awaiting the startup is exactly the shape a fast-failing mount
-		// produces, since `subscribeToGrantRevocations` begins this
+		// produces, since the extracted grant-revocation channel begins this
 		// fire-and-forget at module evaluation.
 		const startup = getRedisSubscriberClient();
 

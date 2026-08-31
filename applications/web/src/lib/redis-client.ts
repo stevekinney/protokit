@@ -79,7 +79,7 @@ let subscriberClient: RedisClient | null = null;
  * arriving while that await is still pending therefore saw `null`, did
  * nothing, and returned -- and the pending task then went on to duplicate
  * and connect a client nobody was left holding, leaking an open subscriber
- * for the life of the process. `subscribeToGrantRevocations` starts this
+ * for the life of the process. The extracted MCP serving layer starts this
  * fire-and-forget at module evaluation, so the window is real and is widest
  * exactly when startup fails fast (a synchronous invariant failure is
  * microseconds behind the module evaluation that began the connect).

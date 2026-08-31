@@ -163,6 +163,7 @@ mock.module('@web/lib/mcp-handler', () => ({
 		}
 	},
 	handleMcpRequest: async () => new Response(null, { status: 500 }),
+	publishGrantRevocation: async () => {},
 	publishUserResourceUpdate: () => {},
 	shouldEnableConformanceMode: () => false,
 }));

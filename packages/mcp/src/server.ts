@@ -246,7 +246,7 @@ export function createMcpServer(
 		/**
 		 * PROTO-002 / S-11: publishes a `notifications/resources/updated` event
 		 * scoped to only this context's `userId` (see
-		 * `applications/web/src/lib/mcp-user-event-bus.ts`). Undefined when no
+		 * `src/http/user-server-event-bus.ts`). Undefined when no
 		 * event bus is wired for this request (e.g. the standalone conformance
 		 * server) — `resources/subscribe` still acks, it just never delivers.
 		 */
@@ -487,7 +487,7 @@ export function createMcpServer(
 	// entirely on the `2026-07-28` `subscriptions/listen` stream, which the
 	// SDK's `createMcpHandler` serves itself against the per-user
 	// `ServerEventBus` `mcp-handler.ts` constructs (see
-	// `applications/web/src/lib/mcp-user-event-bus.ts`); there is no
+	// `src/http/user-server-event-bus.ts`); there is no
 	// interest-tracking bookkeeping left to do here — the SDK's own listen
 	// router filters each stream to the URIs its own request opted into,
 	// and the per-user bus means one user's published update is physically

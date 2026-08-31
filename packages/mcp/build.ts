@@ -50,6 +50,7 @@ const ENTRY_POINTS = [
 	'src/oauth/postgres/index.ts',
 	'src/oauth/client-metadata-documents.ts',
 	'src/rate-limit/index.ts',
+	'src/http/index.ts',
 ].map((entry) => join(packageRoot, entry));
 
 await rm(outdir, { recursive: true, force: true });
