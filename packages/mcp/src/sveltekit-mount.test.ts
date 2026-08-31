@@ -19,7 +19,11 @@ import {
 } from './sveltekit-mount.js';
 import { resetSvelteKitMountStateForTesting } from './sveltekit-mount-state.js';
 
-const registry = { tools: [], resources: [], prompts: [] } as unknown as McpRegistry<'read'>;
+const registry = {
+	tools: [{ requiredScope: 'repositories:read' }],
+	resources: [],
+	prompts: [],
+} as unknown as McpRegistry<'repositories:read'>;
 const oauthSeams = {
 	fetchClientIdMetadataDocument: async () => null,
 	resolveIdentityBinding: identityContractFixture,
@@ -32,7 +36,14 @@ const oauthSeams = {
 	hashCredential: (value: string) => value,
 	crossInstanceMessaging: crossInstanceMessagingContractFixture,
 } satisfies OAuthHostSeams<'repositories:read'>;
-const discoveryConfiguration = {} as OAuthDiscoveryConfiguration;
+const discoveryConfiguration = {
+	issuer: configurationContractFixture.issuer,
+	baseUrl: configurationContractFixture.baseUrl,
+	resource: configurationContractFixture.resource,
+	mcpUiExtension: configurationContractFixture.mcpUiExtension,
+	serverName: 'mount-test',
+	mcpProtocolVersion: '2026-07-28',
+} satisfies OAuthDiscoveryConfiguration;
 
 function event(path = '/mcp', address = '203.0.113.1'): SvelteKitLikeRequestEvent {
 	const url = new URL(path, 'https://example.com');
@@ -129,6 +140,19 @@ describe('createSvelteKitMcpMount', () => {
 				},
 			},
 		],
+		[
+			'configuration.trustedProxy.trustedProxyHeader',
+			{
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyHeader: 'x-forwarded',
+					},
+				},
+			},
+		],
 		['recordEvent', { ...oauthSeams, recordEvent: 'not-callable' }],
 	] as const)(
 		'refuses to start when the nested OAuth host seam %s is absent at runtime',
@@ -139,6 +163,52 @@ describe('createSvelteKitMcpMount', () => {
 					oauthSeams: incompleteOauthSeams as unknown as OAuthHostSeams<'repositories:read'>,
 					discoveryConfiguration,
 					registry: registry as unknown as McpRegistry<'repositories:read'>,
+					identityHandleName: 'identityHandle',
+					longLivedProcess: true,
+					mcp: {
+						start: async () => {
+							startCount += 1;
+						},
+						shutdown: async () => {},
+						publishGrantRevocation: async () => {},
+						handle: async () => new Response('mcp'),
+					},
+				}),
+			).rejects.toThrow(expectedPath);
+			expect(startCount).toBe(0);
+		},
+	);
+
+	test.each([
+		[
+			'scopes.supportedScopes',
+			{
+				discoveryConfiguration,
+				registry: {
+					tools: [],
+					resources: [],
+					prompts: [],
+				} as unknown as McpRegistry<'repositories:read'>,
+			},
+		],
+		[
+			'discoveryConfiguration.resource',
+			{
+				discoveryConfiguration: {
+					...discoveryConfiguration,
+					resource: new URL('https://application.example.com/different-mcp'),
+				},
+				registry,
+			},
+		],
+	] as const)(
+		'refuses to start when the mount configuration %s disagrees with the OAuth seams',
+		async (expectedPath, mountConfiguration) => {
+			let startCount = 0;
+			await expect(
+				createSvelteKitMcpMount({
+					oauthSeams,
+					...mountConfiguration,
 					identityHandleName: 'identityHandle',
 					longLivedProcess: true,
 					mcp: {

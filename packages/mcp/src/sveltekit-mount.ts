@@ -1,6 +1,7 @@
 import type { McpRegistry } from './scope-vocabulary.js';
 import { getSvelteKitMountState, setSvelteKitMountState } from './sveltekit-mount-state.js';
 import { isValidCidr } from './oauth/security-utilities.js';
+import { getSupportedScopes } from './supported-scopes.js';
 import {
 	handleOauthAuthorizationMetadataGet,
 	handleOauthAuthorizeApprove,
@@ -196,6 +197,16 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 			);
 		}
 	}
+	if (
+		configuration.trustedProxy.trustedProxyHeader !== undefined &&
+		!['x-forwarded-for', 'forwarded', 'cf-connecting-ip'].includes(
+			configuration.trustedProxy.trustedProxyHeader as string,
+		)
+	) {
+		throw new Error(
+			'The SvelteKit MCP mount requires the OAuth host seam "configuration.trustedProxy.trustedProxyHeader".',
+		);
+	}
 	assertOauthSeamNumber(
 		configuration.trustedProxy.trustedProxyHopCount,
 		'configuration.trustedProxy.trustedProxyHopCount',
@@ -262,6 +273,48 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 	}
 }
 
+function assertMountConfigurationAgreement<Scope extends string>(input: {
+	oauthSeams: OAuthHostSeams<Scope>;
+	discoveryConfiguration: OAuthDiscoveryConfiguration;
+	registry: McpRegistry<Scope>;
+}): void {
+	const expectedScopes = getSupportedScopes(input.registry);
+	const configuredScopes = [...input.oauthSeams.scopes.supportedScopes].sort((left, right) =>
+		left < right ? -1 : left > right ? 1 : 0,
+	);
+	if (
+		expectedScopes.length !== configuredScopes.length ||
+		expectedScopes.some((scope, index) => scope !== configuredScopes[index])
+	) {
+		throw new Error(
+			'The SvelteKit MCP mount requires "scopes.supportedScopes" to match the mounted registry.',
+		);
+	}
+
+	const oauthConfiguration = input.oauthSeams.configuration;
+	const discoveryConfiguration = input.discoveryConfiguration;
+	if (discoveryConfiguration.issuer !== oauthConfiguration.issuer) {
+		throw new Error(
+			'The SvelteKit MCP mount requires "discoveryConfiguration.issuer" to match the OAuth host seams.',
+		);
+	}
+	if (discoveryConfiguration.baseUrl.href !== oauthConfiguration.baseUrl.href) {
+		throw new Error(
+			'The SvelteKit MCP mount requires "discoveryConfiguration.baseUrl" to match the OAuth host seams.',
+		);
+	}
+	if (discoveryConfiguration.resource.href !== oauthConfiguration.resource.href) {
+		throw new Error(
+			'The SvelteKit MCP mount requires "discoveryConfiguration.resource" to match the OAuth host seams.',
+		);
+	}
+	if (discoveryConfiguration.mcpUiExtension.enabled !== oauthConfiguration.mcpUiExtension.enabled) {
+		throw new Error(
+			'The SvelteKit MCP mount requires "discoveryConfiguration.mcpUiExtension" to match the OAuth host seams.',
+		);
+	}
+}
+
 /**
  * Records that the host identity handle ran for this request. A null identity
  * is distinct from a handle that was skipped or sequenced after the MCP mount.
@@ -324,6 +377,7 @@ export async function createSvelteKitMcpMount<Scope extends string>(input: {
 	setSvelteKitMountState('constructing');
 	try {
 		assertRequiredOauthSeams(input.oauthSeams);
+		assertMountConfigurationAgreement(input);
 		if (!input.longLivedProcess) {
 			throw new Error(
 				'The MCP mount requires a long-lived process; request-scoped edge and serverless runtimes cannot preserve subscription state.',
