@@ -1,6 +1,6 @@
 import { createClient } from 'redis';
 
-import { withDeadline } from '@web/lib/with-deadline';
+import { withDeadline } from '@lostgradient/mcp/oauth';
 
 /**
  * `socket.connectTimeout` below only bounds establishing the TCP/TLS connection. Once Redis has

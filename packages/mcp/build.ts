@@ -48,6 +48,7 @@ const ENTRY_POINTS = [
 	'src/oauth/stores.ts',
 	'src/oauth/testing/index.ts',
 	'src/oauth/postgres/index.ts',
+	'src/oauth/client-metadata-documents.ts',
 	'src/rate-limit/index.ts',
 ].map((entry) => join(packageRoot, entry));
 

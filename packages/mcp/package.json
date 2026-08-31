@@ -66,6 +66,11 @@
 			"import": "./dist/oauth/postgres/index.js",
 			"default": "./dist/oauth/postgres/index.js"
 		},
+		"./oauth/client-metadata-documents": {
+			"types": "./dist/oauth/client-metadata-documents.d.ts",
+			"import": "./dist/oauth/client-metadata-documents.js",
+			"default": "./dist/oauth/client-metadata-documents.js"
+		},
 		"./rate-limit": {
 			"types": "./dist/rate-limit/index.d.ts",
 			"import": "./dist/rate-limit/index.js",
@@ -80,6 +85,7 @@
 		"test:postgres": "LOG_LEVEL=info NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@localhost:5432/protokit_test bun test src/oauth/postgres/index.test.ts",
 		"test:conformance": "NODE_ENV=test MCP_CONFORMANCE_PORT=3137 bun ./src/conformance-server.ts",
 		"typecheck": "tsc --noEmit",
+		"verify:cimd-runtime": "bun run build && bun run verify-cimd-runtime.ts && node --experimental-strip-types verify-cimd-runtime.ts",
 		"verify:package": "bun run verify-package.ts"
 	},
 	"dependencies": {

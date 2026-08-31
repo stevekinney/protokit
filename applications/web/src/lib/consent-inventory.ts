@@ -1,7 +1,7 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@lostgradient/mcp/logger';
-import { isValidClientName } from '@web/lib/client-name-validation';
+import { isValidClientName } from '@lostgradient/mcp/oauth';
 import { publishGrantRevocation } from '@web/lib/mcp-grant-revocation-channel';
 
 const consentLogger = logger.child({ module: 'consent-inventory' });

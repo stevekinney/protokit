@@ -6,7 +6,7 @@ import {
 } from '@web/lib/consent-inventory';
 import { getBaseUrl } from '@web/lib/base-url';
 import { isTrustedRequestOrigin, isValidSessionCsrfToken } from '@web/lib/csrf-protection';
-import { isExactContentType } from '@web/lib/exact-content-type';
+import { isExactContentType } from '@lostgradient/mcp/oauth';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
 import {
 	accountConnectionsMaxBodyBytes,

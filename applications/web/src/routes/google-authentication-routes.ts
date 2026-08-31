@@ -7,7 +7,7 @@ import { environment } from '@web/env';
 import { PayloadTooLargeError, readBoundedFormUrlEncoded } from '@web/lib/bounded-request-body';
 import { getBaseUrl } from '@web/lib/base-url';
 import { isTrustedRequestOrigin, isValidSessionCsrfToken } from '@web/lib/csrf-protection';
-import { isExactContentType } from '@web/lib/exact-content-type';
+import { isExactContentType } from '@lostgradient/mcp/oauth';
 import { publishUserResourceUpdate } from '@web/lib/mcp-handler';
 import {
 	clearGoogleStateCookie,

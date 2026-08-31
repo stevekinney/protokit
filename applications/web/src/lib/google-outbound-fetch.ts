@@ -1,4 +1,4 @@
-import { isExactContentType } from '@web/lib/exact-content-type';
+import { isExactContentType } from '@lostgradient/mcp/oauth';
 
 /**
  * Bounded outbound fetch for Google's fixed, documented OAuth/OIDC endpoints

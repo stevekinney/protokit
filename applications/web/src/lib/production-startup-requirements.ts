@@ -20,7 +20,7 @@
  */
 
 import { findInvalidConfiguredOrigins } from '@web/lib/mcp-allowed-origins';
-import { isValidCidr } from '@web/lib/trusted-proxy';
+import { isValidCidr } from '@lostgradient/mcp/oauth';
 
 /**
  * A small, deliberately conservative denylist of connection-string

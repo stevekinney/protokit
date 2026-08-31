@@ -33,7 +33,7 @@ type MockedCimdDocument = {
 	applicationType: string | null;
 };
 const mockCimdState: { document: MockedCimdDocument | null } = { document: null };
-mock.module('@web/lib/client-metadata-documents', () => ({
+mock.module('@lostgradient/mcp/oauth/client-metadata-documents', () => ({
 	isClientIdMetadataDocumentUrl: (clientId: string) => {
 		try {
 			const parsed = new URL(clientId);

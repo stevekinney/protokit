@@ -1,6 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { isAddressInCidr } from '@web/lib/trusted-proxy';
+import { isAddressInCidr } from '@lostgradient/mcp/oauth';
 
 /**
  * `OPS-001`: pure, host-agnostic checks shared by the deployed-envelope

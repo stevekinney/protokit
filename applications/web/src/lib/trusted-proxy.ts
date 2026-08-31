@@ -1,9 +1,4 @@
-import { isIPv4, isIPv6 } from 'node:net';
-import {
-	canonicalizeIpAddress,
-	expandIpv6Groups,
-	stripPort,
-} from '@web/lib/canonicalize-ip-address';
+import { canonicalizeIpAddress, isAddressInCidr, stripPort } from '@lostgradient/mcp/oauth';
 
 export type TrustedProxyHeader = 'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip';
 
@@ -15,79 +10,6 @@ export type TrustedProxyConfiguration = {
 	/** How many trusted proxy hops precede the real client in a multi-value header. */
 	trustedProxyHopCount: number;
 };
-
-function ipToBigInt(address: string): { family: 4 | 6; value: bigint } | null {
-	if (isIPv4(address)) {
-		const value = address
-			.split('.')
-			.map(Number)
-			.reduce((accumulator, octet) => (accumulator << 8n) + BigInt(octet), 0n);
-		return { family: 4, value };
-	}
-
-	if (isIPv6(address)) {
-		const value = expandIpv6Groups(address).reduce(
-			(accumulator, group) => (accumulator << 16n) + BigInt(Number.parseInt(group, 16)),
-			0n,
-		);
-		return { family: 6, value };
-	}
-
-	return null;
-}
-
-/**
- * Returns whether `address` falls within `cidr` (e.g. `10.0.0.0/8` or
- * `2001:db8::/32`). Addresses are compared only within the same family —
- * an IPv4-mapped IPv6 address is first collapsed to plain IPv4 by
- * canonicalization, so it correctly matches an IPv4 CIDR.
- */
-export function isAddressInCidr(address: string, cidr: string): boolean {
-	const rangeInfo = parseCidr(cidr);
-	if (!rangeInfo) return false;
-
-	const canonicalAddress = canonicalizeIpAddress(address);
-	const addressInfo = ipToBigInt(canonicalAddress);
-	if (!addressInfo || addressInfo.family !== rangeInfo.family) return false;
-
-	const width = addressInfo.family === 4 ? 32 : 128;
-	if (rangeInfo.prefixLength === 0) return true;
-
-	const shift = BigInt(width - rangeInfo.prefixLength);
-	return addressInfo.value >> shift === rangeInfo.value >> shift;
-}
-
-function parseCidr(cidr: string): { family: 4 | 6; value: bigint; prefixLength: number } | null {
-	const parts = cidr.split('/');
-	if (parts.length !== 2) return null;
-	const [rangeAddress, prefixLengthText] = parts;
-	if (!rangeAddress || !prefixLengthText) return null;
-
-	// Reject anything `Number.parseInt` would otherwise silently tolerate
-	// (leading/trailing garbage such as "8abc" or " 8"): the prefix must be
-	// nothing but decimal digits.
-	if (!/^\d+$/.test(prefixLengthText)) return null;
-	const prefixLength = Number.parseInt(prefixLengthText, 10);
-
-	const rangeInfo = ipToBigInt(canonicalizeIpAddress(rangeAddress));
-	if (!rangeInfo) return null;
-
-	const width = rangeInfo.family === 4 ? 32 : 128;
-	if (prefixLength > width) return null;
-
-	return { ...rangeInfo, prefixLength };
-}
-
-/**
- * Whether `cidr` is syntactically valid and addressable (a real IPv4 or
- * IPv6 range address, with a prefix length that fits that family's
- * address width). Used at startup to fail closed on a malformed
- * `TRUSTED_PROXY_CIDRS` entry instead of letting it silently match nothing
- * — see `production-startup-requirements.ts`.
- */
-export function isValidCidr(cidr: string): boolean {
-	return parseCidr(cidr) !== null;
-}
 
 /**
  * Whether the immediate socket peer is one of the configured trusted

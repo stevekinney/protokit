@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { isValidClientName } from '@web/lib/client-name-validation';
+import { isValidClientName } from '@lostgradient/mcp/oauth';
 
 describe('isValidClientName', () => {
 	it('accepts an ordinary ASCII name', () => {

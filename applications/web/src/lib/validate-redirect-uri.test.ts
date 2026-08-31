@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isValidRedirectUri } from './validate-redirect-uri';
+import { isValidRedirectUri } from '@lostgradient/mcp/oauth';
 
 describe('isValidRedirectUri', () => {
 	it('accepts HTTPS URIs', () => {

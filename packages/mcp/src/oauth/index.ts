@@ -1,6 +1,28 @@
 import type { McpScopeVocabulary } from '../scope-vocabulary.js';
 import type { McpUserProfile } from '../types/primitives.js';
 import type { OAuthStores } from './stores.js';
+import * as clientMetadataDocuments from './client-metadata-documents.js';
+import * as securityUtilities from './security-utilities.js';
+import * as canonicalAddressUtilities from './canonicalize-ip-address.js';
+
+export const fetchClientIdMetadataDocument = clientMetadataDocuments.fetchClientIdMetadataDocument;
+export const isClientIdMetadataDocumentUrl = clientMetadataDocuments.isClientIdMetadataDocumentUrl;
+export const safeFetchPublicHttpsUrl = clientMetadataDocuments.safeFetchPublicHttpsUrl;
+export const isAddressInCidr = securityUtilities.isAddressInCidr;
+export const isValidCidr = securityUtilities.isValidCidr;
+export const isValidRedirectUri = securityUtilities.isValidRedirectUri;
+export const isValidClientName = securityUtilities.isValidClientName;
+export const isExactContentType = securityUtilities.isExactContentType;
+export const withDeadline = securityUtilities.withDeadline;
+export const canonicalizeIpAddress = canonicalAddressUtilities.canonicalizeIpAddress;
+export const expandIpv6Groups = canonicalAddressUtilities.expandIpv6Groups;
+export const stripPort = canonicalAddressUtilities.stripPort;
+export type {
+	ClientIdMetadataDocument,
+	ClientMetadataDocumentFetchDependencies,
+	DnsLookupAllFunction,
+	SafePublicHttpsFetchOptions,
+} from './client-metadata-documents.js';
 
 export type TrustedProxyHeader = 'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip';
 
