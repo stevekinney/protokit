@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 
-export type PostgresOAuthDatabase = {
+export type PostgresOAuthExecutor = {
 	execute(query: SQL): Promise<unknown>;
+};
+
+export type PostgresOAuthDatabase = PostgresOAuthExecutor & {
+	transaction<T>(callback: (transaction: PostgresOAuthExecutor) => Promise<T>): Promise<T>;
 };
 
 export function hashOpaqueValue(value: string): string {

@@ -239,6 +239,31 @@ describe('Postgres OAuth durability', () => {
 		}
 	});
 
+	test('a losing concurrent rotation revokes the winner from a fresh post-lock snapshot', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('race-access', new Date('2099-01-01')),
+			refreshToken: refreshRecord('race-refresh', 'race-access', new Date('2099-01-01')),
+		});
+
+		const results = await Promise.all([
+			stores.tokens.rotateRefreshToken(
+				rotation('race-refresh', 'race-access-a', 'race-refresh-a', new Date('2026-01-02')),
+			),
+			stores.tokens.rotateRefreshToken(
+				rotation('race-refresh', 'race-access-b', 'race-refresh-b', new Date('2026-01-02')),
+			),
+		]);
+		expect(results.map((result) => result.status).sort()).toEqual(['replay_revoked', 'rotated']);
+		const winner = results.find((result) => result.status === 'rotated');
+		if (!winner || winner.status !== 'rotated') throw new Error('Expected one rotation winner');
+		expect(
+			(await stores.tokens.findByHash(winner.accessToken.accessTokenHash))?.revokedAt,
+		).not.toBeNull();
+	});
+
 	test('preserves an expired access token while its paired refresh token is live', async () => {
 		await resetFixture();
 		await seedClient();

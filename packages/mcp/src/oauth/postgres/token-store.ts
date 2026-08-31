@@ -40,15 +40,21 @@ export class PostgresTokenStore implements TokenStore {
 	async rotateRefreshToken(
 		input: Parameters<TokenStore['rotateRefreshToken']>[0],
 	): ReturnType<TokenStore['rotateRefreshToken']> {
-		const result = await this.database.execute(sql`WITH prior_family AS MATERIALIZED (
-			SELECT family_id FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${input.priorHash}
-				AND client_id = ${input.clientId} AND resource = ${input.resource}
-		), family_lock AS MATERIALIZED (
-			SELECT pg_advisory_xact_lock(hashtextextended(family_id, 0)) FROM prior_family
-		), prior AS MATERIALIZED (
+		return this.database.transaction(async (transaction) => {
+			const familyResult = await transaction.execute(
+				sql`SELECT family_id AS "familyId" FROM ${this.schema.refreshTokens}
+				WHERE refresh_token_hash = ${input.priorHash}
+					AND client_id = ${input.clientId} AND resource = ${input.resource}`,
+			);
+			const familyId = resultRows<{ familyId: string }>(familyResult)[0]?.familyId;
+			if (!familyId) return { status: 'invalid' };
+			await transaction.execute(
+				sql`SELECT pg_advisory_xact_lock(hashtextextended(${familyId}, 0))`,
+			);
+
+			const result = await transaction.execute(sql`WITH prior AS MATERIALIZED (
 			SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${input.priorHash}
-				AND client_id = ${input.clientId} AND resource = ${input.resource}
-				AND EXISTS (SELECT 1 FROM family_lock) FOR UPDATE
+				AND client_id = ${input.clientId} AND resource = ${input.resource} FOR UPDATE
 		), live AS (
 			SELECT * FROM prior WHERE revoked_at IS NULL AND expires_at > ${input.createdAt}
 		), replayable AS (
@@ -90,20 +96,20 @@ export class PostgresTokenStore implements TokenStore {
 			(SELECT user_id::text FROM prior LIMIT 1) AS "userId",
 			(SELECT row_to_json(a) FROM inserted_access a LIMIT 1) AS access,
 			(SELECT row_to_json(r) FROM inserted_refresh r LIMIT 1) AS refresh`);
-		const row = resultRows<{
-			status: 'rotated' | 'replay_revoked' | 'scope_rejected' | 'invalid';
-			userId?: string;
-			access?: Record<string, unknown>;
-			refresh?: Record<string, unknown>;
-		}>(result)[0];
-		if (!row || row.status === 'invalid') return Promise.resolve({ status: 'invalid' });
-		if (row.status === 'scope_rejected') return Promise.resolve({ status: 'scope_rejected' });
-		if (row.status === 'replay_revoked')
-			return Promise.resolve({ status: 'replay_revoked', userId: row.userId! });
-		return Promise.resolve({
-			status: 'rotated',
-			accessToken: mapAccess(row.access!),
-			refreshToken: mapRefresh(row.refresh!),
+			const row = resultRows<{
+				status: 'rotated' | 'replay_revoked' | 'scope_rejected' | 'invalid';
+				userId?: string;
+				access?: Record<string, unknown>;
+				refresh?: Record<string, unknown>;
+			}>(result)[0];
+			if (!row || row.status === 'invalid') return { status: 'invalid' };
+			if (row.status === 'scope_rejected') return { status: 'scope_rejected' };
+			if (row.status === 'replay_revoked') return { status: 'replay_revoked', userId: row.userId! };
+			return {
+				status: 'rotated',
+				accessToken: mapAccess(row.access!),
+				refreshToken: mapRefresh(row.refresh!),
+			};
 		});
 	}
 
@@ -122,15 +128,21 @@ export class PostgresTokenStore implements TokenStore {
 		tokenHash: string,
 		clientId: string,
 	): ReturnType<TokenStore['revokeRefreshToken']> {
-		const result = await this.database.execute(sql`WITH prior_family AS MATERIALIZED (
-			SELECT family_id FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash}
-				AND client_id = ${clientId} AND expires_at > clock_timestamp()
-		), family_lock AS MATERIALIZED (
-			SELECT pg_advisory_xact_lock(hashtextextended(family_id, 0)) FROM prior_family
-		), prior AS MATERIALIZED (
+		return this.database.transaction(async (transaction) => {
+			const familyResult = await transaction.execute(
+				sql`SELECT family_id AS "familyId" FROM ${this.schema.refreshTokens}
+				WHERE refresh_token_hash = ${tokenHash}
+					AND client_id = ${clientId} AND expires_at > clock_timestamp()`,
+			);
+			const familyId = resultRows<{ familyId: string }>(familyResult)[0]?.familyId;
+			if (!familyId) return { status: 'invalid' };
+			await transaction.execute(
+				sql`SELECT pg_advisory_xact_lock(hashtextextended(${familyId}, 0))`,
+			);
+
+			const result = await transaction.execute(sql`WITH prior AS MATERIALIZED (
 			SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash}
-				AND client_id = ${clientId} AND expires_at > clock_timestamp()
-				AND EXISTS (SELECT 1 FROM family_lock) FOR UPDATE
+				AND client_id = ${clientId} AND expires_at > clock_timestamp() FOR UPDATE
 		), family_members AS MATERIALIZED (
 			SELECT access_token_hash FROM ${this.schema.refreshTokens}
 			WHERE family_id IN (SELECT family_id FROM prior WHERE revoked_at IS NOT NULL)
@@ -151,29 +163,31 @@ export class PostgresTokenStore implements TokenStore {
 		SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM prior) THEN 'invalid'
 			WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
 			ELSE 'revoked' END AS status, (SELECT user_id::text FROM prior LIMIT 1) AS "userId"`);
-		const row = resultRows<{
-			status: 'invalid' | 'revoked' | 'replay_revoked';
-			userId: string | null;
-		}>(result)[0];
-		if (!row || row.status === 'invalid') return Promise.resolve({ status: 'invalid' });
-		return Promise.resolve({ status: row.status, userId: row.userId! });
+			const row = resultRows<{
+				status: 'invalid' | 'revoked' | 'replay_revoked';
+				userId: string | null;
+			}>(result)[0];
+			if (!row || row.status === 'invalid') return { status: 'invalid' };
+			return { status: row.status, userId: row.userId! };
+		});
 	}
 
 	async revokeFamily(familyId: string): Promise<number> {
-		const result = await this.database.execute(sql`WITH family_lock AS MATERIALIZED (
-			SELECT pg_advisory_xact_lock(hashtextextended(${familyId}, 0))
-		), family_members AS MATERIALIZED (
+		return this.database.transaction(async (transaction) => {
+			await transaction.execute(
+				sql`SELECT pg_advisory_xact_lock(hashtextextended(${familyId}, 0))`,
+			);
+			const result = await transaction.execute(sql`WITH family_members AS MATERIALIZED (
 			SELECT access_token_hash FROM ${this.schema.refreshTokens} WHERE family_id = ${familyId}
-				AND EXISTS (SELECT 1 FROM family_lock)
 		), revoked_refresh AS (
 			UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
-			WHERE family_id = ${familyId} AND revoked_at IS NULL
-				AND EXISTS (SELECT 1 FROM family_lock) RETURNING 1
+			WHERE family_id = ${familyId} AND revoked_at IS NULL RETURNING 1
 		), revoked_access AS (
 			UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
 			WHERE access_token_hash IN (SELECT access_token_hash FROM family_members) AND revoked_at IS NULL RETURNING 1
 		) SELECT (SELECT count(*) FROM revoked_refresh) + (SELECT count(*) FROM revoked_access) AS count`);
-		return countRows(result);
+			return countRows(result);
+		});
 	}
 
 	async deleteAllForUser(userId: string): Promise<number> {
