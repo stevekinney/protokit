@@ -1,6 +1,13 @@
 import type { CrossInstanceMessaging } from '../oauth/index.js';
 
 const grantRevocationChannel = 'mcp:control:grant-revocations';
+const initialRetryDelayMilliseconds = 1_000;
+const maximumRetryDelayMilliseconds = 30_000;
+
+export type GrantRevocationRetryConfiguration = {
+	initialDelayMilliseconds: number;
+	maximumDelayMilliseconds: number;
+};
 
 function readUserId(message: string): string | undefined {
 	try {
@@ -18,12 +25,20 @@ export class GrantRevocationChannel {
 	private unsubscribe: (() => Promise<void>) | undefined;
 	private startup: Promise<void> | undefined;
 	private closeRequested = false;
+	private finishRetryDelay: (() => void) | undefined;
+	private retryDelayMilliseconds: number;
 
 	constructor(
 		private readonly closeLocalUser: (userId: string) => void | Promise<unknown>,
 		private readonly messaging?: CrossInstanceMessaging,
 		private readonly onError: (error: unknown, userId?: string) => void = () => {},
-	) {}
+		private readonly retryConfiguration: GrantRevocationRetryConfiguration = {
+			initialDelayMilliseconds: initialRetryDelayMilliseconds,
+			maximumDelayMilliseconds: maximumRetryDelayMilliseconds,
+		},
+	) {
+		this.retryDelayMilliseconds = retryConfiguration.initialDelayMilliseconds;
+	}
 
 	async start(): Promise<void> {
 		if (!this.messaging || this.unsubscribe || this.closeRequested) return;
@@ -52,6 +67,7 @@ export class GrantRevocationChannel {
 
 	async close(): Promise<void> {
 		this.closeRequested = true;
+		this.finishRetryDelay?.();
 		await this.startup;
 		const unsubscribe = this.unsubscribe;
 		if (!unsubscribe) return;
@@ -64,14 +80,36 @@ export class GrantRevocationChannel {
 	}
 
 	private async subscribe(): Promise<void> {
-		try {
-			this.unsubscribe = await this.messaging?.subscribe(grantRevocationChannel, (message) => {
-				const userId = readUserId(message);
-				if (userId) this.runLocalCloser(userId);
-			});
-		} catch (error) {
-			this.onError(error);
+		while (!this.closeRequested && !this.unsubscribe) {
+			try {
+				this.unsubscribe = await this.messaging?.subscribe(grantRevocationChannel, (message) => {
+					const userId = readUserId(message);
+					if (userId) this.runLocalCloser(userId);
+				});
+				this.retryDelayMilliseconds = this.retryConfiguration.initialDelayMilliseconds;
+			} catch (error) {
+				this.onError(error);
+				if (!this.closeRequested) await this.waitBeforeRetry();
+			}
 		}
+	}
+
+	private async waitBeforeRetry(): Promise<void> {
+		const delayMilliseconds = this.retryDelayMilliseconds;
+		this.retryDelayMilliseconds = Math.min(
+			delayMilliseconds * 2,
+			this.retryConfiguration.maximumDelayMilliseconds,
+		);
+		await new Promise<void>((resolve) => {
+			const finish = () => {
+				clearTimeout(timer);
+				if (this.finishRetryDelay === finish) this.finishRetryDelay = undefined;
+				resolve();
+			};
+			this.finishRetryDelay = finish;
+			const timer = setTimeout(finish, delayMilliseconds);
+			timer.unref?.();
+		});
 	}
 
 	private runLocalCloser(userId: string): void {

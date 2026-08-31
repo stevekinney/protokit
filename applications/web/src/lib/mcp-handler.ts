@@ -38,6 +38,8 @@ const servingHandler = createMcpServingHandler({
 	seams: {
 		messaging: resolveMcpCrossInstanceMessaging(),
 		markServerOnlyCloseableStream: markAsServerOnlyCloseableStream,
+		reportDegradation: (degradation) =>
+			logger.warn({ degradation }, 'MCP serving layer is running with reduced capabilities'),
 		recordEvent: (outcome) => metricsCollector.recordEvent('mcp_method', outcome),
 		onError: (error, operation, userId) =>
 			logger.error({ err: error, operation, userId }, 'MCP serving-layer operation failed'),

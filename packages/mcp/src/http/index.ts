@@ -26,6 +26,7 @@ export type {
 	McpAuthenticationOutcome,
 	McpAuthenticationSeams,
 } from './authenticate.js';
+export type { GrantRevocationRetryConfiguration } from './grant-revocation-channel.js';
 export type { McpHandlerConfiguration, McpHandlerSeams, McpServingHandler } from './handler.js';
 export type { McpRequestAuthExtra } from './request-context.js';
 export type { McpHttpServingLayer } from './serving-layer.js';

@@ -2,7 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import type { McpHttpHandler, ServerEvent } from '@modelcontextprotocol/server';
 
 import type { CrossInstanceMessaging } from '../oauth/index.js';
+import { templateRegistry } from '../template-registry.js';
 import { GrantRevocationChannel } from './grant-revocation-channel.js';
+import { createMcpServingHandler } from './handler.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import {
 	CrossInstanceUserServerEventBus,
@@ -115,6 +117,29 @@ describe('McpUserHandlerCache', () => {
 });
 
 describe('cross-instance MCP lifecycle', () => {
+	test('reports single-instance degradation when constructed without messaging', async () => {
+		const degradations: string[] = [];
+		const handler = createMcpServingHandler({
+			registry: templateRegistry,
+			configuration: {
+				protocolVersion: '2026-07-28',
+				maximumRequestBodyBytes: 1_024,
+				maximumSubscriptionsPerUser: 1,
+				userHandlerSweepIntervalMilliseconds: 60_000,
+				userHandlerIdleMilliseconds: 60_000,
+				enableUiExtension: false,
+				enableConformanceMode: false,
+			},
+			seams: {
+				reportDegradation: (degradation) => degradations.push(degradation),
+				recordEvent: () => {},
+				onError: () => {},
+			},
+		});
+		expect(degradations).toEqual(['single_instance_messaging_fallback']);
+		await handler.shutdown();
+	});
+
 	test('reports an unserializable event without throwing synchronously', () => {
 		const operations: string[] = [];
 		const bus = new CrossInstanceUserServerEventBus(
@@ -193,6 +218,51 @@ describe('cross-instance MCP lifecycle', () => {
 		await publisher.publish('revoked-user');
 		expect(closed).toEqual(['revoked-user']);
 		await remote.close();
+	});
+
+	test('retries a failed revocation subscription until cross-instance delivery is ready', async () => {
+		let subscriptionAttempts = 0;
+		const errors: unknown[] = [];
+		const messaging: CrossInstanceMessaging = {
+			publish: async () => {},
+			subscribe: async () => {
+				subscriptionAttempts += 1;
+				if (subscriptionAttempts === 1) throw new Error('temporary subscribe failure');
+				return async () => {};
+			},
+		};
+		const channel = new GrantRevocationChannel(
+			() => {},
+			messaging,
+			(error) => errors.push(error),
+			{ initialDelayMilliseconds: 1, maximumDelayMilliseconds: 2 },
+		);
+		await channel.start();
+		expect(subscriptionAttempts).toBe(2);
+		expect(errors).toHaveLength(1);
+		await channel.close();
+	});
+
+	test('cancels a pending revocation subscription retry during shutdown', async () => {
+		const messaging: CrossInstanceMessaging = {
+			publish: async () => {},
+			subscribe: async () => {
+				throw new Error('subscriber unavailable');
+			},
+		};
+		const channel = new GrantRevocationChannel(
+			() => {},
+			messaging,
+			() => {},
+			{
+				initialDelayMilliseconds: 60_000,
+				maximumDelayMilliseconds: 60_000,
+			},
+		);
+		const startup = channel.start();
+		await Promise.resolve();
+		await channel.close();
+		await startup;
 	});
 
 	test('closes the publishing instance when messaging does not echo locally', async () => {

@@ -107,6 +107,7 @@ export type McpHandlerConfiguration = {
 export type McpHandlerSeams = {
 	messaging?: CrossInstanceMessaging;
 	markServerOnlyCloseableStream?(response: Response): Response;
+	reportDegradation(degradation: 'single_instance_messaging_fallback'): void;
 	recordEvent(outcome: 'transport_failure' | 'insufficient_scope'): void;
 	onError(error: unknown, operation: string, userId?: string): void;
 };
@@ -126,6 +127,7 @@ export function createMcpServingHandler<Scope extends string>(input: {
 	seams: McpHandlerSeams;
 }): McpServingHandler {
 	const { registry, configuration, seams } = input;
+	if (!seams.messaging) seams.reportDegradation('single_instance_messaging_fallback');
 
 	function createEntry(userId: string): {
 		handler: McpHttpHandler;
