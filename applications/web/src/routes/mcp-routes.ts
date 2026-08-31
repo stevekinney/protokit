@@ -13,6 +13,7 @@ import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
 import { acquireMcpConcurrencySlot } from '@web/lib/mcp-concurrency-limiter';
 import { oauthStatelessStores } from '@web/lib/oauth-stateless-stores';
 import { createSharedRequestRateLimiter } from '@web/lib/request-rate-limiter';
+import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier';
 import type { RequestContext } from '@web/lib/request-context';
 import { mcpMaxBearerTokenLength } from '@web/lib/request-limits';
 
@@ -50,6 +51,7 @@ export async function handleMcpRequestWithAuthentication(
 			allowedOrigins: parseAllowedOrigins(environment.mcpAllowedOrigins),
 			maximumBearerTokenLength: mcpMaxBearerTokenLength,
 			maximumFailedAuthenticationAttempts: environment.rateLimitFailedAuthMax,
+			trustedProxy: getTrustedProxyConfiguration(),
 			dnsRebindingProtection: isDnsRebindingProtectionActive({
 				conformanceModeConfigured: environment.mcpConformanceMode,
 				tunnelActive: environment.protokitTunnelActive,
@@ -79,7 +81,7 @@ export async function handleMcpRequestWithAuthentication(
 		request: context.request,
 		requestUrl: context.requestUrl,
 		requestId: context.requestId,
-		socketAddress: context.networkIdentity,
+		socketAddress: context.clientAddress,
 		identity: null,
 	});
 }

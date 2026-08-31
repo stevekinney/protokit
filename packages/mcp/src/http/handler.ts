@@ -221,7 +221,9 @@ export function createMcpServingHandler<Scope extends string>(input: {
 					},
 				});
 			}
-			const response = await cache.get(extra.userId).handler.fetch(boundedRequest, options);
+			const response = await cache.dispatch(extra.userId, (handler) =>
+				handler.fetch(boundedRequest, options),
+			);
 			return inspection.isListenRequest
 				? (seams.markServerOnlyCloseableStream?.(response) ?? response)
 				: response;

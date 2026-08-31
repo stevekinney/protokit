@@ -44,8 +44,8 @@ export class GrantRevocationChannel {
 			await this.messaging.publish(grantRevocationChannel, JSON.stringify({ userId }));
 		} catch (error) {
 			this.onError(error, userId);
-			this.runLocalCloser(userId);
 		}
+		this.runLocalCloser(userId);
 	}
 
 	async close(): Promise<void> {

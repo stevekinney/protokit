@@ -92,6 +92,26 @@ describe('McpUserHandlerCache', () => {
 		expect(cache.size).toBe(0);
 		await cache.closeAll();
 	});
+
+	test('does not evict a handler while a request is in flight', async () => {
+		let now = 0;
+		let finishRequest: (() => void) | undefined;
+		const cache = new McpUserHandlerCache(
+			() => ({ handler: fakeHandler(), bus: fakeBus() }),
+			() => now,
+		);
+		const dispatch = cache.dispatch('busy', async () => {
+			await new Promise<void>((resolve) => {
+				finishRequest = resolve;
+			});
+		});
+		now = 2_000;
+		expect(cache.evictIdle(1_000)).toEqual([]);
+		finishRequest?.();
+		await dispatch;
+		now = 4_000;
+		expect(cache.evictIdle(1_000)).toEqual(['busy']);
+	});
 });
 
 describe('cross-instance MCP lifecycle', () => {
@@ -133,6 +153,37 @@ describe('cross-instance MCP lifecycle', () => {
 		await publisher.publish('revoked-user');
 		expect(closed).toEqual(['revoked-user']);
 		await remote.close();
+	});
+
+	test('closes the publishing instance when messaging does not echo locally', async () => {
+		const closed: string[] = [];
+		const messaging: CrossInstanceMessaging = {
+			publish: async () => {},
+			subscribe: async () => async () => {},
+		};
+		const publisher = new GrantRevocationChannel((userId) => closed.push(userId), messaging);
+		await publisher.publish('local-revoked-user');
+		expect(closed).toEqual(['local-revoked-user']);
+	});
+
+	test('retains and retries a subscription teardown that fails', async () => {
+		let unsubscribeAttempts = 0;
+		const messaging: CrossInstanceMessaging = {
+			publish: async () => {},
+			subscribe: async () => async () => {
+				unsubscribeAttempts += 1;
+				if (unsubscribeAttempts === 1) throw new Error('temporary unsubscribe failure');
+			},
+		};
+		const bus = new CrossInstanceUserServerEventBus('user-a', messaging);
+		const unsubscribeFirst = bus.subscribe(() => {});
+		await bus.whenSubscribed();
+		unsubscribeFirst();
+		await bus.whenSubscribed();
+		const unsubscribeSecond = bus.subscribe(() => {});
+		unsubscribeSecond();
+		await bus.whenSubscribed();
+		expect(unsubscribeAttempts).toBe(2);
 	});
 
 	test('falls back to local closure when no cross-instance seam exists', async () => {

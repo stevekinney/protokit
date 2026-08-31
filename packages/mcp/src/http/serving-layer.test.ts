@@ -14,6 +14,11 @@ const configuration: McpAuthenticationConfiguration = {
 	maximumBearerTokenLength: 64,
 	maximumFailedAuthenticationAttempts: 3,
 	dnsRebindingProtection: false,
+	trustedProxy: {
+		trustedProxyCidrs: [],
+		trustedProxyHeader: undefined,
+		trustedProxyHopCount: 0,
+	},
 };
 
 const storedToken: AccessToken = {
@@ -47,6 +52,7 @@ function harness(
 		userAllowed?: boolean;
 		concurrencyAllowed?: boolean;
 		handle?: () => Promise<Response>;
+		trustedProxy?: McpAuthenticationConfiguration['trustedProxy'];
 	} = {},
 ) {
 	const operations: string[] = [];
@@ -56,8 +62,8 @@ function harness(
 			operations.push(`peek:${category}`);
 			return 0;
 		},
-		consume: async (category: string) => {
-			operations.push(`consume:${category}`);
+		consume: async (category: string, identifier: string) => {
+			operations.push(`consume:${category}:${identifier}`);
 			const allowed =
 				category === 'mcp_network'
 					? (input.networkAllowed ?? true)
@@ -74,7 +80,10 @@ function harness(
 		},
 	} as TokenStore;
 	const layer = createMcpHttpServingLayer({
-		authenticationConfiguration: configuration,
+		authenticationConfiguration: {
+			...configuration,
+			trustedProxy: input.trustedProxy ?? configuration.trustedProxy,
+		},
 		authenticationSeams: {
 			tokens,
 			resolveUserProfile: async () => {
@@ -125,7 +134,7 @@ describe('MCP HTTP serving order', () => {
 	test('applies network admission before authentication and skips it for OPTIONS', async () => {
 		const denied = harness({ networkAllowed: false });
 		expect((await denied.layer.handle(context())).status).toBe(429);
-		expect(denied.operations).toEqual(['consume:mcp_network']);
+		expect(denied.operations).toEqual(['consume:mcp_network:203.0.113.1']);
 
 		const preflight = harness({ networkAllowed: false });
 		expect((await preflight.layer.handle(context('OPTIONS'))).status).toBe(204);
@@ -137,15 +146,36 @@ describe('MCP HTTP serving order', () => {
 		const response = await state.layer.handle(context());
 		expect(await response.text()).toBe('ok');
 		expect(state.operations).toEqual([
-			'consume:mcp_network',
+			'consume:mcp_network:203.0.113.1',
 			'peek:failed_authentication',
 			'token',
 			'profile',
 			'event:success',
-			'consume:mcp_user',
+			'consume:mcp_user:user-1',
 			'concurrency',
 			'handler',
 		]);
+	});
+
+	test('uses the trusted forwarded peer for network admission and authentication lockout', async () => {
+		const state = harness({
+			trustedProxy: {
+				trustedProxyCidrs: ['10.0.0.0/8'],
+				trustedProxyHeader: 'x-forwarded-for',
+				trustedProxyHopCount: 1,
+			},
+		});
+		const requestContext = context();
+		requestContext.socketAddress = '10.0.0.8';
+		requestContext.request = new Request(resource, {
+			method: 'POST',
+			headers: {
+				authorization: 'Bearer valid',
+				'x-forwarded-for': '198.51.100.27',
+			},
+		});
+		await state.layer.handle(requestContext);
+		expect(state.operations[0]).toBe('consume:mcp_network:198.51.100.27');
 	});
 
 	test('short-circuits user admission and concurrency before later work', async () => {

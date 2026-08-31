@@ -6,6 +6,7 @@ export type McpUserHandlerEntry = {
 	handler: McpHttpHandler;
 	bus: UserServerEventBus;
 	lastAccessedAt: number;
+	activeRequestCount: number;
 };
 
 export type McpHandlerLifecycleError = (input: {
@@ -27,7 +28,9 @@ export class McpUserHandlerCache {
 	private sweepTimer: ReturnType<typeof setInterval> | undefined;
 
 	constructor(
-		private readonly createEntry: (userId: string) => Omit<McpUserHandlerEntry, 'lastAccessedAt'>,
+		private readonly createEntry: (
+			userId: string,
+		) => Omit<McpUserHandlerEntry, 'lastAccessedAt' | 'activeRequestCount'>,
 		private readonly now: () => number = Date.now,
 		private readonly onError: McpHandlerLifecycleError = () => {},
 	) {}
@@ -43,7 +46,11 @@ export class McpUserHandlerCache {
 	get(userId: string): McpUserHandlerEntry {
 		let entry = this.entries.get(userId);
 		if (!entry) {
-			entry = { ...this.createEntry(userId), lastAccessedAt: this.now() };
+			entry = {
+				...this.createEntry(userId),
+				lastAccessedAt: this.now(),
+				activeRequestCount: 0,
+			};
 			this.entries.set(userId, entry);
 			return entry;
 		}
@@ -51,11 +58,29 @@ export class McpUserHandlerCache {
 		return entry;
 	}
 
+	async dispatch<T>(
+		userId: string,
+		operation: (handler: McpHttpHandler) => Promise<T>,
+	): Promise<T> {
+		const entry = this.get(userId);
+		entry.activeRequestCount += 1;
+		try {
+			return await operation(entry.handler);
+		} finally {
+			entry.activeRequestCount -= 1;
+			entry.lastAccessedAt = this.now();
+		}
+	}
+
 	evictIdle(idleMilliseconds: number): string[] {
 		const cutoff = this.now() - idleMilliseconds;
 		const evictedUserIds: string[] = [];
 		for (const [userId, entry] of this.entries) {
-			if (entry.bus.listenerCount === 0 && entry.lastAccessedAt <= cutoff) {
+			if (
+				entry.bus.listenerCount === 0 &&
+				entry.activeRequestCount === 0 &&
+				entry.lastAccessedAt <= cutoff
+			) {
 				evictedUserIds.push(userId);
 			}
 		}

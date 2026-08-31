@@ -90,7 +90,10 @@ export class CrossInstanceUserServerEventBus implements UserServerEventBus {
 		this.retryDelayMilliseconds = Math.min(delay * 2, maximumRetryDelayMilliseconds);
 		this.retryTimer = setTimeout(() => {
 			this.retryTimer = undefined;
-			if (this.listeners.size === 0 || this.unsubscribeFromMessaging) {
+			const subscriptionMatchesDemand =
+				(this.listeners.size === 0 && !this.unsubscribeFromMessaging) ||
+				(this.listeners.size > 0 && Boolean(this.unsubscribeFromMessaging));
+			if (subscriptionMatchesDemand) {
 				this.retryDelayMilliseconds = initialRetryDelayMilliseconds;
 				return;
 			}
@@ -122,11 +125,15 @@ export class CrossInstanceUserServerEventBus implements UserServerEventBus {
 		}
 		if (this.listeners.size === 0 && this.unsubscribeFromMessaging) {
 			const unsubscribe = this.unsubscribeFromMessaging;
-			this.unsubscribeFromMessaging = undefined;
 			try {
 				await unsubscribe();
+				if (this.unsubscribeFromMessaging === unsubscribe) {
+					this.unsubscribeFromMessaging = undefined;
+				}
+				this.retryDelayMilliseconds = initialRetryDelayMilliseconds;
 			} catch (error) {
 				this.onError({ error, userId: this.userId, operation: 'unsubscribe' });
+				this.scheduleRetry();
 			}
 		}
 	}

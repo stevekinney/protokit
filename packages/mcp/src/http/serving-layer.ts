@@ -1,6 +1,6 @@
 import type { AuthInfo } from '@modelcontextprotocol/server';
 
-import type { OAuthRequestContext } from '../oauth/index.js';
+import { resolveOauthNetworkIdentity, type OAuthRequestContext } from '../oauth/index.js';
 import type { McpConcurrencyLimiter, RequestRateLimiter } from '../rate-limit/index.js';
 import { attachConcurrencySlotToResponseLifetime } from '../rate-limit/index.js';
 import {
@@ -33,6 +33,12 @@ export function createMcpHttpServingLayer(input: {
 }): McpHttpServingLayer {
 	return {
 		async handle(context) {
+			const networkIdentity = resolveOauthNetworkIdentity({
+				socketAddress: context.socketAddress,
+				headers: context.request.headers,
+				configuration: input.authenticationConfiguration.trustedProxy,
+			});
+			const resolvedContext = { ...context, socketAddress: networkIdentity };
 			const corsHeaders = createMcpCorsHeaders(
 				context.request,
 				input.authenticationConfiguration.allowedOrigins,
@@ -42,16 +48,13 @@ export function createMcpHttpServingLayer(input: {
 				'MCP-Protocol-Version': input.authenticationConfiguration.protocolVersion,
 			};
 			if (context.request.method !== 'OPTIONS') {
-				const networkAdmission = await input.rateLimiter.consume(
-					'mcp_network',
-					context.socketAddress ?? 'unknown',
-				);
+				const networkAdmission = await input.rateLimiter.consume('mcp_network', networkIdentity);
 				if (!networkAdmission.allowed) {
 					return createRateLimitedResponse(networkAdmission.retryAfterSeconds, protocolHeaders);
 				}
 			}
 			const authentication = await authenticateMcpUser({
-				context,
+				context: resolvedContext,
 				configuration: input.authenticationConfiguration,
 				seams: input.authenticationSeams,
 			});

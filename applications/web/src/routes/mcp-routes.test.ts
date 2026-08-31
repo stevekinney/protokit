@@ -78,6 +78,7 @@ describe('handleMcpRequestWithAuthentication', () => {
 			request,
 			requestUrl: new URL(request.url),
 			requestId: 'request-1',
+			clientAddress: '10.0.0.8',
 			networkIdentity: '203.0.113.7',
 			user: null,
 			sessionToken: null,
@@ -88,7 +89,7 @@ describe('handleMcpRequestWithAuthentication', () => {
 		expect(capturedContext).toMatchObject({
 			request,
 			requestId: 'request-1',
-			socketAddress: '203.0.113.7',
+			socketAddress: '10.0.0.8',
 			identity: null,
 		});
 	});

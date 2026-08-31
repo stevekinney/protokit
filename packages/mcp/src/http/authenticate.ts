@@ -4,7 +4,11 @@ import {
 	hasValidLocalhostRebindingHeaders,
 	isLoopbackHostname,
 } from '../localhost-request-validation.js';
-import type { OAuthRequestContext, ResolveUserProfile } from '../oauth/index.js';
+import type {
+	OAuthRequestContext,
+	ResolveUserProfile,
+	TrustedProxyConfiguration,
+} from '../oauth/index.js';
 import type { TokenStore } from '../oauth/stores.js';
 import type { RequestRateLimiter } from '../rate-limit/index.js';
 import { parseAuthorizationHeader } from './authorization-header.js';
@@ -25,6 +29,7 @@ export type McpAuthenticationConfiguration = {
 	maximumBearerTokenLength: number;
 	maximumFailedAuthenticationAttempts: number;
 	dnsRebindingProtection: boolean;
+	trustedProxy: TrustedProxyConfiguration;
 };
 
 export type McpAuthenticationSeams = {
