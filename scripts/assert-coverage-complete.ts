@@ -210,6 +210,13 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		new Set([25]),
 	],
 	[
+		// Closing brace of the InvalidOauthRequestBodyError branch. Every
+		// return inside the branch is exercised for malformed JSON and an
+		// unsupported content type; Bun records only this brace as uncovered.
+		'packages/mcp/src/oauth/registration-endpoint.ts',
+		new Set([74]),
+	],
+	[
 		// Two defense-in-depth guards inside the SDK server factory, both
 		// unreachable through the only entry point that reaches them.
 		// `handleMcpRequest` calls `readMcpRequestAuthExtra(authInfo)` and

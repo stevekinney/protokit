@@ -4,7 +4,12 @@ import { z } from 'zod';
 import type { OAuthRequestContext, OAuthStatelessHostSeams } from './index.js';
 import { oauthBodyError, oauthJson } from './endpoint-responses.js';
 import { rateLimitResponse } from './endpoint-rate-limits.js';
-import { oauthRegisterMaximumBodyBytes, readOauthJson } from './request-body.js';
+import {
+	InvalidOauthRequestBodyError,
+	oauthRegisterMaximumBodyBytes,
+	PayloadTooLargeError,
+	readOauthJson,
+} from './request-body.js';
 import { isValidClientName, isValidRedirectUri } from './security-utilities.js';
 
 const registrationSchema = z
@@ -48,17 +53,23 @@ export async function handleOauthRegisterPost<Scope extends string>(
 	try {
 		input = await readOauthJson(context.request, oauthRegisterMaximumBodyBytes);
 	} catch (error) {
-		const response = oauthBodyError(error);
-		if (response.status === 400)
+		if (error instanceof PayloadTooLargeError)
 			return oauthJson(
-				{
-					error: 'invalid_client_metadata',
-					error_description:
-						'Content-Type must be application/json and the body must be valid JSON',
-				},
-				400,
+				{ error: 'invalid_client_metadata', error_description: 'Request body too large' },
+				413,
 			);
-		return response;
+		if (error instanceof InvalidOauthRequestBodyError) {
+			if (error.kind === 'unsupported_content_type')
+				return oauthJson(
+					{
+						error: 'invalid_client_metadata',
+						error_description: 'Content-Type must be application/json',
+					},
+					400,
+				);
+			return oauthJson({ error: 'invalid_request', error_description: 'Invalid JSON body' }, 400);
+		}
+		return oauthBodyError(error);
 	}
 	const parsed = registrationSchema.safeParse(input);
 	if (!parsed.success)

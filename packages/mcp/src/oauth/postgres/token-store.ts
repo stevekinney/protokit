@@ -148,8 +148,9 @@ export class PostgresTokenStore implements TokenStore {
 				);
 			}
 			const result = await transaction.execute(sql`WITH revoked_access AS (
-			UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
-			WHERE access_token_hash = ${tokenHash} AND client_id = ${clientId} RETURNING access_token_hash
+				UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+				WHERE access_token_hash = ${tokenHash} AND client_id = ${clientId} AND revoked_at IS NULL
+				RETURNING access_token_hash
 		), revoked_refresh AS (
 			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
 			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_access)
@@ -166,8 +167,8 @@ export class PostgresTokenStore implements TokenStore {
 			const priorUserId = columnIdentifier(this.schema.refreshTokens.userId);
 			const familyResult = await transaction.execute(
 				sql`SELECT family_id AS "familyId" FROM ${this.schema.refreshTokens}
-				WHERE refresh_token_hash = ${tokenHash}
-					AND client_id = ${clientId} AND expires_at > clock_timestamp()`,
+					WHERE refresh_token_hash = ${tokenHash}
+						AND client_id = ${clientId}`,
 			);
 			const familyId = resultRows<{ familyId: string }>(familyResult)[0]?.familyId;
 			if (!familyId) return { status: 'invalid' };
@@ -176,8 +177,8 @@ export class PostgresTokenStore implements TokenStore {
 			);
 
 			const result = await transaction.execute(sql`WITH prior AS MATERIALIZED (
-			SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash}
-				AND client_id = ${clientId} AND expires_at > clock_timestamp() FOR UPDATE
+				SELECT * FROM ${this.schema.refreshTokens} WHERE refresh_token_hash = ${tokenHash}
+					AND client_id = ${clientId} FOR UPDATE
 		), family_members AS MATERIALIZED (
 			SELECT access_token_hash FROM ${this.schema.refreshTokens}
 			WHERE family_id IN (SELECT family_id FROM prior WHERE revoked_at IS NOT NULL)
@@ -187,17 +188,21 @@ export class PostgresTokenStore implements TokenStore {
 		), revoked_family_access AS (
 			UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
 			WHERE access_token_hash IN (SELECT access_token_hash FROM family_members) AND revoked_at IS NULL
-		), revoked_refresh AS (
-			UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
-			WHERE refresh_token_hash IN (SELECT refresh_token_hash FROM prior WHERE revoked_at IS NULL)
+			), revoked_refresh AS (
+				UPDATE ${this.schema.refreshTokens} SET revoked_at = clock_timestamp()
+				WHERE refresh_token_hash IN (
+					SELECT refresh_token_hash FROM prior
+					WHERE revoked_at IS NULL AND expires_at > clock_timestamp()
+				)
 			RETURNING access_token_hash
 		), revoked_access AS (
 			UPDATE ${this.schema.accessTokens} SET revoked_at = clock_timestamp()
 			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_refresh) AND revoked_at IS NULL
 		)
-		SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM prior) THEN 'invalid'
-			WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
-			ELSE 'revoked' END AS status,
+			SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM prior) THEN 'invalid'
+				WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
+				WHEN EXISTS (SELECT 1 FROM revoked_refresh) THEN 'revoked'
+				ELSE 'invalid' END AS status,
 			(SELECT ${priorUserId}::text FROM prior LIMIT 1) AS "userId",
 			(SELECT family_id FROM prior LIMIT 1) AS "familyId"`);
 			const row = resultRows<{

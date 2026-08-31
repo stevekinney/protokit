@@ -102,6 +102,7 @@ describe('stateless OAuth endpoint error contracts', () => {
 			oauthHost,
 		);
 		expect(malformed.status).toBe(400);
+		expect((await malformed.json()).error).toBe('invalid_request');
 		const oversized = await handleOauthRegisterPost(
 			request(
 				'/oauth/register',
@@ -111,6 +112,7 @@ describe('stateless OAuth endpoint error contracts', () => {
 			oauthHost,
 		);
 		expect(oversized.status).toBe(413);
+		expect((await oversized.json()).error).toBe('invalid_client_metadata');
 		const invalid = await handleOauthRegisterPost(
 			request('/oauth/register', JSON.stringify({ redirect_uris: [] }), 'application/json'),
 			oauthHost,

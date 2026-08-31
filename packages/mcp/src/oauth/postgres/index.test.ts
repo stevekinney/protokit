@@ -305,6 +305,58 @@ describe('Postgres OAuth durability', () => {
 		expect((await stores.tokens.findByHash('access-two'))?.revokedAt).not.toBeNull();
 	});
 
+	test('revoking an expired rotated ancestor revokes its live descendants', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('revoke-ancestor-access', new Date('2099-01-01')),
+			refreshToken: refreshRecord(
+				'revoke-ancestor-refresh',
+				'revoke-ancestor-access',
+				new Date('2099-01-01'),
+			),
+		});
+		expect(
+			(
+				await stores.tokens.rotateRefreshToken(
+					rotation(
+						'revoke-ancestor-refresh',
+						'revoke-descendant-access',
+						'revoke-descendant-refresh',
+						new Date('2026-01-02'),
+					),
+				)
+			).status,
+		).toBe('rotated');
+		await connection.query(
+			"UPDATE mcp_postgres_test_refresh_tokens SET expires_at = '2026-01-03' WHERE refresh_token_hash = 'revoke-ancestor-refresh'",
+		);
+		expect(await stores.tokens.revokeRefreshToken('revoke-ancestor-refresh', 'client-one')).toEqual(
+			{
+				status: 'replay_revoked',
+				userId: 'user-one',
+				familyId: 'family-one',
+			},
+		);
+		expect((await stores.tokens.findByHash('revoke-descendant-access'))?.revokedAt).not.toBeNull();
+	});
+
+	test('repeated access-token revocation reports only the first mutation', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('repeated-revocation-access', new Date('2099-01-01')),
+		});
+		expect(
+			await stores.tokens.revokeAccessToken('repeated-revocation-access', 'client-one'),
+		).toBeTrue();
+		expect(
+			await stores.tokens.revokeAccessToken('repeated-revocation-access', 'client-one'),
+		).toBeFalse();
+	});
+
 	test('honors a custom bigint user column name across every store', async () => {
 		const prefix = 'mcp_bigint_rotation';
 		const largeUserId = '9007199254740993';
