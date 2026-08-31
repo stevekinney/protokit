@@ -21,6 +21,7 @@ import {
 function validVariables(): CandidateVariables {
 	return {
 		NODE_ENV: 'production',
+		MCP_SERVER_NAME: 'protokit-doctor-server',
 		DATABASE_URL:
 			'postgresql://produser:realsecret@production-host.example.com:5432/app?sslmode=verify-full',
 		BASE_URL: 'https://app.example.com',

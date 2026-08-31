@@ -2,7 +2,7 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
 const TARGET_EXTENSIONS = ['.json', '.ts', '.tsx', '.js', '.md'];
-const TARGET_FILENAMES = ['Dockerfile'];
+export const TARGET_FILENAMES = ['Dockerfile', '.env.example'];
 const IGNORE_DIRECTORIES = ['node_modules', '.turbo', 'build', 'dist', '.git'];
 
 async function collectFiles(directory: string): Promise<string[]> {
@@ -26,6 +26,20 @@ async function collectFiles(directory: string): Promise<string[]> {
 	return files;
 }
 
+export function renameTemplateContent(content: string, newScope: string): string {
+	const scopeMatch = newScope.match(/^@([^/]+)\//);
+	if (!scopeMatch) throw new Error('Invalid scope format. Expected: @scope/app-name');
+
+	const newScopePrefix = `@${scopeMatch[1]}`;
+	const appName = newScope.replace(/^@[^/]+\//, '');
+	const newServerName = `${scopeMatch[1]}-${appName}-mcp-server`;
+
+	return content
+		.replaceAll('@template/', `${newScopePrefix}/`)
+		.replaceAll('template-mcp-server', newServerName)
+		.replaceAll('protokit-mcp-server', newServerName);
+}
+
 async function main() {
 	const newScope = process.argv[2];
 
@@ -41,17 +55,13 @@ async function main() {
 		process.exit(1);
 	}
 
-	const newScopePrefix = `@${scopeMatch[1]}`;
-	const appName = newScope.replace(/^@[^/]+\//, '');
-	const newServerName = `${scopeMatch[1]}-${appName}-mcp-server`;
 	const rootDirectory = join(import.meta.dirname, '..');
 	const files = await collectFiles(rootDirectory);
 	const changedFiles: string[] = [];
 
 	for (const filePath of files) {
 		let content = await readFile(filePath, 'utf-8');
-		content = content.replaceAll('@template/', `${newScopePrefix}/`);
-		content = content.replaceAll('template-mcp-server', newServerName);
+		content = renameTemplateContent(content, newScope);
 		const original = await readFile(filePath, 'utf-8');
 
 		if (content !== original) {
@@ -70,4 +80,4 @@ async function main() {
 	}
 }
 
-main();
+if (import.meta.main) await main();

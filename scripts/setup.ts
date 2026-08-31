@@ -226,6 +226,14 @@ async function setupMcpProtocolAndExtensions() {
 	console.log('\n--- MCP Protocol + Extensions ---\n');
 	console.log('Protocol version negotiation (2025-11-25 and 2026-07-28) is handled by the SDK.');
 
+	if (!getEnvironmentValue('MCP_SERVER_NAME')) {
+		const suggestedServerName = 'protokit-mcp-server';
+		const serverNameInput = await prompt(
+			`MCP_SERVER_NAME (required, default: ${suggestedServerName}): `,
+		);
+		appendToEnvironmentFile('MCP_SERVER_NAME', serverNameInput || suggestedServerName);
+	}
+
 	const existingAllowedOrigins = getEnvironmentValue('MCP_ALLOWED_ORIGINS');
 	if (!existingAllowedOrigins) {
 		const suggestedOrigin = 'http://localhost:3000';

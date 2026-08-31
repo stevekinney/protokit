@@ -19,6 +19,7 @@ export default defineConfig({
 		port: 3456,
 		env: {
 			NODE_ENV: 'test',
+			MCP_SERVER_NAME: 'protokit-playwright-server',
 			PORT: '3456',
 			DATABASE_URL: 'postgresql://protokit:protokit@db.localtest.me:5432/protokit_test',
 			DATABASE_LOCAL_PROXY_URL: 'http://db.localtest.me:4444/sql',
