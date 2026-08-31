@@ -212,6 +212,11 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 		'configuration.trustedProxy.trustedProxyHopCount',
 		-1,
 	);
+	if (!Number.isInteger(configuration.trustedProxy.trustedProxyHopCount)) {
+		throw new Error(
+			'The SvelteKit MCP mount requires the OAuth host seam "configuration.trustedProxy.trustedProxyHopCount".',
+		);
+	}
 	assertOauthSeamObject(configuration.rateLimits, 'configuration.rateLimits');
 	assertOauthSeamNumber(
 		configuration.rateLimits.maximumConcurrent,
@@ -293,6 +298,11 @@ function assertMountConfigurationAgreement<Scope extends string>(input: {
 
 	const oauthConfiguration = input.oauthSeams.configuration;
 	const discoveryConfiguration = input.discoveryConfiguration;
+	if (oauthConfiguration.baseUrl.href !== `${oauthConfiguration.baseUrl.origin}/`) {
+		throw new Error(
+			'The SvelteKit MCP mount requires "configuration.baseUrl" to be an origin-only URL.',
+		);
+	}
 	if (discoveryConfiguration.issuer !== oauthConfiguration.issuer) {
 		throw new Error(
 			'The SvelteKit MCP mount requires "discoveryConfiguration.issuer" to match the OAuth host seams.',

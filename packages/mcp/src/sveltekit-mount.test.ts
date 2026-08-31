@@ -153,6 +153,19 @@ describe('createSvelteKitMcpMount', () => {
 				},
 			},
 		],
+		[
+			'configuration.trustedProxy.trustedProxyHopCount',
+			{
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyHopCount: 0.5,
+					},
+				},
+			},
+		],
 		['recordEvent', { ...oauthSeams, recordEvent: 'not-callable' }],
 	] as const)(
 		'refuses to start when the nested OAuth host seam %s is absent at runtime',
@@ -197,6 +210,23 @@ describe('createSvelteKitMcpMount', () => {
 				discoveryConfiguration: {
 					...discoveryConfiguration,
 					resource: new URL('https://application.example.com/different-mcp'),
+				},
+				registry,
+			},
+		],
+		[
+			'configuration.baseUrl',
+			{
+				oauthSeams: {
+					...oauthSeams,
+					configuration: {
+						...oauthSeams.configuration,
+						baseUrl: new URL('https://application.example.com/gateway'),
+					},
+				},
+				discoveryConfiguration: {
+					...discoveryConfiguration,
+					baseUrl: new URL('https://application.example.com/gateway'),
 				},
 				registry,
 			},
