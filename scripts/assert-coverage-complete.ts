@@ -209,7 +209,7 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		// immediately after its `return`. Every line of that return body
 		// registers real hits from the oversized-body test; only the brace
 		// never does -- the same Bun/SWC instrumentation artifact already
-		// documented for `trusted-proxy.ts` line 180.
+		// documented for the package OAuth network identity boundary.
 		'applications/web/src/lib/mcp-handler.ts',
 		new Set([88, 96, 293]),
 	],
@@ -258,7 +258,7 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		// (this file's own test file run alone, no other test file involved)
 		// -- a Bun/SWC coverage-instrumentation artifact on this exact brace,
 		// not a real code gap.
-		'applications/web/src/lib/trusted-proxy.ts',
+		'packages/mcp/src/oauth/network-identity.ts',
 		new Set([180]),
 	],
 	[

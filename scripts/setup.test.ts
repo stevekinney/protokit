@@ -242,7 +242,7 @@ describe('isValidProductionRedisUrl', () => {
 });
 
 describe('isValidTrustedProxyCidr / isValidTrustedProxyCidrList', () => {
-	// Mirrors isValidCidr (applications/web/src/lib/trusted-proxy.ts) so setup never writes a
+	// Mirrors isValidCidr (packages/mcp/src/oauth/network-identity.ts) so setup never writes a
 	// TRUSTED_PROXY_CIDRS entry that isAddressInCidr would silently match nothing at request time.
 	test('accepts real IPv4 and IPv6 CIDRs', () => {
 		expect(isValidTrustedProxyCidr('10.0.0.0/8')).toBe(true);
