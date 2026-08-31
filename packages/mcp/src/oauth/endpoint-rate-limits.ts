@@ -1,11 +1,11 @@
 import { RequestRateLimiter } from '../rate-limit/request-rate-limiter.js';
+import { createRateLimitedResponse } from '../rate-limit/rate-limit-response.js';
 import type {
 	OAuthRateLimitCategory,
 	OAuthRequestContext,
 	OAuthStatelessHostSeams,
 } from './index.js';
 import { resolveOauthNetworkIdentity } from './network-identity.js';
-import { oauthJson } from './endpoint-responses.js';
 
 function limiter<Scope extends string>(
 	seams: OAuthStatelessHostSeams<Scope>,
@@ -39,8 +39,10 @@ export async function rateLimitResponse<Scope extends string>(input: {
 		input.identifier ? `${identity}:${input.identifier}` : identity,
 	);
 	if (result.allowed) return undefined;
-	return oauthJson({ error: 'rate_limit_exceeded' }, 429, {
-		'Retry-After': String(result.retryAfterSeconds),
+	return createRateLimitedResponse(result.retryAfterSeconds, {
+		'Access-Control-Allow-Origin': '*',
+		'Cache-Control': 'no-store',
+		Pragma: 'no-cache',
 	});
 }
 

@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { defineScopes } from '../scope-vocabulary.js';
 import { defineOAuthScopeConfiguration } from '../oauth-scope-configuration.js';
+import { createInMemorySlidingWindowStore } from '../rate-limit/index.js';
 import {
 	authenticateOauthClient,
 	constantTimeEquals,
@@ -141,6 +142,33 @@ async function seedRefreshFamily(
 }
 
 describe('stateless OAuth endpoints', () => {
+	test('preserves the established OAuth rate-limit response contract', async () => {
+		const host = seams();
+		host.configuration.rateLimits.categories.oauth_register.maximumRequests = 1;
+		host.configuration.rateLimitStores = {
+			slidingWindow: createInMemorySlidingWindowStore(),
+		};
+		await handleOauthRegisterPost(
+			context('/oauth/register', {
+				client_name: 'First Client',
+				redirect_uris: ['https://client.example.com/first'],
+			}),
+			host,
+		);
+		const response = await handleOauthRegisterPost(
+			context('/oauth/register', {
+				client_name: 'Rate-limited Client',
+				redirect_uris: ['https://client.example.com/callback'],
+			}),
+			host,
+		);
+
+		expect(response.status).toBe(429);
+		expect(await response.json()).toEqual({
+			error: 'rate_limited',
+			error_description: 'Too many requests',
+		});
+	});
 	test('registers confidential and public clients without a rate-limit store', async () => {
 		const host = seams();
 		const events: Array<{ category: string; outcome: string }> = [];

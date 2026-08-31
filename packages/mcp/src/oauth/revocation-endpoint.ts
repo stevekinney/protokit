@@ -48,11 +48,13 @@ export async function handleOauthRevokePost<Scope extends string>(
 	}
 	const tokenHash = seams.hashCredential(token);
 	let subjectId: string | undefined;
+	let replayFamilyId: string | undefined;
 	let outcome = 'not_found_or_already_revoked';
 	const revokeRefresh = async (): Promise<boolean> => {
 		const result = await seams.stores.tokens.revokeRefreshToken(tokenHash, clientId);
 		if (result.status === 'invalid') return false;
 		subjectId = result.userId;
+		if (result.status === 'replay_revoked') replayFamilyId = result.familyId;
 		outcome = result.status === 'replay_revoked' ? 'replay_detected' : 'refresh_token_revoked';
 		return true;
 	};
@@ -66,7 +68,11 @@ export async function handleOauthRevokePost<Scope extends string>(
 	for (const attempt of attempts) {
 		if (await attempt()) break;
 	}
-	seams.recordEvent?.({ category: 'revocation', outcome, attributes: { clientId } });
+	seams.recordEvent?.({
+		category: 'revocation',
+		outcome,
+		attributes: replayFamilyId ? { familyId: replayFamilyId } : { clientId },
+	});
 	if (subjectId) await seams.publishGrantRevocation?.(subjectId);
 	return new Response(null, { status: 200, headers: oauthNoStoreHeaders });
 }

@@ -229,7 +229,7 @@ export function runOAuthStoreConformance(
 					refreshTokenExpiresAt: laterTime,
 					createdAt: baseTime,
 				}),
-			).toEqual({ status: 'replay_revoked', userId: 'user-one' });
+			).toEqual({ status: 'replay_revoked', userId: 'user-one', familyId: 'family-one' });
 			expect((await tokens.findByHash('access-two'))?.revokedAt).not.toBeNull();
 		});
 
@@ -244,6 +244,7 @@ export function runOAuthStoreConformance(
 			expect(await tokens.revokeRefreshToken('refresh-one', 'client-one')).toEqual({
 				status: 'replay_revoked',
 				userId: 'user-one',
+				familyId: 'family-one',
 			});
 		});
 
@@ -275,7 +276,7 @@ export function runOAuthStoreConformance(
 					refreshTokenExpiresAt: laterTime,
 					createdAt: baseTime,
 				}),
-			).toEqual({ status: 'replay_revoked', userId: 'user-one' });
+			).toEqual({ status: 'replay_revoked', userId: 'user-one', familyId: 'family-one' });
 		});
 
 		test('client registration, upsert, lookup, and update are isolated from caller mutation', async () => {

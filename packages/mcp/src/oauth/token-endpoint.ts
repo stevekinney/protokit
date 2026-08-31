@@ -244,7 +244,7 @@ async function refreshTokenGrant<Scope extends string>(
 		seams.recordEvent?.({
 			category: 'refresh',
 			outcome: 'replay_detected',
-			attributes: { clientId },
+			attributes: { familyId: rotation.familyId },
 		});
 		await seams.publishGrantRevocation?.(rotation.userId);
 		return oauthJson(

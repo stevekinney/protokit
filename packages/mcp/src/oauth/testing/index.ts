@@ -212,7 +212,11 @@ export class InMemoryTokenStore implements TokenStore {
 			return Promise.resolve({ status: 'invalid' });
 		if (prior.revokedAt) {
 			this.#revokeFamily(prior.familyId, input.createdAt);
-			return Promise.resolve({ status: 'replay_revoked', userId: prior.userId });
+			return Promise.resolve({
+				status: 'replay_revoked',
+				userId: prior.userId,
+				familyId: prior.familyId,
+			});
 		}
 		if (input.requestedScope && !isScopeSubset(input.requestedScope, prior.scope))
 			return Promise.resolve({ status: 'scope_rejected' });
@@ -268,12 +272,16 @@ export class InMemoryTokenStore implements TokenStore {
 		const now = new Date();
 		if (token.revokedAt) {
 			this.#revokeFamily(token.familyId, now);
-			return Promise.resolve({ status: 'replay_revoked', userId: token.userId });
+			return Promise.resolve({
+				status: 'replay_revoked',
+				userId: token.userId,
+				familyId: token.familyId,
+			});
 		}
 		token.revokedAt = now;
 		const access = this.#accessTokens.get(token.accessTokenHash);
 		if (access) access.revokedAt ??= now;
-		return Promise.resolve({ status: 'revoked', userId: token.userId });
+		return Promise.resolve({ status: 'revoked', userId: token.userId, familyId: token.familyId });
 	}
 	revokeFamily(familyId: string): Promise<number> {
 		return Promise.resolve(this.#revokeFamily(familyId, new Date()));

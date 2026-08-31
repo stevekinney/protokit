@@ -11,6 +11,7 @@ let recordFailedAuthenticationCalls: unknown[] = [];
 let mockInsertShouldThrow = false;
 let mockUpdateCalls: Array<{ table: unknown; set: Record<string, unknown>; where?: unknown }> = [];
 let mockDeleteCalls: Array<{ table: unknown; where: unknown }> = [];
+let mockDeleteShouldThrow = false;
 // Lets a test simulate losing the refresh-rotation mutex (a concurrent
 // request revoked the row first) without also making the earlier read-only
 // lookup that gathers insert values come back empty -- the real mutex
@@ -80,6 +81,14 @@ mock.module('@template/database', () => ({
 							) {
 								return Promise.resolve([]);
 							}
+							if (mockRefreshRotationMutexShouldMiss && mockOauthRefreshTokensSelectCallCount > 1) {
+								return Promise.resolve(
+									mockOauthRefreshTokens.map((token) => ({
+										...(token as Record<string, unknown>),
+										revokedAt: new Date(),
+									})),
+								);
+							}
 							return Promise.resolve(mockOauthRefreshTokens);
 						}
 						return Promise.resolve([]);
@@ -148,6 +157,9 @@ mock.module('@template/database', () => ({
 		delete: (table: unknown) => ({
 			where: (where: unknown) => {
 				mockDeleteCalls.push({ table, where });
+				if (mockDeleteShouldThrow) {
+					return Promise.reject(new Error('simulated speculative cleanup failure'));
+				}
 				return Promise.resolve(undefined);
 			},
 		}),
@@ -2076,6 +2088,7 @@ describe('authorization code token exchange', () => {
 		mockInsertShouldThrow = false;
 		mockUpdateCalls = [];
 		mockDeleteCalls = [];
+		mockDeleteShouldThrow = false;
 	});
 
 	it('returns 400 for missing required parameters', async () => {
@@ -2474,6 +2487,25 @@ describe('AUTHZ-001 refresh grant scope narrowing / escalation', () => {
 		// attempting the mutex must be deleted once the mutex loses.
 		expect(mockDeleteCalls.some((call) => call.table === oauthTokensTable)).toBe(true);
 		expect(mockDeleteCalls.some((call) => call.table === oauthRefreshTokensTable)).toBe(true);
+	});
+
+	it('still revokes the token family when speculative cleanup fails after losing the rotation race', async () => {
+		mockRefreshRotationMutexShouldMiss = true;
+		mockDeleteShouldThrow = true;
+		const context = createContext({
+			url: 'http://localhost:3000/oauth/token',
+			body: new URLSearchParams({
+				grant_type: 'refresh_token',
+				client_id: 'c1',
+				refresh_token: 'refresh-token-value',
+				resource: 'http://localhost:3000/mcp',
+			}).toString(),
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		});
+
+		const response = await handleOauthTokenPost(context);
+		expect(response.status).toBe(400);
+		expect(mockExecuteCalls).toHaveLength(2);
 	});
 
 	// Round 10 review (P1): `revokeOauthRefreshTokenFamily` used to be two

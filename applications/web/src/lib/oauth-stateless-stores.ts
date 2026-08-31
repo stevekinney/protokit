@@ -1,5 +1,6 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { database, schema } from '@template/database';
+import { logger } from '@lostgradient/mcp/logger';
 import type {
 	ClientStore,
 	CodeStore,
@@ -199,7 +200,7 @@ const tokens: TokenStore = {
 		if (!prior) return { status: 'invalid' };
 		if (prior.revokedAt) {
 			await tokens.revokeFamily(prior.familyId);
-			return { status: 'replay_revoked', userId: prior.userId };
+			return { status: 'replay_revoked', userId: prior.userId, familyId: prior.familyId };
 		}
 		if (prior.expiresAt <= input.createdAt) return { status: 'invalid' };
 		if (input.requestedScope) {
@@ -227,12 +228,20 @@ const tokens: TokenStore = {
 			)
 			.returning();
 		if (!consumed) {
-			await database
-				.delete(schema.oauthRefreshTokens)
-				.where(eq(schema.oauthRefreshTokens.refreshToken, input.nextRefreshTokenHash));
-			await database
-				.delete(schema.oauthTokens)
-				.where(eq(schema.oauthTokens.accessToken, input.nextAccessTokenHash));
+			try {
+				await database
+					.delete(schema.oauthRefreshTokens)
+					.where(eq(schema.oauthRefreshTokens.refreshToken, input.nextRefreshTokenHash));
+			} catch (error) {
+				logger.error({ err: error }, 'Failed to remove speculative refresh token');
+			}
+			try {
+				await database
+					.delete(schema.oauthTokens)
+					.where(eq(schema.oauthTokens.accessToken, input.nextAccessTokenHash));
+			} catch (error) {
+				logger.error({ err: error }, 'Failed to remove speculative access token');
+			}
 			const [replayed] = await database
 				.select()
 				.from(schema.oauthRefreshTokens)
@@ -246,7 +255,11 @@ const tokens: TokenStore = {
 				.limit(1);
 			if (replayed?.revokedAt) {
 				await tokens.revokeFamily(replayed.familyId);
-				return { status: 'replay_revoked', userId: replayed.userId };
+				return {
+					status: 'replay_revoked',
+					userId: replayed.userId,
+					familyId: replayed.familyId,
+				};
 			}
 			return { status: 'invalid' };
 		}
@@ -313,7 +326,7 @@ const tokens: TokenStore = {
 		if (!prior) return { status: 'invalid' };
 		if (prior.revokedAt) {
 			await tokens.revokeFamily(prior.familyId);
-			return { status: 'replay_revoked', userId: prior.userId };
+			return { status: 'replay_revoked', userId: prior.userId, familyId: prior.familyId };
 		}
 		const [revoked] = await database
 			.update(schema.oauthRefreshTokens)
@@ -328,7 +341,7 @@ const tokens: TokenStore = {
 			.returning();
 		if (!revoked) {
 			await tokens.revokeFamily(prior.familyId);
-			return { status: 'replay_revoked', userId: prior.userId };
+			return { status: 'replay_revoked', userId: prior.userId, familyId: prior.familyId };
 		}
 		try {
 			await database
@@ -344,7 +357,7 @@ const tokens: TokenStore = {
 			// The presented refresh token is already revoked; RFC 7009 keeps the
 			// response successful even if paired-token cleanup fails afterward.
 		}
-		return { status: 'revoked', userId: prior.userId };
+		return { status: 'revoked', userId: prior.userId, familyId: prior.familyId };
 	},
 	async revokeFamily(familyId) {
 		const result = await database.execute(sql`WITH family_members AS MATERIALIZED (

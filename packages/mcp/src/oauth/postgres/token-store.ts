@@ -111,6 +111,7 @@ export class PostgresTokenStore implements TokenStore {
 			WHEN EXISTS (SELECT 1 FROM live) AND ${input.requestedScope ?? null}::text IS NOT NULL THEN 'scope_rejected'
 			ELSE 'invalid' END AS status,
 			(SELECT ${refreshUserId}::text FROM prior LIMIT 1) AS "userId",
+			(SELECT family_id FROM prior LIMIT 1) AS "familyId",
 			(SELECT jsonb_set(to_jsonb(a), '{user_id}', to_jsonb(${accessResultUserId}::text))
 				FROM inserted_access a LIMIT 1) AS access,
 			(SELECT jsonb_set(to_jsonb(r), '{user_id}', to_jsonb(${refreshResultUserId}::text))
@@ -118,12 +119,14 @@ export class PostgresTokenStore implements TokenStore {
 			const row = resultRows<{
 				status: 'rotated' | 'replay_revoked' | 'scope_rejected' | 'invalid';
 				userId?: string;
+				familyId?: string;
 				access?: Record<string, unknown>;
 				refresh?: Record<string, unknown>;
 			}>(result)[0];
 			if (!row || row.status === 'invalid') return { status: 'invalid' };
 			if (row.status === 'scope_rejected') return { status: 'scope_rejected' };
-			if (row.status === 'replay_revoked') return { status: 'replay_revoked', userId: row.userId! };
+			if (row.status === 'replay_revoked')
+				return { status: 'replay_revoked', userId: row.userId!, familyId: row.familyId! };
 			return {
 				status: 'rotated',
 				accessToken: mapAccess(row.access!),
@@ -194,13 +197,16 @@ export class PostgresTokenStore implements TokenStore {
 		)
 		SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM prior) THEN 'invalid'
 			WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
-			ELSE 'revoked' END AS status, (SELECT ${priorUserId}::text FROM prior LIMIT 1) AS "userId"`);
+			ELSE 'revoked' END AS status,
+			(SELECT ${priorUserId}::text FROM prior LIMIT 1) AS "userId",
+			(SELECT family_id FROM prior LIMIT 1) AS "familyId"`);
 			const row = resultRows<{
 				status: 'invalid' | 'revoked' | 'replay_revoked';
 				userId: string | null;
+				familyId: string | null;
 			}>(result)[0];
 			if (!row || row.status === 'invalid') return { status: 'invalid' };
-			return { status: row.status, userId: row.userId! };
+			return { status: row.status, userId: row.userId!, familyId: row.familyId! };
 		});
 	}
 

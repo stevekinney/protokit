@@ -60,9 +60,17 @@ export function createOauthStatelessHostSeams(
 		hashCredential,
 		publishGrantRevocation,
 		recordEvent: ({ category, outcome, attributes }) => {
-			logger.info(
-				{ event: oauthLogEventNames[category], outcome, ...attributes },
-				'OAuth endpoint outcome',
+			const replayDetected = outcome === 'replay_detected';
+			const log = replayDetected ? logger.warn.bind(logger) : logger.info.bind(logger);
+			log(
+				{
+					event: oauthLogEventNames[category],
+					outcome: replayDetected ? 'refresh_replay' : outcome,
+					...attributes,
+				},
+				replayDetected
+					? 'refresh token reuse detected; revoked token family'
+					: 'OAuth endpoint outcome',
 			);
 			metricsCollector.recordEvent(category, outcome);
 		},
