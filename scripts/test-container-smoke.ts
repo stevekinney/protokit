@@ -279,6 +279,8 @@ async function main(): Promise<void> {
 		'0:3000',
 		'-e',
 		'NODE_ENV=test',
+		'-e',
+		'MCP_SERVER_NAME=protokit-container-smoke-server',
 		// DEPLOY-001: outside production the server binds to loopback by default,
 		// which inside a container makes the published port unreachable. Widening
 		// the binding is deliberate and explicit — see `lib/resolve-bind-address.ts`.

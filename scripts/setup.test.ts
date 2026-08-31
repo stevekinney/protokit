@@ -23,6 +23,7 @@ import {
 function validProductionVariables(): Record<string, string | undefined> {
 	return {
 		NODE_ENV: 'development',
+		MCP_SERVER_NAME: 'protokit-test-server',
 		BASE_URL: 'https://example.com',
 		DATABASE_URL: 'postgres://user:pass@db.example.com/db?sslmode=verify-full',
 		DATABASE_URL_UNPOOLED: 'postgres://user:pass@db.example.com/db?sslmode=verify-full',
@@ -33,6 +34,19 @@ function validProductionVariables(): Record<string, string | undefined> {
 		SESSION_SIGNING_SECRET: 'a'.repeat(64),
 	};
 }
+
+describe('MCP setup phase', () => {
+	const setupSource = readFileSync(new URL('./setup.ts', import.meta.url), 'utf8');
+	const mcpPhaseSource = setupSource.slice(
+		setupSource.indexOf('async function setupMcpProtocolAndExtensions'),
+		setupSource.indexOf('export function isValidProductionBaseUrl'),
+	);
+
+	test('writes an explicit MCP_SERVER_NAME when it is absent', () => {
+		expect(mcpPhaseSource).toContain("getEnvironmentValue('MCP_SERVER_NAME')");
+		expect(mcpPhaseSource).toContain("appendToEnvironmentFile('MCP_SERVER_NAME'");
+	});
+});
 
 describe('isValidNeonRegionIdentifier', () => {
 	test('accepts real Neon region identifiers', () => {

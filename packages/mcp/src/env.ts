@@ -49,6 +49,11 @@ export function parseMcpServerEnvironment(
 			(entry): entry is [string, string] => entry[1] !== undefined && entry[1] !== '',
 		),
 	);
+	if (!presentEntries.MCP_SERVER_NAME) {
+		throw new Error(
+			'MCP_SERVER_NAME is required. Set the explicit server name advertised to MCP clients.',
+		);
+	}
 
 	const environment = mcpServerEnvironmentObject.parse(presentEntries);
 

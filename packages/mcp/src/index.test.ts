@@ -44,9 +44,12 @@ describe('package entry barrel (./index.ts)', () => {
 		expect(typeof packageEntry.parseMcpServerEnvironment).toBe('function');
 		expect(typeof packageEntry.getEnvironment).toBe('function');
 		expect(packageEntry.getEnvironment().NODE_ENV).toBe('test');
-		expect(packageEntry.parseMcpServerEnvironment({ NODE_ENV: 'development' }).NODE_ENV).toBe(
-			'development',
-		);
+		expect(
+			packageEntry.parseMcpServerEnvironment({
+				NODE_ENV: 'development',
+				MCP_SERVER_NAME: 'barrel-consumer-mcp-server',
+			}).NODE_ENV,
+		).toBe('development');
 	});
 
 	it('re-exports the advertised package version', () => {

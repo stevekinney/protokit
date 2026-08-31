@@ -19,7 +19,7 @@
 		"typecheck": "tsc --noEmit && svelte-check --threshold error",
 		"lint": "eslint .",
 		"format": "prettier --write .",
-		"test": "NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate",
+		"test": "NODE_ENV=test MCP_SERVER_NAME=protokit-mcp-server DATABASE_URL=postgresql://protokit:protokit@db.localtest.me:5432/protokit_test DATABASE_LOCAL_PROXY_URL=http://db.localtest.me:4444/sql REDIS_URL=${REDIS_URL:-redis://localhost:6379} RATE_LIMIT_KEY_NAMESPACE=${RATE_LIMIT_KEY_NAMESPACE:-run-$$} bun test --isolate",
 		"test:end-to-end": "bunx playwright test"
 	},
 	"dependencies": {
