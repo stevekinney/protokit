@@ -75,6 +75,9 @@ jobs:
         env:
           REDIS_URL: 'redis://localhost:6379'
 
+      - name: Test Postgres OAuth adapter
+        run: bun run --cwd packages/mcp test:postgres
+
       - name: Tear down test infrastructure
         if: always()
         run: bun run test:infrastructure:down
