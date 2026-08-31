@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { createClient } from 'redis';
 import type { ServerEvent } from '@modelcontextprotocol/server';
-import { RedisUserServerEventBus, createUserServerEventBus } from '@web/lib/mcp-user-event-bus';
+import { CrossInstanceUserServerEventBus, createUserServerEventBus } from '@lostgradient/mcp/http';
 import { publishUserResourceUpdate } from '@web/lib/mcp-handler';
+import { resolveMcpCrossInstanceMessaging } from '@web/lib/mcp-cross-instance-messaging';
 import { getRedisSubscriberClient } from '@web/lib/redis-client';
 
 // The bus publishes on a Redis channel named for the user, and Redis is shared
@@ -11,6 +12,12 @@ import { getRedisSubscriberClient } from '@web/lib/redis-client';
 // event arrive at another run's listener and fail the very isolation assertion
 // this file exists to make. Namespacing per run keeps the assertion honest.
 const busRunId = randomUUID();
+
+function createRedisBus(userId: string) {
+	const messaging = resolveMcpCrossInstanceMessaging();
+	if (!messaging) throw new Error('Redis messaging is unavailable.');
+	return new CrossInstanceUserServerEventBus(userId, messaging);
+}
 
 /**
  * PROTO-002 / S-11 regression coverage for the bus itself: proves the
@@ -60,10 +67,10 @@ function waitForEvent(collected: ServerEvent[], count: number, timeoutMs = 2000)
 	});
 }
 
-describeWithRedis('RedisUserServerEventBus (requires Redis)', () => {
+describeWithRedis('CrossInstanceUserServerEventBus (requires Redis)', () => {
 	it("delivers a published event only to listeners on the SAME user bus, never a different user's bus", async () => {
-		const busA = new RedisUserServerEventBus(`user-bus-a-${busRunId}`);
-		const busB = new RedisUserServerEventBus(`user-bus-b-${busRunId}`);
+		const busA = createRedisBus(`user-bus-a-${busRunId}`);
+		const busB = createRedisBus(`user-bus-b-${busRunId}`);
 
 		const receivedByA: ServerEvent[] = [];
 		const receivedByB: ServerEvent[] = [];
@@ -89,7 +96,7 @@ describeWithRedis('RedisUserServerEventBus (requires Redis)', () => {
 	});
 
 	it('reports listenerCount and stops delivering after the last listener unsubscribes', async () => {
-		const bus = new RedisUserServerEventBus(`user-bus-c-${busRunId}`);
+		const bus = createRedisBus(`user-bus-c-${busRunId}`);
 		expect(bus.listenerCount).toBe(0);
 
 		const received: ServerEvent[] = [];
@@ -109,83 +116,86 @@ describeWithRedis('RedisUserServerEventBus (requires Redis)', () => {
 	});
 });
 
-describeWithRedis('RedisUserServerEventBus subscribe/unsubscribe race (requires Redis)', () => {
-	// A review finding (P2): `subscribe()` must stay synchronous, so it
-	// kicks off the real Redis `SUBSCRIBE` in the background and returns a
-	// teardown function immediately. If the caller unsubscribes before that
-	// `SUBSCRIBE` round trip finishes, the teardown function found
-	// `redisSubscribed` still `false` and did nothing — the in-flight
-	// `SUBSCRIBE` then completed afterward and set `redisSubscribed = true`
-	// with zero listeners left, leaking the Redis channel subscription
-	// forever (nothing else ever calls `teardownRedisSubscription` again
-	// for a bus whose `listenerCount` never rises above zero afterward).
-	// Proven against real Redis's own bookkeeping (`PUBSUB CHANNELS`), not
-	// merely this bus's own internal state, so a fix that satisfies the
-	// bus's own flags without actually issuing `UNSUBSCRIBE` would not pass
-	// this test.
-	it('does not leak a Redis channel subscription when the last listener unsubscribes before SUBSCRIBE completes', async () => {
-		const bus = new RedisUserServerEventBus(`user-bus-race-${busRunId}`);
-		const channel = `mcp:events:user:user-bus-race-${busRunId}`;
+describeWithRedis(
+	'CrossInstanceUserServerEventBus subscribe/unsubscribe race (requires Redis)',
+	() => {
+		// A review finding (P2): `subscribe()` must stay synchronous, so it
+		// kicks off the real Redis `SUBSCRIBE` in the background and returns a
+		// teardown function immediately. If the caller unsubscribes before that
+		// `SUBSCRIBE` round trip finishes, the teardown function found
+		// `redisSubscribed` still `false` and did nothing — the in-flight
+		// `SUBSCRIBE` then completed afterward and set `redisSubscribed = true`
+		// with zero listeners left, leaking the Redis channel subscription
+		// forever (nothing else ever calls `teardownRedisSubscription` again
+		// for a bus whose `listenerCount` never rises above zero afterward).
+		// Proven against real Redis's own bookkeeping (`PUBSUB CHANNELS`), not
+		// merely this bus's own internal state, so a fix that satisfies the
+		// bus's own flags without actually issuing `UNSUBSCRIBE` would not pass
+		// this test.
+		it('does not leak a Redis channel subscription when the last listener unsubscribes before SUBSCRIBE completes', async () => {
+			const bus = createRedisBus(`user-bus-race-${busRunId}`);
+			const channel = `mcp:events:user:user-bus-race-${busRunId}`;
 
-		const unsubscribe = bus.subscribe(() => {});
-		// Unsubscribe synchronously, in the same tick `subscribe()` returned
-		// in -- before the background `SUBSCRIBE` has any chance to finish.
-		unsubscribe();
-		expect(bus.listenerCount).toBe(0);
+			const unsubscribe = bus.subscribe(() => {});
+			// Unsubscribe synchronously, in the same tick `subscribe()` returned
+			// in -- before the background `SUBSCRIBE` has any chance to finish.
+			unsubscribe();
+			expect(bus.listenerCount).toBe(0);
 
-		// Let the in-flight SUBSCRIBE (and this fix's post-subscribe
-		// teardown check) actually settle.
-		await bus.whenSubscribed();
-		// Give the teardown's own `UNSUBSCRIBE` round trip a moment to land.
-		await new Promise((resolve) => setTimeout(resolve, 200));
+			// Let the in-flight SUBSCRIBE (and this fix's post-subscribe
+			// teardown check) actually settle.
+			await bus.whenSubscribed();
+			// Give the teardown's own `UNSUBSCRIBE` round trip a moment to land.
+			await new Promise((resolve) => setTimeout(resolve, 200));
 
-		const inspector = createClient({ url: process.env['REDIS_URL'] ?? 'redis://localhost:6379' });
-		await inspector.connect();
-		try {
-			const subscribedChannels = await inspector.pubSubChannels(channel);
-			expect(subscribedChannels).toEqual([]);
-		} finally {
-			await inspector.disconnect().catch(() => {});
-		}
-	});
+			const inspector = createClient({ url: process.env['REDIS_URL'] ?? 'redis://localhost:6379' });
+			await inspector.connect();
+			try {
+				const subscribedChannels = await inspector.pubSubChannels(channel);
+				expect(subscribedChannels).toEqual([]);
+			} finally {
+				await inspector.disconnect().catch(() => {});
+			}
+		});
 
-	// A review finding (P2): the reverse race. The LAST listener
-	// unsubscribes (kicking off a teardown `UNSUBSCRIBE` in the
-	// background) and a REPLACEMENT listener subscribes before that
-	// teardown settles. The old implementation let the replacement's
-	// `SUBSCRIBE` and the old listener's `UNSUBSCRIBE` race independently;
-	// if the `UNSUBSCRIBE` landed after the `SUBSCRIBE`, the bus's own
-	// `redisSubscribed` flag stayed `true` while Redis itself had no
-	// subscription at all, so the replacement listener silently stopped
-	// receiving events. Proven functionally (an actual published event
-	// must reach the replacement listener), not just via the bus's own
-	// internal flags, so a fix that merely reorders internal state without
-	// fixing real delivery would not pass this test.
-	it('keeps delivering to a replacement listener that subscribes before the previous teardown settles', async () => {
-		const bus = new RedisUserServerEventBus(`user-bus-replace-${busRunId}`);
+		// A review finding (P2): the reverse race. The LAST listener
+		// unsubscribes (kicking off a teardown `UNSUBSCRIBE` in the
+		// background) and a REPLACEMENT listener subscribes before that
+		// teardown settles. The old implementation let the replacement's
+		// `SUBSCRIBE` and the old listener's `UNSUBSCRIBE` race independently;
+		// if the `UNSUBSCRIBE` landed after the `SUBSCRIBE`, the bus's own
+		// `redisSubscribed` flag stayed `true` while Redis itself had no
+		// subscription at all, so the replacement listener silently stopped
+		// receiving events. Proven functionally (an actual published event
+		// must reach the replacement listener), not just via the bus's own
+		// internal flags, so a fix that merely reorders internal state without
+		// fixing real delivery would not pass this test.
+		it('keeps delivering to a replacement listener that subscribes before the previous teardown settles', async () => {
+			const bus = createRedisBus(`user-bus-replace-${busRunId}`);
 
-		const firstUnsubscribe = bus.subscribe(() => {});
-		// Tear the first (and only) listener down, then immediately attach
-		// a replacement -- both synchronously, in the same tick, before
-		// either transition has any chance to touch Redis.
-		firstUnsubscribe();
-		const received: ServerEvent[] = [];
-		bus.subscribe((event) => received.push(event));
-		expect(bus.listenerCount).toBe(1);
+			const firstUnsubscribe = bus.subscribe(() => {});
+			// Tear the first (and only) listener down, then immediately attach
+			// a replacement -- both synchronously, in the same tick, before
+			// either transition has any chance to touch Redis.
+			firstUnsubscribe();
+			const received: ServerEvent[] = [];
+			bus.subscribe((event) => received.push(event));
+			expect(bus.listenerCount).toBe(1);
 
-		// Wait for every queued transition (unsubscribe, then resubscribe)
-		// to genuinely settle against Redis.
-		await bus.whenSubscribed();
+			// Wait for every queued transition (unsubscribe, then resubscribe)
+			// to genuinely settle against Redis.
+			await bus.whenSubscribed();
 
-		bus.publish({ kind: 'resources_list_changed' });
-		await waitForEvent(received, 1);
+			bus.publish({ kind: 'resources_list_changed' });
+			await waitForEvent(received, 1);
 
-		expect(received).toEqual([{ kind: 'resources_list_changed' }]);
-	});
-});
+			expect(received).toEqual([{ kind: 'resources_list_changed' }]);
+		});
+	},
+);
 
 describeWithRedis(
-	'RedisUserServerEventBus resubscribe retry after a transient SUBSCRIBE failure (requires Redis)',
+	'CrossInstanceUserServerEventBus resubscribe retry after a transient SUBSCRIBE failure (requires Redis)',
 	() => {
 		// A review finding (P2): a transient Redis `SUBSCRIBE` failure left
 		// `redisSubscribed` false with nothing scheduled to try again, while
@@ -197,18 +207,16 @@ describeWithRedis(
 		// -- not merely that some internal flag flips back to `true`.
 		it('retries after a failed SUBSCRIBE and resumes delivering real events', async () => {
 			let attempts = 0;
-			const flakyGetSubscriberClient: typeof getRedisSubscriberClient = async () => {
-				attempts += 1;
-				if (attempts === 1) {
-					throw new Error('simulated transient SUBSCRIBE failure');
-				}
-				return getRedisSubscriberClient();
-			};
-
-			const bus = new RedisUserServerEventBus(
-				`user-bus-retry-${busRunId}`,
-				flakyGetSubscriberClient,
-			);
+			const messaging = resolveMcpCrossInstanceMessaging();
+			if (!messaging) throw new Error('Redis messaging is unavailable.');
+			const bus = new CrossInstanceUserServerEventBus(`user-bus-retry-${busRunId}`, {
+				...messaging,
+				subscribe: async (channel, listener) => {
+					attempts += 1;
+					if (attempts === 1) throw new Error('simulated transient SUBSCRIBE failure');
+					return messaging.subscribe(channel, listener);
+				},
+			});
 			const received: ServerEvent[] = [];
 			bus.subscribe((event) => received.push(event));
 
@@ -231,9 +239,9 @@ describeWithRedis(
 	},
 );
 
-describeWithRedis('RedisUserServerEventBus#publish error handling (requires Redis)', () => {
+describeWithRedis('CrossInstanceUserServerEventBus#publish error handling (requires Redis)', () => {
 	it('swallows a publish-time failure (e.g. an unserializable event) instead of throwing or crashing the process', async () => {
-		const bus = new RedisUserServerEventBus(`user-bus-publish-error-${busRunId}`);
+		const bus = createRedisBus(`user-bus-publish-error-${busRunId}`);
 
 		// `JSON.stringify` throws on a circular structure -- that throw
 		// happens inside the `.then` of `publish()`'s promise chain, so this
@@ -253,7 +261,7 @@ describeWithRedis('RedisUserServerEventBus#publish error handling (requires Redi
 
 describe('createUserServerEventBus', () => {
 	it('exposes listenerCount whether backed by Redis or the in-memory fallback', () => {
-		const bus = createUserServerEventBus(`user-factory-test-${busRunId}`);
+		const bus = createUserServerEventBus({ userId: `user-factory-test-${busRunId}` });
 		expect(bus.listenerCount).toBe(0);
 		const unsubscribe = bus.subscribe(() => {});
 		expect(bus.listenerCount).toBe(1);
@@ -273,7 +281,7 @@ describe('createUserServerEventBus', () => {
 describeWithRedis('publishUserResourceUpdate (requires Redis)', () => {
 	it('delivers a resource_updated event to an independently-constructed listener for the same user', async () => {
 		const userId = `user-profile-publish-${busRunId}`;
-		const listenerBus = new RedisUserServerEventBus(userId);
+		const listenerBus = createRedisBus(userId);
 		const collected: ServerEvent[] = [];
 		const unsubscribe = listenerBus.subscribe((event) => collected.push(event));
 		try {

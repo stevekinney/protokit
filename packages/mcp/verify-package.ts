@@ -129,6 +129,7 @@ import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
 import { createInMemoryOAuthStores, InMemoryClientStore, InMemoryCodeStore, InMemoryTokenStore, InMemoryTransactionStore } from '@lostgradient/mcp/oauth/testing';
 import { createPostgresOAuthSchema, createPostgresOAuthStores, PostgresClientStore, PostgresCodeStore, PostgresTokenStore, PostgresTransactionStore } from '@lostgradient/mcp/oauth/postgres';
 import { createInMemorySlidingWindowStore, createRateLimitedResponse, RequestRateLimiter } from '@lostgradient/mcp/rate-limit';
+import { createMcpHttpServingLayer, createMcpServingHandler, McpUserHandlerCache } from '@lostgradient/mcp/http';
 
 const problems = [];
 const require = (condition, message) => { if (!condition) problems.push(message); };
@@ -146,7 +147,7 @@ require(rootLogger === subpathLogger, 'logger differs between the root export an
 require(rootGetLogger === subpathGetLogger, 'getLogger differs between the root export and the /logger subpath');
 
 // Every subpath in the exports map must resolve under Node.
-for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres', '/oauth/client-metadata-documents', '/rate-limit']) {
+for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema', '/version', '/oauth', '/oauth/stores', '/oauth/testing', '/oauth/postgres', '/oauth/client-metadata-documents', '/rate-limit', '/http']) {
   try { await import('@lostgradient/mcp' + subpath); }
   catch (error) { problems.push('subpath "' + (subpath || '.') + '" failed to import: ' + error.message); }
 }
@@ -187,6 +188,9 @@ require(typeof PostgresTransactionStore === 'function', 'PostgresTransactionStor
 require(typeof createInMemorySlidingWindowStore === 'function', 'createInMemorySlidingWindowStore is not a function');
 require(typeof createRateLimitedResponse === 'function', 'createRateLimitedResponse is not a function');
 require(typeof RequestRateLimiter === 'function', 'RequestRateLimiter is not a constructor');
+require(typeof createMcpHttpServingLayer === 'function', '/http createMcpHttpServingLayer is not a function');
+require(typeof createMcpServingHandler === 'function', '/http createMcpServingHandler is not a function');
+require(typeof McpUserHandlerCache === 'function', '/http McpUserHandlerCache is not a constructor');
 require(typeof PostgresCodeStore === 'function', 'PostgresCodeStore is not a constructor');
 require(typeof PostgresTokenStore === 'function', 'PostgresTokenStore is not a constructor');
 require(typeof PostgresClientStore === 'function', 'PostgresClientStore is not a constructor');

@@ -76,6 +76,11 @@
 			"import": "./dist/rate-limit/index.js",
 			"default": "./dist/rate-limit/index.js"
 		},
+		"./http": {
+			"types": "./dist/http/index.d.ts",
+			"import": "./dist/http/index.js",
+			"default": "./dist/http/index.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"scripts": {

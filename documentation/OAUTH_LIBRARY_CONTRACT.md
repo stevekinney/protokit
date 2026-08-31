@@ -50,6 +50,12 @@ The optional key namespace isolates test runs that share a Redis instance. Produ
 
 ## Shared HTTP utilities
 
-Protocol CORS headers and bounded request-body handling belong with the extracted OAuth and MCP serving layer. Host routes that also need those utilities should import the library implementation after the extraction lands; neither side keeps a second copy.
+Consumers import the MCP HTTP serving contract from `@lostgradient/mcp/http`. `createMcpHttpServingLayer` owns the request order: network admission (skipped for `OPTIONS`), DNS-rebinding and origin checks, preflight handling, failed-authentication lockout, bearer validation, token lookup and audience validation, authenticated-subject validation, per-user admission, concurrency acquisition, and handler dispatch. A host supplies policy values, storage, rate-limit and concurrency seams, the raw socket identity, and its registry; it must not repeat or reorder those protocol checks in its route adapter.
+
+`createMcpServingHandler` owns request-body bounds, modern and legacy protocol dispatch, subscription-scope checks against the injected registry, per-user handler reuse, cross-instance resource events, and grant-revocation stream closure. Unknown and under-scoped subscription URIs share the same response, while observability records the internal outcome. The authorization helper remains internal to the package so consumers cannot assemble a second authentication path from lower-level pieces.
+
+The handler cache is bounded by idleness rather than a numeric entry ceiling. Idle entries without a live listener are evicted and closed; entries with an active listen stream remain until the stream ends, the grant is revoked, the user is explicitly closed, or the host shuts down. A numeric ceiling would require evicting a live authorized listener under load, so the contract deliberately does not provide one.
+
+Protocol CORS headers and bounded request-body handling belong to this serving layer. Host routes that also need those utilities import the package implementation; neither side keeps a second copy. The package answers allowed `OPTIONS` requests before authentication, while the outer serving layer skips only network admission for that method so preflight behavior remains in one ordered path.
 
 Trusted-proxy resolution follows the same ownership rule. The host supplies the raw socket peer and policy, and the library owns the security-sensitive resolution algorithm. Do not configure an adapter to replace the socket peer with a client-controlled forwarding header before the library sees it.

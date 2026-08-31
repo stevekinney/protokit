@@ -38,7 +38,7 @@ export type McpContext = {
 	/**
 	 * PROTO-002 / S-11: publishes a `notifications/resources/updated` event
 	 * for `uri`, scoped to only the authenticated user this context was
-	 * built for (see `applications/web/src/lib/mcp-user-event-bus.ts`).
+	 * built for (see the HTTP package's per-user event bus).
 	 * Undefined when no event bus is wired for this request (e.g. a
 	 * standalone test context) — nothing to publish to in that case.
 	 */

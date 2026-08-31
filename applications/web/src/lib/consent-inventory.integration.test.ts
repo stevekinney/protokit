@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { database, schema } from '@template/database';
+import { GrantRevocationChannel } from '@lostgradient/mcp/http';
 import { hashCredential } from '@web/lib/hash-credential';
+import { resolveMcpCrossInstanceMessaging } from '@web/lib/mcp-cross-instance-messaging';
 import { deleteTestAccounts } from '@web/test-support/delete-test-accounts';
 import {
 	listUserConnections,
@@ -344,27 +346,26 @@ describe('revokeAllUserGrants', () => {
  */
 describe('revocation ends live MCP access', () => {
 	async function collectRevokedUserIds(act: () => Promise<unknown>): Promise<string[]> {
-		const { grantRevocationTestHooks, subscribeToGrantRevocations } =
-			await import('@web/lib/mcp-grant-revocation-channel');
 		const closed: string[] = [];
-		grantRevocationTestHooks.reset();
+		const messaging = resolveMcpCrossInstanceMessaging();
+		if (!messaging) throw new Error('Redis messaging is unavailable.');
 		// Stands in for whichever instance holds this user's open stream.
-		subscribeToGrantRevocations((userId) => {
+		const observer = new GrantRevocationChannel((userId) => {
 			closed.push(userId);
-		});
-		// Redis discards a publish to a channel with no subscriber yet, so
-		// settle the SUBSCRIBE first — otherwise this asserts timing, not
-		// behavior.
-		await new Promise((resolve) => setTimeout(resolve, 250));
+		}, messaging);
+		await observer.start();
 
-		await act();
+		try {
+			await act();
 
-		const deadline = Date.now() + 5_000;
-		while (closed.length === 0 && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, 25));
+			const deadline = Date.now() + 5_000;
+			while (closed.length === 0 && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+			return closed;
+		} finally {
+			await observer.close();
 		}
-		grantRevocationTestHooks.reset();
-		return closed;
 	}
 
 	it('announces the revoked user when one client connection is revoked', async () => {
@@ -391,24 +392,25 @@ describe('revocation ends live MCP access', () => {
 		const { userId, clientId } = await seedUserWithConnection('Round 17 ordering');
 		let revokedAtAnnouncement: Date | null | undefined;
 
-		const { grantRevocationTestHooks, subscribeToGrantRevocations } =
-			await import('@web/lib/mcp-grant-revocation-channel');
-		grantRevocationTestHooks.reset();
+		const messaging = resolveMcpCrossInstanceMessaging();
+		if (!messaging) throw new Error('Redis messaging is unavailable.');
+		let resolveAnnouncement: () => void = () => {};
 		const announced = new Promise<void>((resolve) => {
-			subscribeToGrantRevocations(async () => {
-				const [row] = await database
-					.select({ revokedAt: schema.oauthTokens.revokedAt })
-					.from(schema.oauthTokens)
-					.where(eq(schema.oauthTokens.userId, userId));
-				revokedAtAnnouncement = row?.revokedAt ?? null;
-				resolve();
-			});
+			resolveAnnouncement = resolve;
 		});
-		await new Promise((resolve) => setTimeout(resolve, 250));
+		const observer = new GrantRevocationChannel(async () => {
+			const [row] = await database
+				.select({ revokedAt: schema.oauthTokens.revokedAt })
+				.from(schema.oauthTokens)
+				.where(eq(schema.oauthTokens.userId, userId));
+			revokedAtAnnouncement = row?.revokedAt ?? null;
+			resolveAnnouncement();
+		}, messaging);
+		await observer.start();
 
 		await revokeUserClientGrant(userId, clientId);
 		await announced;
-		grantRevocationTestHooks.reset();
+		await observer.close();
 
 		expect(revokedAtAnnouncement).toBeInstanceOf(Date);
 	});

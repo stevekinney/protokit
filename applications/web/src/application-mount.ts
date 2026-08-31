@@ -73,11 +73,10 @@ export type ApplicationMountOptions = {
  * cross-replica revocation.
  *
  * Remounting after disposal is equally broken: `closeAll()` clears the
- * user-handler idle-eviction timer for good, and `subscribeToGrantRevocations`
- * early-returns forever because its `redisSubscriptionStarted` latch stays
- * set once the subscriber disconnects. Rather than reach into those modules
- * to make them restartable -- they are shared with `server.ts`, which has no
- * such need -- both transitions are refused outright.
+ * user-handler idle-eviction timer, and the module-scoped serving handler is
+ * not recreated or restarted afterward. Rather than add restart semantics to
+ * a singleton shared with `server.ts`, which has no remount concept, both
+ * transitions are refused outright.
  */
 type MountState = 'none' | 'live' | 'disposed';
 
