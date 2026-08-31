@@ -12,8 +12,8 @@ import type { McpRegistry } from './scope-vocabulary.js';
  * even if the flag is turned on by mistake.
  *
  * This is the single source of truth for that predicate. `server.ts`'s
- * real `/mcp` capabilities and `oauth-routes.ts`'s authorization-server
- * metadata `extensions` field both call this function rather than each
+ * real `/mcp` capabilities and the OAuth discovery metadata handler both
+ * call this function rather than each
  * re-deriving their own copy of it, so a client can never discover UI
  * extension support in OAuth metadata and then receive server capabilities
  * without it (or vice versa) -- the two advertisements are mechanically

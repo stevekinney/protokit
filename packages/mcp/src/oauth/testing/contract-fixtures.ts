@@ -129,7 +129,6 @@ export const configurationContractFixture = {
 	},
 	mcpUiExtension: {
 		enabled: true,
-		registryHasUiExtensionResource: true,
 	},
 	rateLimitStores: {
 		slidingWindow: {
