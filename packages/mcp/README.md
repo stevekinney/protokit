@@ -141,7 +141,7 @@ Concurrency is a resource-lifetime concern, not a handler-promise concern. For a
 
 ## Host logging
 
-Call `setLogger(hostLogger)` before serving requests to route every engine log record through the host's existing sink and redaction policy. The logger is structural and deliberately small: `info`, `warn`, `error`, and `child`. A host does not need to import pino or implement any other pino API. The function returns a restoration callback for tests or scoped embedding; a long-lived server can ignore it. If `setLogger` is not called, the package retains its existing lazy pino logger and behavior.
+Call `setLogger(hostLogger)` before serving requests to route every engine log record through the host's existing sink and redaction policy. The logger is structural and deliberately small: `info`, `warn`, `error`, and `child`. A host does not need to import pino or implement any other pino API. The exported `logger` and `getLogger()` remain the package's full pino-backed logger for compatibility; injection changes the engine's internal sink. If `setLogger` is not called, engine records use that same lazy pino logger and existing behavior.
 
 ## Mounting in SvelteKit
 

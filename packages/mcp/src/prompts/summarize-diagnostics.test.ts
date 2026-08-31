@@ -51,7 +51,11 @@ const destination = new MemoryDestination();
 const { createLogger } = await import('../logger.js');
 const capturingLogger = createLogger({ destination });
 
-mock.module('../logger.js', () => ({ logger: capturingLogger, createLogger }));
+mock.module('../logger.js', () => ({
+	logger: capturingLogger,
+	engineLogger: capturingLogger,
+	createLogger,
+}));
 
 const { summarizePrompt } = await import('./summarize.js');
 const { createTestContext } = await import('../testing/context.js');

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { logger } from '../logger.js';
+import { engineLogger as logger } from '../logger.js';
 import { getEnvironment } from '../env.js';
 import { definePrompt } from '../scopes.js';
 

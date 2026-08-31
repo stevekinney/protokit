@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { logger } from '../logger.js';
+import { engineLogger as logger } from '../logger.js';
 import { isExactContentType, isValidClientName, isValidRedirectUri } from './security-utilities.js';
 import {
 	ClientMetadataDocumentFetchError,

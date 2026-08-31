@@ -89,7 +89,8 @@ describe('createMcpServer', () => {
 		defaultLogger.warn = ((...arguments_: unknown[]) => {
 			defaultRecords.push(arguments_);
 		}) as typeof defaultLogger.warn;
-		const restoreLogger = setLogger(recordingLogger);
+		setLogger(recordingLogger);
+		expect(getLogger()).toBe(defaultLogger);
 
 		try {
 			const server = createMcpServer(
@@ -131,7 +132,7 @@ describe('createMcpServer', () => {
 			await client.close();
 		} finally {
 			defaultLogger.warn = originalDefaultWarn;
-			restoreLogger();
+			setLogger(defaultLogger);
 		}
 	});
 });
