@@ -143,6 +143,10 @@ Concurrency is a resource-lifetime concern, not a handler-promise concern. For a
 
 Call `setLogger(hostLogger)` before serving requests to route every engine log record through the host's existing sink and redaction policy. The logger is structural and deliberately small: `info`, `warn`, `error`, and `child`. A host does not need to import pino or implement any other pino API. The exported `logger` and `getLogger()` remain the package's full pino-backed logger for compatibility; injection changes the engine's internal sink. If `setLogger` is not called, engine records use that same lazy pino logger and existing behavior.
 
+## Unreleased breaking change
+
+`MCP_SERVER_NAME` is required in the next release. The package no longer defaults to the template-branded `template-mcp-server` identity because that fallback was silently advertised to every connected MCP client. Set the explicit server name before constructing a server.
+
 ## Mounting in SvelteKit
 
 `@lostgradient/mcp/sveltekit` provides a dependency-free adapter for a SvelteKit `handle` chain. Call `createSvelteKitMcpMount` once in a long-lived server process, pass the OAuth seams and MCP runtime, and delegate each request to the returned `handle`. The adapter claims its process lifecycle synchronously: a second mount fails, disposal is permanent, and failed startup cannot be retried in the same process.

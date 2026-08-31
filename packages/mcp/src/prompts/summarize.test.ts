@@ -26,7 +26,7 @@ mock.module('../env.js', () => ({
 	getEnvironment: () => ({
 		NODE_ENV: 'test',
 		LOG_LEVEL: 'info',
-		MCP_SERVER_NAME: 'template-mcp-server',
+		MCP_SERVER_NAME: 'protokit-mcp-server',
 		MCP_CONFORMANCE_MODE: false,
 		LOG_CONTENT_DIAGNOSTICS_UNTIL: undefined,
 	}),

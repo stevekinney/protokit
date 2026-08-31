@@ -34,19 +34,25 @@ import { getEnvironment, parseMcpServerEnvironment } from './env.js';
  * they live inside a function a test can call directly.
  */
 
-const validEnvironment = { NODE_ENV: 'test' } as const;
+const validEnvironment = { NODE_ENV: 'test', MCP_SERVER_NAME: 'protokit-mcp-server' } as const;
 
 describe('parseMcpServerEnvironment', () => {
 	it('parses a minimal valid environment and applies schema defaults', () => {
 		const environment = parseMcpServerEnvironment({ ...validEnvironment });
 		expect(environment.NODE_ENV).toBe('test');
-		expect(environment.MCP_SERVER_NAME).toBe('template-mcp-server');
+		expect(environment.MCP_SERVER_NAME).toBe('protokit-mcp-server');
 		expect(environment.MCP_CONFORMANCE_MODE).toBe(false);
 		expect(environment.LOG_LEVEL).toBe('info');
 	});
 
 	it('rejects an environment missing the required NODE_ENV', () => {
-		expect(() => parseMcpServerEnvironment({})).toThrow();
+		expect(() => parseMcpServerEnvironment({ MCP_SERVER_NAME: 'protokit-mcp-server' })).toThrow(
+			/NODE_ENV/,
+		);
+	});
+
+	it('rejects a missing MCP_SERVER_NAME at parse time with the variable name', () => {
+		expect(() => parseMcpServerEnvironment({ NODE_ENV: 'test' })).toThrow(/MCP_SERVER_NAME/);
 	});
 
 	it('rejects an invalid enum value rather than coercing it', () => {
@@ -60,12 +66,13 @@ describe('parseMcpServerEnvironment', () => {
 	 * exactly like one that was never set, so it reaches `.default()`
 	 * instead of failing `.min(1)` or coercing to a falsy value.
 	 */
-	it('treats an empty string as unset so defaults still apply', () => {
-		const environment = parseMcpServerEnvironment({
-			...validEnvironment,
-			MCP_SERVER_NAME: '',
-		});
-		expect(environment.MCP_SERVER_NAME).toBe('template-mcp-server');
+	it('treats an empty required string as missing and rejects it', () => {
+		expect(() =>
+			parseMcpServerEnvironment({
+				...validEnvironment,
+				MCP_SERVER_NAME: '',
+			}),
+		).toThrow(/MCP_SERVER_NAME/);
 	});
 
 	/**
@@ -92,6 +99,7 @@ describe('parseMcpServerEnvironment', () => {
 	it('refuses LOG_CONTENT_DIAGNOSTICS_UNTIL in production', () => {
 		expect(() =>
 			parseMcpServerEnvironment({
+				MCP_SERVER_NAME: 'protokit-mcp-server',
 				NODE_ENV: 'production',
 				LOG_CONTENT_DIAGNOSTICS_UNTIL: '2030-01-01T00:00:00Z',
 			}),
@@ -101,6 +109,7 @@ describe('parseMcpServerEnvironment', () => {
 	it('permits LOG_CONTENT_DIAGNOSTICS_UNTIL outside production', () => {
 		for (const nodeEnv of ['development', 'test'] as const) {
 			const environment = parseMcpServerEnvironment({
+				MCP_SERVER_NAME: 'protokit-mcp-server',
 				NODE_ENV: nodeEnv,
 				LOG_CONTENT_DIAGNOSTICS_UNTIL: '2030-01-01T00:00:00Z',
 			});
@@ -110,13 +119,15 @@ describe('parseMcpServerEnvironment', () => {
 
 	it('reads only the record it is given, never process.env', () => {
 		const sentinel = 'sentinel-server-name-not-in-process-env';
+		const originalServerName = process.env.MCP_SERVER_NAME;
 		process.env.MCP_SERVER_NAME = sentinel;
 		try {
 			const environment = parseMcpServerEnvironment({ ...validEnvironment });
 			expect(environment.MCP_SERVER_NAME).not.toBe(sentinel);
-			expect(environment.MCP_SERVER_NAME).toBe('template-mcp-server');
+			expect(environment.MCP_SERVER_NAME).toBe('protokit-mcp-server');
 		} finally {
-			delete process.env.MCP_SERVER_NAME;
+			if (originalServerName === undefined) delete process.env.MCP_SERVER_NAME;
+			else process.env.MCP_SERVER_NAME = originalServerName;
 		}
 	});
 });

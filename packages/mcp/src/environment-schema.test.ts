@@ -2,6 +2,20 @@ import { describe, expect, it } from 'bun:test';
 import { z } from 'zod';
 import { mcpServerEnvironmentSchema } from './environment-schema.js';
 
+describe('mcpServerEnvironmentSchema MCP_SERVER_NAME', () => {
+	const schema = z.object({ MCP_SERVER_NAME: mcpServerEnvironmentSchema.MCP_SERVER_NAME });
+
+	it('is required and cannot silently regain a default', () => {
+		expect(() => schema.parse({})).toThrow(/MCP_SERVER_NAME/);
+	});
+
+	it('accepts an explicit non-empty server name', () => {
+		expect(schema.parse({ MCP_SERVER_NAME: 'protokit-mcp-server' }).MCP_SERVER_NAME).toBe(
+			'protokit-mcp-server',
+		);
+	});
+});
+
 /**
  * SEC-002 regression: see `applications/web/src/environment-schema.test.ts`
  * for the full rationale. `z.coerce.boolean()` treats the string `"false"`

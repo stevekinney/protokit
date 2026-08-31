@@ -158,7 +158,10 @@ for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema',
 const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
 const registry = vocabulary.defineRegistry({ tools: [], resources: [], prompts: [] });
 require(Array.isArray(getSupportedScopes(registry)), 'getSupportedScopes did not return a list');
-require(parseMcpServerEnvironment({ NODE_ENV: 'test' }).NODE_ENV === 'test', 'environment parsing failed');
+require(
+  parseMcpServerEnvironment({ NODE_ENV: 'test', MCP_SERVER_NAME: 'packed-consumer-mcp-server' }).NODE_ENV === 'test',
+  'environment parsing failed',
+);
 require(typeof oauthContract.safeFetchPublicHttpsUrl === 'function', '/oauth safe fetch is not a function');
 require(typeof oauthContract.isAddressInCidr === 'function', '/oauth CIDR matcher is not a function');
 require(typeof oauthContract.isValidRedirectUri === 'function', '/oauth redirect validator is not a function');

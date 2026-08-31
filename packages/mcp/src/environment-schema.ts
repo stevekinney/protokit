@@ -24,7 +24,10 @@ function strictBooleanEnvironmentFlag(defaultValue: boolean) {
  * has no side effects: it never reads `process.env` and never throws.
  */
 export const mcpServerEnvironmentSchema = {
-	MCP_SERVER_NAME: z.string().min(1).optional().default('template-mcp-server'),
+	// No default: this value is advertised to every MCP client. A missing name
+	// must fail before server construction rather than quietly exposing template
+	// branding or another generic identity on the wire.
+	MCP_SERVER_NAME: z.string().min(1),
 	MCP_CONFORMANCE_MODE: strictBooleanEnvironmentFlag(false),
 	LOG_LEVEL: z
 		.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])

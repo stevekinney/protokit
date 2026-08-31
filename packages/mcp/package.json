@@ -91,9 +91,9 @@
 	"scripts": {
 		"build": "bun run build.ts",
 		"lint": "eslint src/",
-		"test": "LOG_LEVEL=info NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test --path-ignore-patterns='src/oauth/postgres/index.test.ts'",
-		"test:postgres": "LOG_LEVEL=info NODE_ENV=test DATABASE_URL=postgresql://protokit:protokit@localhost:5432/protokit_test bun test src/oauth/postgres/index.test.ts",
-		"test:conformance": "NODE_ENV=test MCP_CONFORMANCE_PORT=3137 bun ./src/conformance-server.ts",
+		"test": "LOG_LEVEL=info NODE_ENV=test MCP_SERVER_NAME=protokit-mcp-server DATABASE_URL=postgresql://test:test@localhost/test bun test --path-ignore-patterns='src/oauth/postgres/index.test.ts'",
+		"test:postgres": "LOG_LEVEL=info NODE_ENV=test MCP_SERVER_NAME=protokit-mcp-server DATABASE_URL=postgresql://protokit:protokit@localhost:5432/protokit_test bun test src/oauth/postgres/index.test.ts",
+		"test:conformance": "NODE_ENV=test MCP_SERVER_NAME=protokit-mcp-server MCP_CONFORMANCE_PORT=3137 bun ./src/conformance-server.ts",
 		"typecheck": "tsc --noEmit",
 		"verify:cimd-runtime": "bun run build && bun run verify-cimd-runtime.ts && node --experimental-strip-types verify-cimd-runtime.ts",
 		"verify:package": "bun run verify-package.ts"

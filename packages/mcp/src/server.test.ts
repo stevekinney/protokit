@@ -8,6 +8,40 @@ import { getSupportedScopes } from './supported-scopes.js';
 import { templateRegistry } from './template-registry.js';
 
 describe('createMcpServer', () => {
+	it('fails at environment parse time when MCP_SERVER_NAME is omitted', () => {
+		const environment = { ...process.env };
+		delete environment.MCP_SERVER_NAME;
+		const serverModuleUrl = new URL('./server.ts', import.meta.url).href;
+		const registryModuleUrl = new URL('./template-registry.ts', import.meta.url).href;
+		const result = Bun.spawnSync({
+			cmd: [
+				process.execPath,
+				'--eval',
+				`import { createMcpServer } from ${JSON.stringify(serverModuleUrl)};
+				import { templateRegistry } from ${JSON.stringify(registryModuleUrl)};
+				createMcpServer({
+					userId: 'missing-name-user',
+					user: {
+						id: 'missing-name-user',
+						email: 'test@example.com',
+						name: 'Test User',
+						image: null,
+						role: 'user',
+					},
+					enableUiExtension: false,
+					enableConformanceMode: false,
+					scopes: [],
+				}, templateRegistry);`,
+			],
+			env: environment,
+			stderr: 'pipe',
+			stdout: 'pipe',
+		});
+
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr.toString()).toMatch(/MCP_SERVER_NAME/);
+	});
+
 	it('returns a defined server instance', () => {
 		const server = createMcpServer(
 			{
