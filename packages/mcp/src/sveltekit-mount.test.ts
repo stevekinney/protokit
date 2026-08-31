@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import type { McpRegistry } from './scope-vocabulary.js';
 import type { OAuthDiscoveryConfiguration, OAuthHostSeams } from './oauth/index.js';
 import {
+	configurationContractFixture,
+	consentContractFixture,
+	crossInstanceMessagingContractFixture,
+	identityContractFixture,
+	scopeContractFixture,
+	storeContractFixture,
+	unauthenticatedAuthorizationContractFixture,
+	userProfileContractFixture,
+} from './oauth/testing/contract-fixtures.js';
+import {
 	createSvelteKitMcpMount,
 	primeSvelteKitMcpIdentity,
 	type SvelteKitLikeRequestEvent,
@@ -10,7 +20,18 @@ import {
 import { resetSvelteKitMountStateForTesting } from './sveltekit-mount-state.js';
 
 const registry = { tools: [], resources: [], prompts: [] } as unknown as McpRegistry<'read'>;
-const oauthSeams = {} as OAuthHostSeams<'read'>;
+const oauthSeams = {
+	fetchClientIdMetadataDocument: async () => null,
+	resolveIdentityBinding: identityContractFixture,
+	resolveUserProfile: userProfileContractFixture,
+	handleUnauthenticatedAuthorization: unauthenticatedAuthorizationContractFixture,
+	renderConsent: consentContractFixture,
+	stores: storeContractFixture,
+	scopes: scopeContractFixture,
+	configuration: configurationContractFixture,
+	hashCredential: (value: string) => value,
+	crossInstanceMessaging: crossInstanceMessagingContractFixture,
+} satisfies OAuthHostSeams<'repositories:read'>;
 const discoveryConfiguration = {} as OAuthDiscoveryConfiguration;
 
 function event(path = '/mcp', address = '203.0.113.1'): SvelteKitLikeRequestEvent {
@@ -55,6 +76,30 @@ function harness(input: { start?: () => Promise<void>; longLivedProcess?: boolea
 
 describe('createSvelteKitMcpMount', () => {
 	beforeEach(resetSvelteKitMountStateForTesting);
+
+	test('refuses to start when a required OAuth host seam is absent at runtime', async () => {
+		const incompleteOauthSeams = { ...oauthSeams } as Partial<typeof oauthSeams>;
+		delete incompleteOauthSeams.renderConsent;
+		let startCount = 0;
+		await expect(
+			createSvelteKitMcpMount({
+				oauthSeams: incompleteOauthSeams as OAuthHostSeams<'repositories:read'>,
+				discoveryConfiguration,
+				registry: registry as unknown as McpRegistry<'repositories:read'>,
+				identityHandleName: 'identityHandle',
+				longLivedProcess: true,
+				mcp: {
+					start: async () => {
+						startCount += 1;
+					},
+					shutdown: async () => {},
+					publishGrantRevocation: async () => {},
+					handle: async () => new Response('mcp'),
+				},
+			}),
+		).rejects.toThrow('renderConsent');
+		expect(startCount).toBe(0);
+	});
 
 	test('requires the named identity handle to prime every request', async () => {
 		const state = harness();

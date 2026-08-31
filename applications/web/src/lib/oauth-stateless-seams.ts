@@ -6,6 +6,7 @@ import {
 } from '@lostgradient/mcp';
 import type {
 	AtomicSlidingWindowStore,
+	CrossInstanceMessaging,
 	OAuthRequestContext,
 	OAuthStatelessHostSeams,
 } from '@lostgradient/mcp/oauth';
@@ -15,6 +16,7 @@ import { environment } from '@web/env';
 import { getBaseUrl } from '@web/lib/base-url';
 import { OAUTH_CLIENT_SECRET_LIFETIME_MILLISECONDS } from '@web/lib/credential-lifecycle-policy';
 import { hashCredential } from '@web/lib/hash-credential';
+import { resolveMcpCrossInstanceMessaging } from '@web/lib/mcp-cross-instance-messaging';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
 import { oauthStatelessStores } from '@web/lib/oauth-stateless-stores';
 import { getTrustedProxyConfiguration } from '@web/lib/request-client-identifier';
@@ -60,12 +62,14 @@ export function toOauthRequestContext(context: RequestContext): OAuthRequestCont
 
 export function createOauthStatelessHostSeams(
 	request: Request,
+	input: { crossInstanceMessaging?: CrossInstanceMessaging } = {},
 ): OAuthStatelessHostSeams<(typeof scopes.supportedScopes)[number]> {
 	const baseUrl = new URL(getBaseUrl(request));
 	return {
 		stores: oauthStatelessStores,
 		scopes,
 		hashCredential,
+		crossInstanceMessaging: input.crossInstanceMessaging ?? resolveMcpCrossInstanceMessaging(),
 		publishGrantRevocation,
 		recordEvent: ({ category, outcome, attributes }) => {
 			const replayDetected = outcome === 'replay_detected';

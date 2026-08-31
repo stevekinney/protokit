@@ -1,4 +1,8 @@
-import type { ConsentPresentation, OAuthHostSeams } from '@lostgradient/mcp/oauth';
+import type {
+	ConsentPresentation,
+	CrossInstanceMessaging,
+	OAuthHostSeams,
+} from '@lostgradient/mcp/oauth';
 import { fetchClientIdMetadataDocument } from '@lostgradient/mcp/oauth/client-metadata-documents';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { redirectResponse } from '@web/lib/http-response';
@@ -15,8 +19,11 @@ function signInRedirectPath(requestUrl: URL): string {
 	return `/auth/google/start?callback_path=${encodeURIComponent(callbackPath)}`;
 }
 
-export function createOauthAuthorizeHostSeams(context: RequestContext): OAuthHostSeams<string> {
-	const stateless = createOauthStatelessHostSeams(context.request);
+export function createOauthAuthorizeHostSeams(
+	context: RequestContext,
+	input: { crossInstanceMessaging?: CrossInstanceMessaging } = {},
+): OAuthHostSeams<string> {
+	const stateless = createOauthStatelessHostSeams(context.request, input);
 	return {
 		...stateless,
 		stores: oauthStores,

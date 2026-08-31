@@ -44,6 +44,28 @@ export type SvelteKitMcpRuntime = {
 
 const primedIdentities = new WeakMap<SvelteKitLikeRequestEvent, OAuthIdentity | null>();
 
+const requiredOauthSeamFunctions = [
+	'fetchClientIdMetadataDocument',
+	'resolveIdentityBinding',
+	'resolveUserProfile',
+	'handleUnauthenticatedAuthorization',
+	'renderConsent',
+	'hashCredential',
+] as const satisfies ReadonlyArray<keyof OAuthHostSeams<string>>;
+
+function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Scope>): void {
+	for (const name of requiredOauthSeamFunctions) {
+		if (typeof seams[name] !== 'function') {
+			throw new Error(`The SvelteKit MCP mount requires the OAuth host seam "${name}".`);
+		}
+	}
+	for (const name of ['stores', 'scopes', 'configuration'] as const) {
+		if (!seams[name] || typeof seams[name] !== 'object') {
+			throw new Error(`The SvelteKit MCP mount requires the OAuth host seam "${name}".`);
+		}
+	}
+}
+
 /**
  * Records that the host identity handle ran for this request. A null identity
  * is distinct from a handle that was skipped or sequenced after the MCP mount.
@@ -105,6 +127,7 @@ export async function createSvelteKitMcpMount<Scope extends string>(input: {
 	}
 	setSvelteKitMountState('constructing');
 	try {
+		assertRequiredOauthSeams(input.oauthSeams);
 		if (!input.longLivedProcess) {
 			throw new Error(
 				'The MCP mount requires a long-lived process; request-scoped edge and serverless runtimes cannot preserve subscription state.',
