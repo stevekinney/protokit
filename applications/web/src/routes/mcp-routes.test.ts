@@ -150,11 +150,11 @@ describe('handleMcpRequestWithAuthentication', () => {
 });
 
 describe('OAuth-only imports', () => {
-	it('do not statically import the MCP transport handler', async () => {
-		const source = await Bun.file(
-			new URL('../lib/oauth-stateless-seams.ts', import.meta.url),
-		).text();
-		expect(source).not.toMatch(/import\s+[^;]*['"]@web\/lib\/mcp-handler['"]/s);
+	it('keep OAuth and consent modules free of static MCP transport imports', async () => {
+		for (const path of ['../lib/oauth-stateless-seams.ts', '../lib/consent-inventory.ts']) {
+			const source = await Bun.file(new URL(path, import.meta.url)).text();
+			expect(source).not.toMatch(/import\s+[^;]*['"]@web\/lib\/mcp-handler['"]/s);
+		}
 	});
 });
 

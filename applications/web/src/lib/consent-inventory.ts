@@ -2,9 +2,13 @@ import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { database, schema } from '@template/database';
 import { logger } from '@lostgradient/mcp/logger';
 import { isValidClientName } from '@lostgradient/mcp/oauth';
-import { publishGrantRevocation } from '@web/lib/mcp-handler';
 
 const consentLogger = logger.child({ module: 'consent-inventory' });
+
+async function publishGrantRevocation(userId: string): Promise<void> {
+	const mcpHandler = await import('@web/lib/mcp-handler');
+	await mcpHandler.publishGrantRevocation(userId);
+}
 
 export type ConnectionSummary = {
 	clientId: string;

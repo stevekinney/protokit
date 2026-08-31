@@ -28,7 +28,13 @@ function readServerEvent(message: string): { event: ServerEvent; sourceId?: stri
 			? { event: envelope.event as ServerEvent, sourceId: envelope.sourceId }
 			: undefined;
 	}
-	return typeof envelope.kind === 'string' ? { event: parsed as ServerEvent } : undefined;
+	if (typeof envelope.kind !== 'string') return undefined;
+	const event = { ...(parsed as Record<string, unknown>) };
+	delete event.sourceId;
+	return {
+		event: event as ServerEvent,
+		sourceId: typeof envelope.sourceId === 'string' ? envelope.sourceId : undefined,
+	};
 }
 
 /** A per-user event bus backed by the host's cross-instance messaging seam. */
@@ -53,7 +59,7 @@ export class CrossInstanceUserServerEventBus implements UserServerEventBus {
 	publish(event: ServerEvent): void {
 		let message: string;
 		try {
-			message = JSON.stringify({ sourceId: this.sourceId, event });
+			message = JSON.stringify({ ...event, sourceId: this.sourceId });
 		} catch (error) {
 			this.onError({ error, userId: this.userId, operation: 'publish' });
 			return;

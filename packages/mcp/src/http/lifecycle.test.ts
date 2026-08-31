@@ -167,6 +167,23 @@ describe('cross-instance MCP lifecycle', () => {
 		expect(received).toEqual([{ kind: 'resource_updated', uri: 'user://profile' }]);
 	});
 
+	test('publishes a top-level event shape that older replicas can deserialize', async () => {
+		const published: string[] = [];
+		const messaging: CrossInstanceMessaging = {
+			publish: async (_channel, message) => {
+				published.push(message);
+			},
+			subscribe: async () => async () => {},
+		};
+		const bus = new CrossInstanceUserServerEventBus('user-a', messaging);
+		bus.publish({ kind: 'resource_updated', uri: 'user://profile' });
+		await Promise.resolve();
+		expect(JSON.parse(published[0] ?? '{}')).toMatchObject({
+			kind: 'resource_updated',
+			uri: 'user://profile',
+		});
+	});
+
 	test('closes a remote instance handler after grant revocation', async () => {
 		const messaging = createMessagingHub();
 		const closed: string[] = [];
