@@ -38,4 +38,12 @@ export function countRows(result: unknown): number {
 	return row ? Number(row.count) : 0;
 }
 
+export function columnIdentifier(column: { name: string }) {
+	return sql.identifier(column.name);
+}
+
+export function qualifiedColumnIdentifier(alias: string, column: { name: string }): SQL {
+	return sql`${sql.identifier(alias)}.${columnIdentifier(column)}`;
+}
+
 export { sql };

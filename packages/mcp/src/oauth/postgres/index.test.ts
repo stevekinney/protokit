@@ -237,6 +237,35 @@ describe('Postgres OAuth durability', () => {
 		).not.toBeNull();
 	});
 
+	test('serializes access-token revocation with refresh rotation on the family lock', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('access-revocation-race', new Date('2099-01-01')),
+			refreshToken: refreshRecord(
+				'refresh-revocation-race',
+				'access-revocation-race',
+				new Date('2099-01-01'),
+				'access-revocation-family',
+			),
+		});
+
+		const [revoked, rotationResult] = await Promise.all([
+			stores.tokens.revokeAccessToken('access-revocation-race', 'client-one'),
+			stores.tokens.rotateRefreshToken(
+				rotation(
+					'refresh-revocation-race',
+					'access-revocation-next',
+					'refresh-revocation-next',
+					new Date('2026-01-02'),
+				),
+			),
+		]);
+		expect(revoked).toBeTrue();
+		expect(['rotated', 'replay_revoked']).toContain(rotationResult.status);
+	});
+
 	test('preserves an expired access token while its paired refresh token is live', async () => {
 		await resetFixture();
 		await seedClient();
@@ -276,7 +305,7 @@ describe('Postgres OAuth durability', () => {
 		expect((await stores.tokens.findByHash('access-two'))?.revokedAt).toBeNull();
 	});
 
-	test('preserves bigint user identifiers when returning rotated credentials', async () => {
+	test('honors a custom bigint user column name across every store', async () => {
 		const prefix = 'mcp_bigint_rotation';
 		const largeUserId = '9007199254740993';
 		const bigintUsers = pgTable(`${prefix}_users`, {
@@ -285,7 +314,7 @@ describe('Postgres OAuth durability', () => {
 		const bigintSchema = createPostgresOAuthSchema({
 			prefix,
 			userId: () =>
-				bigint('user_id', { mode: 'bigint' })
+				bigint('owner_id', { mode: 'bigint' })
 					.notNull()
 					.references(() => bigintUsers.id, { onDelete: 'cascade' }),
 		});
@@ -293,12 +322,52 @@ describe('Postgres OAuth durability', () => {
 			await connection.query(`
 				CREATE TABLE ${prefix}_users (id bigint PRIMARY KEY);
 				CREATE TABLE ${prefix}_clients (client_id text PRIMARY KEY, client_secret_hash text, client_name text NOT NULL, client_type text NOT NULL, token_endpoint_auth_method text NOT NULL, application_type text, redirect_uris jsonb NOT NULL, grant_types jsonb NOT NULL, response_types jsonb NOT NULL, client_id_metadata_url text, client_secret_expires_at timestamptz, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL);
-				CREATE TABLE ${prefix}_access_tokens (access_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, user_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
-				CREATE TABLE ${prefix}_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, user_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES ${prefix}_access_tokens(access_token_hash), family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+				CREATE TABLE ${prefix}_authorization_transactions (transaction_id_hash text PRIMARY KEY, csrf_token_hash text NOT NULL, consent_binding_hash text NOT NULL, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, state text, issuer text NOT NULL, resource text NOT NULL, scope text NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz, created_at timestamptz NOT NULL);
+				CREATE TABLE ${prefix}_codes (code_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, scope text, state text, resource text NOT NULL, expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL);
+				CREATE TABLE ${prefix}_access_tokens (access_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+				CREATE TABLE ${prefix}_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES ${prefix}_access_tokens(access_token_hash), family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
 				INSERT INTO ${prefix}_users VALUES (${largeUserId});
 				INSERT INTO ${prefix}_clients VALUES ('client-one', NULL, 'Bigint Client', 'public', 'none', NULL, '[]', '[]', '[]', NULL, NULL, now(), now());
 			`);
 			const stores = createPostgresOAuthStores(database, bigintSchema);
+			await stores.transactions.create({
+				transactionId: 'bigint-transaction',
+				csrfToken: 'bigint-csrf',
+				consentBinding: 'bigint-binding',
+				record: {
+					userId: largeUserId,
+					clientId: 'client-one',
+					redirectUri: 'https://client.example/callback',
+					codeChallenge: 'challenge',
+					codeChallengeMethod: 'S256',
+					state: null,
+					issuer: 'https://issuer.example',
+					resource: 'resource',
+					scope: '',
+					expiresAt: new Date('2099-01-01'),
+					consumedAt: null,
+					createdAt: new Date('2026-01-01'),
+				},
+			});
+			await stores.codes.issue({
+				codeHash: 'bigint-code',
+				clientId: 'client-one',
+				userId: largeUserId,
+				redirectUri: 'https://client.example/callback',
+				codeChallenge: 'challenge',
+				codeChallengeMethod: 'S256',
+				scope: '',
+				state: null,
+				resource: 'resource',
+				expiresAt: new Date('2099-01-01'),
+				usedAt: null,
+				createdAt: new Date('2026-01-01'),
+			});
+			expect(
+				(await stores.transactions.consume('bigint-transaction', 'bigint-csrf', 'bigint-binding'))
+					?.userId,
+			).toBe(largeUserId);
+			expect((await stores.codes.findByHash('bigint-code'))?.userId).toBe(largeUserId);
 			await stores.tokens.issueAuthorizationGrant({
 				accessToken: {
 					...tokenRecord('bigint-access', new Date('2099-01-01')),
@@ -321,9 +390,14 @@ describe('Postgres OAuth durability', () => {
 			if (rotated.status !== 'rotated') throw new Error('Expected rotation');
 			expect(rotated.accessToken.userId).toBe(largeUserId);
 			expect(rotated.refreshToken.userId).toBe(largeUserId);
+			expect(await stores.deleteAllForUser(largeUserId)).toEqual({
+				transactions: 1,
+				codes: 1,
+				tokens: 4,
+			});
 		} finally {
 			await connection.query(
-				`DROP TABLE IF EXISTS ${prefix}_refresh_tokens, ${prefix}_access_tokens, ${prefix}_clients, ${prefix}_users CASCADE`,
+				`DROP TABLE IF EXISTS ${prefix}_refresh_tokens, ${prefix}_access_tokens, ${prefix}_codes, ${prefix}_authorization_transactions, ${prefix}_clients, ${prefix}_users CASCADE`,
 			);
 		}
 	});

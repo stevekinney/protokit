@@ -1,9 +1,18 @@
 import type { AccessToken, RefreshToken, TokenStore } from '../stores.js';
-import { countRows, resultRows, sql, type PostgresOAuthDatabase } from './database.js';
+import {
+	columnIdentifier,
+	countRows,
+	qualifiedColumnIdentifier,
+	resultRows,
+	sql,
+	type PostgresOAuthDatabase,
+} from './database.js';
 import type { PostgresOAuthSchema } from './schema.js';
 
-const returnedAccessToken = sql`access_token_hash AS "accessTokenHash", client_id AS "clientId", user_id::text AS "userId",
-	scope, resource, expires_at AS "expiresAt", revoked_at AS "revokedAt", created_at AS "createdAt"`;
+function returnedAccessToken(userId: ReturnType<typeof columnIdentifier>) {
+	return sql`access_token_hash AS "accessTokenHash", client_id AS "clientId", ${userId}::text AS "userId",
+		scope, resource, expires_at AS "expiresAt", revoked_at AS "revokedAt", created_at AS "createdAt"`;
+}
 
 export class PostgresTokenStore implements TokenStore {
 	constructor(
@@ -16,13 +25,15 @@ export class PostgresTokenStore implements TokenStore {
 	): Promise<void> {
 		const access = input.accessToken;
 		const refresh = input.refreshToken;
+		const accessUserId = columnIdentifier(this.schema.accessTokens.userId);
+		const refreshUserId = columnIdentifier(this.schema.refreshTokens.userId);
 		await this.database.execute(sql`WITH inserted_access AS (
-			INSERT INTO ${this.schema.accessTokens} (access_token_hash, client_id, user_id, scope, resource, expires_at, revoked_at, created_at)
+			INSERT INTO ${this.schema.accessTokens} (access_token_hash, client_id, ${accessUserId}, scope, resource, expires_at, revoked_at, created_at)
 			VALUES (${access.accessTokenHash}, ${access.clientId}, ${access.userId}, ${access.scope}, ${access.resource},
 				${access.expiresAt}, ${access.revokedAt}, ${access.createdAt}) RETURNING access_token_hash
 		) ${
 			refresh
-				? sql`INSERT INTO ${this.schema.refreshTokens} (refresh_token_hash, client_id, user_id, scope, resource,
+				? sql`INSERT INTO ${this.schema.refreshTokens} (refresh_token_hash, client_id, ${refreshUserId}, scope, resource,
 			access_token_hash, family_id, expires_at, revoked_at, created_at)
 			SELECT ${refresh.refreshTokenHash}, ${refresh.clientId}, ${refresh.userId}, ${refresh.scope}, ${refresh.resource},
 				access_token_hash, ${refresh.familyId}, ${refresh.expiresAt}, ${refresh.revokedAt}, ${refresh.createdAt} FROM inserted_access`
@@ -31,8 +42,9 @@ export class PostgresTokenStore implements TokenStore {
 	}
 
 	async findByHash(tokenHash: string): Promise<AccessToken | null> {
+		const userId = columnIdentifier(this.schema.accessTokens.userId);
 		const result = await this.database
-			.execute(sql`SELECT ${returnedAccessToken} FROM ${this.schema.accessTokens}
+			.execute(sql`SELECT ${returnedAccessToken(userId)} FROM ${this.schema.accessTokens}
 			WHERE access_token_hash = ${tokenHash}`);
 		return resultRows<AccessToken>(result)[0] ?? null;
 	}
@@ -41,6 +53,11 @@ export class PostgresTokenStore implements TokenStore {
 		input: Parameters<TokenStore['rotateRefreshToken']>[0],
 	): ReturnType<TokenStore['rotateRefreshToken']> {
 		return this.database.transaction(async (transaction) => {
+			const accessUserId = columnIdentifier(this.schema.accessTokens.userId);
+			const refreshUserId = columnIdentifier(this.schema.refreshTokens.userId);
+			const priorUserId = qualifiedColumnIdentifier('prior', this.schema.refreshTokens.userId);
+			const accessResultUserId = qualifiedColumnIdentifier('a', this.schema.accessTokens.userId);
+			const refreshResultUserId = qualifiedColumnIdentifier('r', this.schema.refreshTokens.userId);
 			const familyResult = await transaction.execute(
 				sql`SELECT family_id AS "familyId" FROM ${this.schema.refreshTokens}
 				WHERE refresh_token_hash = ${input.priorHash}
@@ -70,14 +87,14 @@ export class PostgresTokenStore implements TokenStore {
 			UPDATE ${this.schema.accessTokens} SET revoked_at = ${input.createdAt}
 			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_prior) RETURNING access_token_hash
 		), inserted_access AS (
-			INSERT INTO ${this.schema.accessTokens} (access_token_hash, client_id, user_id, scope, resource, expires_at, revoked_at, created_at)
-			SELECT ${input.nextAccessTokenHash}, client_id, user_id, COALESCE(${input.requestedScope ?? null}::text, scope),
+			INSERT INTO ${this.schema.accessTokens} (access_token_hash, client_id, ${accessUserId}, scope, resource, expires_at, revoked_at, created_at)
+			SELECT ${input.nextAccessTokenHash}, client_id, ${refreshUserId}, COALESCE(${input.requestedScope ?? null}::text, scope),
 				resource, ${input.accessTokenExpiresAt}, NULL, ${input.createdAt} FROM revoked_prior
 			RETURNING *
 		), inserted_refresh AS (
-			INSERT INTO ${this.schema.refreshTokens} (refresh_token_hash, client_id, user_id, scope, resource,
+			INSERT INTO ${this.schema.refreshTokens} (refresh_token_hash, client_id, ${refreshUserId}, scope, resource,
 				access_token_hash, family_id, expires_at, revoked_at, created_at)
-			SELECT ${input.nextRefreshTokenHash}, prior.client_id, prior.user_id,
+			SELECT ${input.nextRefreshTokenHash}, prior.client_id, ${priorUserId},
 				COALESCE(${input.requestedScope ?? null}::text, prior.scope), prior.resource,
 				inserted_access.access_token_hash, prior.family_id, ${input.refreshTokenExpiresAt}, NULL, ${input.createdAt}
 			FROM revoked_prior prior CROSS JOIN inserted_access RETURNING *
@@ -93,10 +110,10 @@ export class PostgresTokenStore implements TokenStore {
 			WHEN EXISTS (SELECT 1 FROM replayable) THEN 'replay_revoked'
 			WHEN EXISTS (SELECT 1 FROM live) AND ${input.requestedScope ?? null}::text IS NOT NULL THEN 'scope_rejected'
 			ELSE 'invalid' END AS status,
-			(SELECT user_id::text FROM prior LIMIT 1) AS "userId",
-			(SELECT jsonb_set(to_jsonb(a), '{user_id}', to_jsonb(a.user_id::text))
+			(SELECT ${refreshUserId}::text FROM prior LIMIT 1) AS "userId",
+			(SELECT jsonb_set(to_jsonb(a), '{user_id}', to_jsonb(${accessResultUserId}::text))
 				FROM inserted_access a LIMIT 1) AS access,
-			(SELECT jsonb_set(to_jsonb(r), '{user_id}', to_jsonb(r.user_id::text))
+			(SELECT jsonb_set(to_jsonb(r), '{user_id}', to_jsonb(${refreshResultUserId}::text))
 				FROM inserted_refresh r LIMIT 1) AS refresh`);
 			const row = resultRows<{
 				status: 'rotated' | 'replay_revoked' | 'scope_rejected' | 'invalid';
@@ -116,14 +133,26 @@ export class PostgresTokenStore implements TokenStore {
 	}
 
 	async revokeAccessToken(tokenHash: string, clientId: string): Promise<boolean> {
-		const result = await this.database.execute(sql`WITH revoked_access AS (
+		return this.database.transaction(async (transaction) => {
+			const familyResult = await transaction.execute(
+				sql`SELECT family_id AS "familyId" FROM ${this.schema.refreshTokens}
+				WHERE access_token_hash = ${tokenHash} AND client_id = ${clientId}`,
+			);
+			const familyId = resultRows<{ familyId: string }>(familyResult)[0]?.familyId;
+			if (familyId) {
+				await transaction.execute(
+					sql`SELECT pg_advisory_xact_lock(hashtextextended(${familyId}, 0))`,
+				);
+			}
+			const result = await transaction.execute(sql`WITH revoked_access AS (
 			UPDATE ${this.schema.accessTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
 			WHERE access_token_hash = ${tokenHash} AND client_id = ${clientId} RETURNING access_token_hash
 		), revoked_refresh AS (
 			UPDATE ${this.schema.refreshTokens} SET revoked_at = COALESCE(revoked_at, clock_timestamp())
 			WHERE access_token_hash IN (SELECT access_token_hash FROM revoked_access)
 		) SELECT count(*) AS count FROM revoked_access`);
-		return countRows(result) === 1;
+			return countRows(result) === 1;
+		});
 	}
 
 	async revokeRefreshToken(
@@ -131,6 +160,7 @@ export class PostgresTokenStore implements TokenStore {
 		clientId: string,
 	): ReturnType<TokenStore['revokeRefreshToken']> {
 		return this.database.transaction(async (transaction) => {
+			const priorUserId = columnIdentifier(this.schema.refreshTokens.userId);
 			const familyResult = await transaction.execute(
 				sql`SELECT family_id AS "familyId" FROM ${this.schema.refreshTokens}
 				WHERE refresh_token_hash = ${tokenHash}
@@ -164,7 +194,7 @@ export class PostgresTokenStore implements TokenStore {
 		)
 		SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM prior) THEN 'invalid'
 			WHEN EXISTS (SELECT 1 FROM prior WHERE revoked_at IS NOT NULL) THEN 'replay_revoked'
-			ELSE 'revoked' END AS status, (SELECT user_id::text FROM prior LIMIT 1) AS "userId"`);
+			ELSE 'revoked' END AS status, (SELECT ${priorUserId}::text FROM prior LIMIT 1) AS "userId"`);
 			const row = resultRows<{
 				status: 'invalid' | 'revoked' | 'replay_revoked';
 				userId: string | null;
@@ -193,10 +223,12 @@ export class PostgresTokenStore implements TokenStore {
 	}
 
 	async deleteAllForUser(userId: string): Promise<number> {
+		const accessUserId = columnIdentifier(this.schema.accessTokens.userId);
+		const refreshUserId = columnIdentifier(this.schema.refreshTokens.userId);
 		const result = await this.database.execute(sql`WITH deleted_refresh AS (
-			DELETE FROM ${this.schema.refreshTokens} WHERE user_id = ${userId} RETURNING 1
+			DELETE FROM ${this.schema.refreshTokens} WHERE ${refreshUserId} = ${userId} RETURNING 1
 		), deleted_access AS (
-			DELETE FROM ${this.schema.accessTokens} WHERE user_id = ${userId} RETURNING 1
+			DELETE FROM ${this.schema.accessTokens} WHERE ${accessUserId} = ${userId} RETURNING 1
 		) SELECT (SELECT count(*) FROM deleted_refresh) + (SELECT count(*) FROM deleted_access) AS count`);
 		return countRows(result);
 	}
