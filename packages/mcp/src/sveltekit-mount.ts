@@ -73,6 +73,12 @@ function assertOauthSeamFunctions(
 	}
 }
 
+function assertOauthSeamNumber(value: unknown, path: string, minimumExclusive: number): void {
+	if (typeof value !== 'number' || !Number.isFinite(value) || value <= minimumExclusive) {
+		throw new Error(`The SvelteKit MCP mount requires the OAuth host seam "${path}".`);
+	}
+}
+
 function assertOauthStore(
 	stores: RuntimeObject,
 	name: string,
@@ -160,21 +166,78 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 		'refreshTokenTtlSeconds',
 		'clientSecretTtlSeconds',
 	] as const) {
-		if (typeof configuration[name] !== 'number') {
-			throw new Error(
-				`The SvelteKit MCP mount requires the OAuth host seam "configuration.${name}".`,
-			);
-		}
+		assertOauthSeamNumber(configuration[name], `configuration.${name}`, 0);
 	}
 	assertOauthSeamFunctions(configuration, 'configuration', ['isTrustedOrigin']);
 	assertOauthSeamObject(configuration.trustedProxy, 'configuration.trustedProxy');
+	if (!Array.isArray(configuration.trustedProxy.trustedProxyCidrs)) {
+		throw new Error(
+			'The SvelteKit MCP mount requires the OAuth host seam "configuration.trustedProxy.trustedProxyCidrs".',
+		);
+	}
+	assertOauthSeamNumber(
+		configuration.trustedProxy.trustedProxyHopCount,
+		'configuration.trustedProxy.trustedProxyHopCount',
+		-1,
+	);
 	assertOauthSeamObject(configuration.rateLimits, 'configuration.rateLimits');
+	assertOauthSeamNumber(
+		configuration.rateLimits.maximumConcurrent,
+		'configuration.rateLimits.maximumConcurrent',
+		0,
+	);
 	assertOauthSeamObject(configuration.rateLimits.categories, 'configuration.rateLimits.categories');
+	for (const category of [
+		'oauth_authorize',
+		'oauth_register',
+		'oauth_token_network',
+		'oauth_token_client',
+		'oauth_revoke',
+		'mcp_network',
+		'mcp_user',
+		'failed_authentication',
+	] as const) {
+		const path = `configuration.rateLimits.categories.${category}`;
+		assertOauthSeamObject(configuration.rateLimits.categories[category], path);
+		assertOauthSeamNumber(
+			configuration.rateLimits.categories[category].maximumRequests,
+			`${path}.maximumRequests`,
+			0,
+		);
+		assertOauthSeamNumber(
+			configuration.rateLimits.categories[category].windowSeconds,
+			`${path}.windowSeconds`,
+			0,
+		);
+	}
 	assertOauthSeamObject(configuration.mcpUiExtension, 'configuration.mcpUiExtension');
 	if (typeof configuration.mcpUiExtension.enabled !== 'boolean') {
 		throw new Error(
 			'The SvelteKit MCP mount requires the OAuth host seam "configuration.mcpUiExtension.enabled".',
 		);
+	}
+	if (configuration.rateLimitStores !== undefined) {
+		assertOauthSeamObject(configuration.rateLimitStores, 'configuration.rateLimitStores');
+		assertOauthSeamObject(
+			configuration.rateLimitStores.slidingWindow,
+			'configuration.rateLimitStores.slidingWindow',
+		);
+		assertOauthSeamFunctions(
+			configuration.rateLimitStores.slidingWindow,
+			'configuration.rateLimitStores.slidingWindow',
+			['consume', 'peek'],
+		);
+		if (configuration.rateLimitStores.concurrencySlots !== undefined) {
+			assertOauthSeamObject(
+				configuration.rateLimitStores.concurrencySlots,
+				'configuration.rateLimitStores.concurrencySlots',
+			);
+			assertOauthSeamFunctions(
+				configuration.rateLimitStores.concurrencySlots,
+				'configuration.rateLimitStores.concurrencySlots',
+				['acquire', 'renew', 'release'],
+			);
+		}
 	}
 }
 

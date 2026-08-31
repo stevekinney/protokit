@@ -133,6 +133,58 @@ describe('createSvelteKitMcpMount', () => {
 		},
 	);
 
+	test.each([
+		[
+			'configuration.rateLimits.categories.oauth_authorize',
+			{
+				...configurationContractFixture,
+				rateLimits: { ...configurationContractFixture.rateLimits, categories: {} },
+			},
+		],
+		[
+			'configuration.rateLimits.categories.oauth_authorize.maximumRequests',
+			{
+				...configurationContractFixture,
+				rateLimits: {
+					...configurationContractFixture.rateLimits,
+					categories: {
+						...configurationContractFixture.rateLimits.categories,
+						oauth_authorize: {
+							...configurationContractFixture.rateLimits.categories.oauth_authorize,
+							maximumRequests: undefined,
+						},
+					},
+				},
+			},
+		],
+	] as const)(
+		'refuses to start when the rate-limit configuration seam %s is malformed',
+		async (expectedPath, configuration) => {
+			let startCount = 0;
+			await expect(
+				createSvelteKitMcpMount({
+					oauthSeams: {
+						...oauthSeams,
+						configuration,
+					} as unknown as OAuthHostSeams<'repositories:read'>,
+					discoveryConfiguration,
+					registry: registry as unknown as McpRegistry<'repositories:read'>,
+					identityHandleName: 'identityHandle',
+					longLivedProcess: true,
+					mcp: {
+						start: async () => {
+							startCount += 1;
+						},
+						shutdown: async () => {},
+						publishGrantRevocation: async () => {},
+						handle: async () => new Response('mcp'),
+					},
+				}),
+			).rejects.toThrow(expectedPath);
+			expect(startCount).toBe(0);
+		},
+	);
+
 	test('requires the named identity handle to prime every request', async () => {
 		const state = harness();
 		const mount = await state.mount();
