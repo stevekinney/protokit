@@ -101,6 +101,38 @@ describe('createSvelteKitMcpMount', () => {
 		expect(startCount).toBe(0);
 	});
 
+	test.each([
+		['stores.clients', { ...oauthSeams, stores: { ...oauthSeams.stores, clients: undefined } }],
+		['scopes.vocabulary', { ...oauthSeams, scopes: {} }],
+		[
+			'configuration.baseUrl',
+			{ ...oauthSeams, configuration: { ...oauthSeams.configuration, baseUrl: undefined } },
+		],
+	] as const)(
+		'refuses to start when the nested OAuth host seam %s is absent at runtime',
+		async (expectedPath, incompleteOauthSeams) => {
+			let startCount = 0;
+			await expect(
+				createSvelteKitMcpMount({
+					oauthSeams: incompleteOauthSeams as unknown as OAuthHostSeams<'repositories:read'>,
+					discoveryConfiguration,
+					registry: registry as unknown as McpRegistry<'repositories:read'>,
+					identityHandleName: 'identityHandle',
+					longLivedProcess: true,
+					mcp: {
+						start: async () => {
+							startCount += 1;
+						},
+						shutdown: async () => {},
+						publishGrantRevocation: async () => {},
+						handle: async () => new Response('mcp'),
+					},
+				}),
+			).rejects.toThrow(expectedPath);
+			expect(startCount).toBe(0);
+		},
+	);
+
 	test('requires the named identity handle to prime every request', async () => {
 		const state = harness();
 		const mount = await state.mount();
