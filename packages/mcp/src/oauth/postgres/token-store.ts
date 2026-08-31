@@ -94,8 +94,10 @@ export class PostgresTokenStore implements TokenStore {
 			WHEN EXISTS (SELECT 1 FROM live) AND ${input.requestedScope ?? null}::text IS NOT NULL THEN 'scope_rejected'
 			ELSE 'invalid' END AS status,
 			(SELECT user_id::text FROM prior LIMIT 1) AS "userId",
-			(SELECT row_to_json(a) FROM inserted_access a LIMIT 1) AS access,
-			(SELECT row_to_json(r) FROM inserted_refresh r LIMIT 1) AS refresh`);
+			(SELECT jsonb_set(to_jsonb(a), '{user_id}', to_jsonb(a.user_id::text))
+				FROM inserted_access a LIMIT 1) AS access,
+			(SELECT jsonb_set(to_jsonb(r), '{user_id}', to_jsonb(r.user_id::text))
+				FROM inserted_refresh r LIMIT 1) AS refresh`);
 			const row = resultRows<{
 				status: 'rotated' | 'replay_revoked' | 'scope_rejected' | 'invalid';
 				userId?: string;

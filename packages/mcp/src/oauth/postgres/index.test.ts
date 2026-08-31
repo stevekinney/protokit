@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { integer, pgTable, serial, text, uuid } from 'drizzle-orm/pg-core';
+import { bigint, integer, pgTable, serial, text, uuid } from 'drizzle-orm/pg-core';
 import { runOAuthStoreConformance } from '../../testing/oauth-store-conformance.js';
 import type { AccessToken, RefreshToken, RegisteredClient } from '../stores.js';
 import { createPostgresOAuthSchema, createPostgresOAuthStores } from './index.js';
@@ -274,6 +274,58 @@ describe('Postgres OAuth durability', () => {
 			),
 		).toEqual({ status: 'invalid' });
 		expect((await stores.tokens.findByHash('access-two'))?.revokedAt).toBeNull();
+	});
+
+	test('preserves bigint user identifiers when returning rotated credentials', async () => {
+		const prefix = 'mcp_bigint_rotation';
+		const largeUserId = '9007199254740993';
+		const bigintUsers = pgTable(`${prefix}_users`, {
+			id: bigint('id', { mode: 'bigint' }).primaryKey(),
+		});
+		const bigintSchema = createPostgresOAuthSchema({
+			prefix,
+			userId: () =>
+				bigint('user_id', { mode: 'bigint' })
+					.notNull()
+					.references(() => bigintUsers.id, { onDelete: 'cascade' }),
+		});
+		try {
+			await connection.query(`
+				CREATE TABLE ${prefix}_users (id bigint PRIMARY KEY);
+				CREATE TABLE ${prefix}_clients (client_id text PRIMARY KEY, client_secret_hash text, client_name text NOT NULL, client_type text NOT NULL, token_endpoint_auth_method text NOT NULL, application_type text, redirect_uris jsonb NOT NULL, grant_types jsonb NOT NULL, response_types jsonb NOT NULL, client_id_metadata_url text, client_secret_expires_at timestamptz, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL);
+				CREATE TABLE ${prefix}_access_tokens (access_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, user_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+				CREATE TABLE ${prefix}_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, user_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES ${prefix}_access_tokens(access_token_hash), family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+				INSERT INTO ${prefix}_users VALUES (${largeUserId});
+				INSERT INTO ${prefix}_clients VALUES ('client-one', NULL, 'Bigint Client', 'public', 'none', NULL, '[]', '[]', '[]', NULL, NULL, now(), now());
+			`);
+			const stores = createPostgresOAuthStores(database, bigintSchema);
+			await stores.tokens.issueAuthorizationGrant({
+				accessToken: {
+					...tokenRecord('bigint-access', new Date('2099-01-01')),
+					userId: largeUserId,
+				},
+				refreshToken: {
+					...refreshRecord('bigint-refresh', 'bigint-access', new Date('2099-01-01')),
+					userId: largeUserId,
+				},
+			});
+			const rotated = await stores.tokens.rotateRefreshToken(
+				rotation(
+					'bigint-refresh',
+					'bigint-next-access',
+					'bigint-next-refresh',
+					new Date('2026-01-02'),
+				),
+			);
+			expect(rotated.status).toBe('rotated');
+			if (rotated.status !== 'rotated') throw new Error('Expected rotation');
+			expect(rotated.accessToken.userId).toBe(largeUserId);
+			expect(rotated.refreshToken.userId).toBe(largeUserId);
+		} finally {
+			await connection.query(
+				`DROP TABLE IF EXISTS ${prefix}_refresh_tokens, ${prefix}_access_tokens, ${prefix}_clients, ${prefix}_users CASCADE`,
+			);
+		}
 	});
 
 	test('applies concurrent client patches and avoids repeat family writes', async () => {
