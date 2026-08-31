@@ -139,6 +139,14 @@ The shared `RateLimitConfiguration` owns exactly eight protocol categories: OAut
 
 Concurrency is a resource-lifetime concern, not a handler-promise concern. For a streaming response, pass the acquired slot to `attachConcurrencySlotToResponseLifetime` so it renews while the body remains open and releases only when the body closes, is canceled, or errors. A host that separately tracks requests must follow the same rule; Tribunal's other implementation is `applications/web/src/lib/in-flight-request-tracker.ts`.
 
+## Mounting in SvelteKit
+
+`@lostgradient/mcp/sveltekit` provides a dependency-free adapter for a SvelteKit `handle` chain. Call `createSvelteKitMcpMount` once in a long-lived server process, pass the OAuth seams and MCP runtime, and delegate each request to the returned `handle`. The adapter claims its process lifecycle synchronously: a second mount fails, disposal is permanent, and failed startup cannot be retried in the same process.
+
+The host's identity handle must run first and call `primeSvelteKitMcpIdentity(event, identity)` for every request, including anonymous requests with `null`. The mount rejects a request when that handle was skipped or sequenced after it. It reads `event.getClientAddress()` for each request so the OAuth and MCP serving layers receive the immediate socket peer rather than a construction-time value.
+
+The host still owns the network listener, signal handling, request draining, and process termination. It must dispose the mount only after response bodies, including long-lived MCP streams, have closed or been canceled. Request-scoped edge and serverless runtimes cannot preserve the mount's subscriptions and must not set `longLivedProcess` to true. Adapter-node deployment behavior is intentionally left to the first host integration rather than claimed by this package contract.
+
 ## Client ID Metadata Documents
 
 `@lostgradient/mcp/oauth` exports Client ID Metadata Document fetching and the shared OAuth security utilities. Use `safeFetchPublicHttpsUrl` for any client-supplied metadata URL. It applies the complete SSRF boundary as one operation: the URL must use HTTPS, literal private addresses are rejected, every DNS result must be public, and redirects are disabled. Do not recreate those checks at a host call site.
@@ -155,8 +163,13 @@ The dedicated `@lostgradient/mcp/oauth/client-metadata-documents` subpath expose
 | `@lostgradient/mcp/environment-schema`              | The raw Zod shape, side-effect free                                    |
 | `@lostgradient/mcp/metrics`                         | The in-process metrics collector                                       |
 | `@lostgradient/mcp/oauth`                           | OAuth contracts, metadata fetching, and shared security utilities      |
+| `@lostgradient/mcp/oauth/stores`                    | Type-only contracts for durable OAuth storage                          |
+| `@lostgradient/mcp/oauth/testing`                   | In-memory OAuth stores for tests                                       |
+| `@lostgradient/mcp/oauth/postgres`                  | PostgreSQL OAuth store implementations                                 |
 | `@lostgradient/mcp/oauth/client-metadata-documents` | Client ID Metadata Document validation and SSRF-safe fetching          |
 | `@lostgradient/mcp/rate-limit`                      | Sliding-window policy, stores, concurrency slots, and `429` responses  |
+| `@lostgradient/mcp/http`                            | Ordered MCP HTTP serving and per-user handler lifecycle                |
+| `@lostgradient/mcp/sveltekit`                       | Host-agnostic SvelteKit handle-chain mount                             |
 | `@lostgradient/mcp/version`                         | The advertised package version                                         |
 
 ## License

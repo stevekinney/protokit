@@ -51,6 +51,7 @@ const ENTRY_POINTS = [
 	'src/oauth/client-metadata-documents.ts',
 	'src/rate-limit/index.ts',
 	'src/http/index.ts',
+	'src/sveltekit-mount.ts',
 ].map((entry) => join(packageRoot, entry));
 
 await rm(outdir, { recursive: true, force: true });

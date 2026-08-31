@@ -35,4 +35,11 @@ describe('SAFE_TO_EXECUTE / EXCLUDED_FROM_EXECUTION classification', () => {
 			expect(spec.args.length > 0).toBe(true);
 		}
 	});
+
+	it('classifies the documented turbo environment audit as safe', () => {
+		expect(SAFE_TO_EXECUTE['audit:turbo-env']).toEqual({
+			command: 'bun',
+			args: ['run', 'audit:turbo-env'],
+		});
+	});
 });
