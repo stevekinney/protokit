@@ -3,15 +3,47 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import type { McpRegistry } from './scope-vocabulary.js';
 import type { OAuthDiscoveryConfiguration, OAuthHostSeams } from './oauth/index.js';
 import {
+	configurationContractFixture,
+	consentContractFixture,
+	crossInstanceMessagingContractFixture,
+	identityContractFixture,
+	scopeContractFixture,
+	storeContractFixture,
+	unauthenticatedAuthorizationContractFixture,
+	userProfileContractFixture,
+} from './oauth/testing/contract-fixtures.js';
+import {
 	createSvelteKitMcpMount,
 	primeSvelteKitMcpIdentity,
 	type SvelteKitLikeRequestEvent,
 } from './sveltekit-mount.js';
 import { resetSvelteKitMountStateForTesting } from './sveltekit-mount-state.js';
 
-const registry = { tools: [], resources: [], prompts: [] } as unknown as McpRegistry<'read'>;
-const oauthSeams = {} as OAuthHostSeams<'read'>;
-const discoveryConfiguration = {} as OAuthDiscoveryConfiguration;
+const registry = {
+	tools: [{ requiredScope: 'repositories:read' }],
+	resources: [],
+	prompts: [],
+} as unknown as McpRegistry<'repositories:read'>;
+const oauthSeams = {
+	fetchClientIdMetadataDocument: async () => null,
+	resolveIdentityBinding: identityContractFixture,
+	resolveUserProfile: userProfileContractFixture,
+	handleUnauthenticatedAuthorization: unauthenticatedAuthorizationContractFixture,
+	renderConsent: consentContractFixture,
+	stores: storeContractFixture,
+	scopes: scopeContractFixture,
+	configuration: configurationContractFixture,
+	hashCredential: (value: string) => value,
+	crossInstanceMessaging: crossInstanceMessagingContractFixture,
+} satisfies OAuthHostSeams<'repositories:read'>;
+const discoveryConfiguration = {
+	issuer: configurationContractFixture.issuer,
+	baseUrl: configurationContractFixture.baseUrl,
+	resource: configurationContractFixture.resource,
+	mcpUiExtension: configurationContractFixture.mcpUiExtension,
+	serverName: 'mount-test',
+	mcpProtocolVersion: '2026-07-28',
+} satisfies OAuthDiscoveryConfiguration;
 
 function event(path = '/mcp', address = '203.0.113.1'): SvelteKitLikeRequestEvent {
 	const url = new URL(path, 'https://example.com');
@@ -55,6 +87,225 @@ function harness(input: { start?: () => Promise<void>; longLivedProcess?: boolea
 
 describe('createSvelteKitMcpMount', () => {
 	beforeEach(resetSvelteKitMountStateForTesting);
+
+	test('refuses to start when a required OAuth host seam is absent at runtime', async () => {
+		const incompleteOauthSeams = { ...oauthSeams } as Partial<typeof oauthSeams>;
+		delete incompleteOauthSeams.renderConsent;
+		let startCount = 0;
+		await expect(
+			createSvelteKitMcpMount({
+				oauthSeams: incompleteOauthSeams as OAuthHostSeams<'repositories:read'>,
+				discoveryConfiguration,
+				registry: registry as unknown as McpRegistry<'repositories:read'>,
+				identityHandleName: 'identityHandle',
+				longLivedProcess: true,
+				mcp: {
+					start: async () => {
+						startCount += 1;
+					},
+					shutdown: async () => {},
+					publishGrantRevocation: async () => {},
+					handle: async () => new Response('mcp'),
+				},
+			}),
+		).rejects.toThrow('renderConsent');
+		expect(startCount).toBe(0);
+	});
+
+	test.each([
+		['stores.clients', { ...oauthSeams, stores: { ...oauthSeams.stores, clients: undefined } }],
+		['scopes.vocabulary', { ...oauthSeams, scopes: {} }],
+		[
+			'scopes.supportedScopes[0]',
+			{ ...oauthSeams, scopes: { ...oauthSeams.scopes, supportedScopes: ['undeclared:scope'] } },
+		],
+		[
+			'configuration.baseUrl',
+			{ ...oauthSeams, configuration: { ...oauthSeams.configuration, baseUrl: undefined } },
+		],
+		[
+			'configuration.issuer',
+			{ ...oauthSeams, configuration: { ...oauthSeams.configuration, issuer: '' } },
+		],
+		[
+			'configuration.trustedProxy.trustedProxyCidrs[0]',
+			{
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyCidrs: [null],
+					},
+				},
+			},
+		],
+		[
+			'configuration.trustedProxy.trustedProxyHeader',
+			{
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyHeader: 'x-forwarded',
+					},
+				},
+			},
+		],
+		[
+			'configuration.trustedProxy.trustedProxyHopCount',
+			{
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyHopCount: 0.5,
+					},
+				},
+			},
+		],
+		['recordEvent', { ...oauthSeams, recordEvent: 'not-callable' }],
+	] as const)(
+		'refuses to start when the nested OAuth host seam %s is absent at runtime',
+		async (expectedPath, incompleteOauthSeams) => {
+			let startCount = 0;
+			await expect(
+				createSvelteKitMcpMount({
+					oauthSeams: incompleteOauthSeams as unknown as OAuthHostSeams<'repositories:read'>,
+					discoveryConfiguration,
+					registry: registry as unknown as McpRegistry<'repositories:read'>,
+					identityHandleName: 'identityHandle',
+					longLivedProcess: true,
+					mcp: {
+						start: async () => {
+							startCount += 1;
+						},
+						shutdown: async () => {},
+						publishGrantRevocation: async () => {},
+						handle: async () => new Response('mcp'),
+					},
+				}),
+			).rejects.toThrow(expectedPath);
+			expect(startCount).toBe(0);
+		},
+	);
+
+	test.each([
+		[
+			'scopes.supportedScopes',
+			{
+				discoveryConfiguration,
+				registry: {
+					tools: [],
+					resources: [],
+					prompts: [],
+				} as unknown as McpRegistry<'repositories:read'>,
+			},
+		],
+		[
+			'discoveryConfiguration.resource',
+			{
+				discoveryConfiguration: {
+					...discoveryConfiguration,
+					resource: new URL('https://application.example.com/different-mcp'),
+				},
+				registry,
+			},
+		],
+		[
+			'configuration.baseUrl',
+			{
+				oauthSeams: {
+					...oauthSeams,
+					configuration: {
+						...oauthSeams.configuration,
+						baseUrl: new URL('https://application.example.com/gateway'),
+					},
+				},
+				discoveryConfiguration: {
+					...discoveryConfiguration,
+					baseUrl: new URL('https://application.example.com/gateway'),
+				},
+				registry,
+			},
+		],
+	] as const)(
+		'refuses to start when the mount configuration %s disagrees with the OAuth seams',
+		async (expectedPath, mountConfiguration) => {
+			let startCount = 0;
+			await expect(
+				createSvelteKitMcpMount({
+					oauthSeams,
+					...mountConfiguration,
+					identityHandleName: 'identityHandle',
+					longLivedProcess: true,
+					mcp: {
+						start: async () => {
+							startCount += 1;
+						},
+						shutdown: async () => {},
+						publishGrantRevocation: async () => {},
+						handle: async () => new Response('mcp'),
+					},
+				}),
+			).rejects.toThrow(expectedPath);
+			expect(startCount).toBe(0);
+		},
+	);
+
+	test.each([
+		[
+			'configuration.rateLimits.categories.oauth_authorize',
+			{
+				...configurationContractFixture,
+				rateLimits: { ...configurationContractFixture.rateLimits, categories: {} },
+			},
+		],
+		[
+			'configuration.rateLimits.categories.oauth_authorize.maximumRequests',
+			{
+				...configurationContractFixture,
+				rateLimits: {
+					...configurationContractFixture.rateLimits,
+					categories: {
+						...configurationContractFixture.rateLimits.categories,
+						oauth_authorize: {
+							...configurationContractFixture.rateLimits.categories.oauth_authorize,
+							maximumRequests: undefined,
+						},
+					},
+				},
+			},
+		],
+	] as const)(
+		'refuses to start when the rate-limit configuration seam %s is malformed',
+		async (expectedPath, configuration) => {
+			let startCount = 0;
+			await expect(
+				createSvelteKitMcpMount({
+					oauthSeams: {
+						...oauthSeams,
+						configuration,
+					} as unknown as OAuthHostSeams<'repositories:read'>,
+					discoveryConfiguration,
+					registry: registry as unknown as McpRegistry<'repositories:read'>,
+					identityHandleName: 'identityHandle',
+					longLivedProcess: true,
+					mcp: {
+						start: async () => {
+							startCount += 1;
+						},
+						shutdown: async () => {},
+						publishGrantRevocation: async () => {},
+						handle: async () => new Response('mcp'),
+					},
+				}),
+			).rejects.toThrow(expectedPath);
+			expect(startCount).toBe(0);
+		},
+	);
 
 	test('requires the named identity handle to prime every request', async () => {
 		const state = harness();
