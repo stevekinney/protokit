@@ -31,7 +31,7 @@
 		"test:development-auth-isolation": "bun run build:engine && NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/routes/development-authentication-routes.test.ts",
 		"test:tunnel-boundary": "bun test scripts/develop.test.ts",
 		"test:extension-advertisement": "bun run build:engine && NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/extension-advertisement.test.ts",
-		"test:rate-limit-concurrency": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/rate-limit-concurrency.test.ts",
+		"test:rate-limit-concurrency": "bun run build:engine && NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/rate-limit-concurrency.test.ts",
 		"test:trusted-proxy": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/trusted-proxy.test.ts applications/web/src/lib/canonicalize-ip-address.test.ts applications/web/src/lib/request-client-identifier.test.ts",
 		"test:request-boundaries": "bun run build:engine && NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/bounded-request-body.test.ts applications/web/src/lib/pkce-validation.test.ts applications/web/src/lib/reject-duplicate-parameters.test.ts applications/web/src/lib/exact-content-type.test.ts applications/web/src/resolve-public-file.test.ts",
 		"test:resource-exhaustion": "NODE_ENV=test DATABASE_URL=postgresql://test:test@localhost/test bun test applications/web/src/lib/resource-exhaustion.test.ts",
