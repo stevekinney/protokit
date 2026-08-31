@@ -36,7 +36,7 @@ import {
 	mcpLatestProtocolVersion,
 	mcpUiExtensionIdentifier,
 } from '@web/lib/mcp-protocol-constants';
-import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 import {
 	enforceOauthAuthorizeRateLimit,
 	enforceOauthRegistrationRateLimit,

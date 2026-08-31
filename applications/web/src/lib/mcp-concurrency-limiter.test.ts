@@ -132,6 +132,7 @@ describe('attachConcurrencySlotToResponseLifetime', () => {
 	function makeFakeSlot(): McpConcurrencySlot & { releaseCount: number; renewCount: number } {
 		const slot = {
 			allowed: true,
+			renewalIntervalMilliseconds: 20_000,
 			releaseCount: 0,
 			renewCount: 0,
 			release: async () => {

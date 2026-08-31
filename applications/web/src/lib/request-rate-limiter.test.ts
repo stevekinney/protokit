@@ -48,8 +48,8 @@ const {
 	enforceSessionCreationRateLimit,
 	isAuthenticationLockedOut,
 	recordFailedAuthentication,
+	resetInMemorySlidingWindowStore,
 } = await import('@web/lib/request-rate-limiter');
-const { resetInMemorySlidingWindowStore } = await import('@web/lib/in-memory-sliding-window-store');
 
 describe('enforceOauthRegistrationRateLimit', () => {
 	beforeEach(() => {

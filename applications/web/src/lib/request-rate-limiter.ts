@@ -1,33 +1,30 @@
 import { logger } from '@lostgradient/mcp/logger';
-import { environment } from '@web/env';
-import { inMemorySlidingWindowStore } from '@web/lib/in-memory-sliding-window-store';
-import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
-import { createRedisSlidingWindowStore } from '@web/lib/redis-sliding-window-store';
 import {
+	createInMemorySlidingWindowStore,
+	createRedisSlidingWindowStore,
+	RequestRateLimiter,
 	SlidingWindowRateLimiter,
 	type AtomicSlidingWindowStore,
+	type OAuthRateLimitCategory,
+	type RateLimitConfiguration,
 	type SlidingWindowRateLimiterResult,
-} from '@web/lib/sliding-window-rate-limiter';
+} from '@lostgradient/mcp/rate-limit';
+import { environment } from '@web/env';
+import { isRedisConfigured, getRedisClient } from '@web/lib/redis-client';
 
 const slidingWindowRateLimiter = new SlidingWindowRateLimiter();
+let inMemorySlidingWindowStore = createInMemorySlidingWindowStore();
+
+/** Test-only: replaces the single-process fallback with an empty store. */
+export function resetInMemorySlidingWindowStore(): void {
+	inMemorySlidingWindowStore = createInMemorySlidingWindowStore();
+}
 
 let warnedAboutInMemoryRateLimiter = false;
 
-type RateLimitRoute =
-	| 'oauth_register'
-	| 'oauth_token_network'
-	| 'oauth_token_client'
-	| 'oauth_revoke'
-	| 'oauth_authorize'
-	| 'google_auth'
-	| 'mcp_network'
-	| 'mcp_user'
-	| 'health_probe'
-	| 'metrics_probe'
-	| 'failed_authentication'
-	| 'session_creation';
+type HostRateLimitRoute = 'google_auth' | 'health_probe' | 'metrics_probe' | 'session_creation';
 
-function buildRateLimitKey(route: RateLimitRoute, identifier: string): string {
+function buildRateLimitKey(route: HostRateLimitRoute, identifier: string): string {
 	// The namespace is empty in every real deployment, so the key shape is
 	// unchanged there. It exists because rate-limit state is keyed by network
 	// identity and lives in shared Redis: two test suites running at once are one
@@ -68,7 +65,7 @@ async function resolveAtomicStore(): Promise<AtomicSlidingWindowStore> {
 }
 
 async function consumeRateLimit(input: {
-	route: RateLimitRoute;
+	route: HostRateLimitRoute;
 	identifier: string;
 	maximumRequests: number;
 	windowSeconds: number;
@@ -83,15 +80,59 @@ async function consumeRateLimit(input: {
 	});
 }
 
+function createSharedRequestRateLimiter(): RequestRateLimiter {
+	const sharedConfiguration: RateLimitConfiguration = {
+		keyNamespace: environment.rateLimitKeyNamespace || undefined,
+		maximumConcurrent: environment.rateLimitMcpConcurrentMax,
+		categories: {
+			oauth_register: {
+				maximumRequests: environment.rateLimitRegisterMax,
+				windowSeconds: environment.rateLimitRegisterWindowSeconds,
+			},
+			oauth_token_network: {
+				maximumRequests: environment.rateLimitTokenMax,
+				windowSeconds: environment.rateLimitTokenWindowSeconds,
+			},
+			oauth_token_client: {
+				maximumRequests: environment.rateLimitTokenMax,
+				windowSeconds: environment.rateLimitTokenWindowSeconds,
+			},
+			oauth_revoke: {
+				maximumRequests: environment.rateLimitRevokeMax,
+				windowSeconds: environment.rateLimitRevokeWindowSeconds,
+			},
+			oauth_authorize: {
+				maximumRequests: environment.rateLimitAuthorizeMax,
+				windowSeconds: environment.rateLimitAuthorizeWindowSeconds,
+			},
+			mcp_network: {
+				maximumRequests: environment.rateLimitMcpMax,
+				windowSeconds: environment.rateLimitMcpWindowSeconds,
+			},
+			mcp_user: {
+				maximumRequests: environment.rateLimitMcpMax,
+				windowSeconds: environment.rateLimitMcpWindowSeconds,
+			},
+			failed_authentication: {
+				maximumRequests: environment.rateLimitFailedAuthMax,
+				windowSeconds: environment.rateLimitFailedAuthWindowSeconds,
+			},
+		},
+	};
+	return new RequestRateLimiter(sharedConfiguration, resolveAtomicStore);
+}
+
+async function consumeSharedRateLimit(
+	category: OAuthRateLimitCategory,
+	identifier: string,
+): Promise<SlidingWindowRateLimiterResult> {
+	return createSharedRequestRateLimiter().consume(category, identifier);
+}
+
 export async function enforceOauthRegistrationRateLimit(input: {
 	networkIdentity: string;
 }): Promise<SlidingWindowRateLimiterResult> {
-	return consumeRateLimit({
-		route: 'oauth_register',
-		identifier: input.networkIdentity,
-		maximumRequests: environment.rateLimitRegisterMax,
-		windowSeconds: environment.rateLimitRegisterWindowSeconds,
-	});
+	return consumeSharedRateLimit('oauth_register', input.networkIdentity);
 }
 
 /**
@@ -102,12 +143,7 @@ export async function enforceOauthRegistrationRateLimit(input: {
 export async function enforceOauthTokenNetworkRateLimit(input: {
 	networkIdentity: string;
 }): Promise<SlidingWindowRateLimiterResult> {
-	return consumeRateLimit({
-		route: 'oauth_token_network',
-		identifier: input.networkIdentity,
-		maximumRequests: environment.rateLimitTokenMax,
-		windowSeconds: environment.rateLimitTokenWindowSeconds,
-	});
+	return consumeSharedRateLimit('oauth_token_network', input.networkIdentity);
 }
 
 /**
@@ -119,34 +155,19 @@ export async function enforceOauthTokenClientRateLimit(input: {
 	networkIdentity: string;
 	clientId: string;
 }): Promise<SlidingWindowRateLimiterResult> {
-	return consumeRateLimit({
-		route: 'oauth_token_client',
-		identifier: `${input.networkIdentity}:${input.clientId}`,
-		maximumRequests: environment.rateLimitTokenMax,
-		windowSeconds: environment.rateLimitTokenWindowSeconds,
-	});
+	return consumeSharedRateLimit('oauth_token_client', `${input.networkIdentity}:${input.clientId}`);
 }
 
 export async function enforceOauthRevokeRateLimit(input: {
 	networkIdentity: string;
 }): Promise<SlidingWindowRateLimiterResult> {
-	return consumeRateLimit({
-		route: 'oauth_revoke',
-		identifier: input.networkIdentity,
-		maximumRequests: environment.rateLimitRevokeMax,
-		windowSeconds: environment.rateLimitRevokeWindowSeconds,
-	});
+	return consumeSharedRateLimit('oauth_revoke', input.networkIdentity);
 }
 
 export async function enforceOauthAuthorizeRateLimit(input: {
 	networkIdentity: string;
 }): Promise<SlidingWindowRateLimiterResult> {
-	return consumeRateLimit({
-		route: 'oauth_authorize',
-		identifier: input.networkIdentity,
-		maximumRequests: environment.rateLimitAuthorizeMax,
-		windowSeconds: environment.rateLimitAuthorizeWindowSeconds,
-	});
+	return consumeSharedRateLimit('oauth_authorize', input.networkIdentity);
 }
 
 export async function enforceGoogleAuthRateLimit(input: {
@@ -164,24 +185,14 @@ export async function enforceGoogleAuthRateLimit(input: {
 export async function enforceMcpNetworkRateLimit(input: {
 	networkIdentity: string;
 }): Promise<SlidingWindowRateLimiterResult> {
-	return consumeRateLimit({
-		route: 'mcp_network',
-		identifier: input.networkIdentity,
-		maximumRequests: environment.rateLimitMcpMax,
-		windowSeconds: environment.rateLimitMcpWindowSeconds,
-	});
+	return consumeSharedRateLimit('mcp_network', input.networkIdentity);
 }
 
 /** The post-auth half of MCP rate limiting: scoped to the authenticated user. */
 export async function enforceMcpRateLimit(input: {
 	userId: string;
 }): Promise<SlidingWindowRateLimiterResult> {
-	return consumeRateLimit({
-		route: 'mcp_user',
-		identifier: input.userId,
-		maximumRequests: environment.rateLimitMcpMax,
-		windowSeconds: environment.rateLimitMcpWindowSeconds,
-	});
+	return consumeSharedRateLimit('mcp_user', input.userId);
 }
 
 export async function enforceHealthProbeRateLimit(input: {
@@ -235,22 +246,15 @@ export async function enforceSessionCreationRateLimit(input: {
 export async function isAuthenticationLockedOut(input: {
 	networkIdentity: string;
 }): Promise<boolean> {
-	const atomicStore = await resolveAtomicStore();
-	const currentCount = await slidingWindowRateLimiter.peek({
-		key: buildRateLimitKey('failed_authentication', input.networkIdentity),
-		windowSeconds: environment.rateLimitFailedAuthWindowSeconds,
-		atomicStore,
-	});
+	const currentCount = await createSharedRequestRateLimiter().peek(
+		'failed_authentication',
+		input.networkIdentity,
+	);
 	return currentCount >= environment.rateLimitFailedAuthMax;
 }
 
 export async function recordFailedAuthentication(input: {
 	networkIdentity: string;
 }): Promise<void> {
-	await consumeRateLimit({
-		route: 'failed_authentication',
-		identifier: input.networkIdentity,
-		maximumRequests: environment.rateLimitFailedAuthMax,
-		windowSeconds: environment.rateLimitFailedAuthWindowSeconds,
-	});
+	await consumeSharedRateLimit('failed_authentication', input.networkIdentity);
 }

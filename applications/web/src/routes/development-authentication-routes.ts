@@ -3,7 +3,7 @@ import { database, schema } from '@template/database';
 import { logger } from '@lostgradient/mcp/logger';
 import { environment } from '@web/env';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
-import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 import type { RequestContext } from '@web/lib/request-context';
 import { enforceSessionCreationRateLimit } from '@web/lib/request-rate-limiter';
 import { createSession } from '@web/lib/session-authentication';

@@ -20,7 +20,7 @@ import {
 import { validateGoogleIdToken } from '@web/lib/google-id-token';
 import { createStaticHtmlResponse } from '@web/lib/html-response';
 import { jsonResponse, redirectResponse } from '@web/lib/http-response';
-import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 import type { RequestContext } from '@web/lib/request-context';
 import {
 	enforceGoogleAuthRateLimit,

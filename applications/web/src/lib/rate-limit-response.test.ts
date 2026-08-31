@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { createRateLimitedResponse } from '@web/lib/rate-limit-response';
+import { createRateLimitedResponse } from '@lostgradient/mcp/rate-limit';
 
 describe('createRateLimitedResponse', () => {
 	it('returns 429 status', () => {
