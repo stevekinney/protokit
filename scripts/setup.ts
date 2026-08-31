@@ -383,7 +383,7 @@ export function isValidProductionRedisUrl(value: string): boolean {
 }
 
 /**
- * Mirrors `isValidCidr`'s syntax check (`applications/web/src/lib/trusted-proxy.ts`): a real
+ * Mirrors `isValidCidr`'s syntax check (`packages/mcp/src/oauth/network-identity.ts`): a real
  * IPv4 or IPv6 range address with a prefix length that fits that family's address width. Uses
  * `node:net`'s `isIPv4`/`isIPv6` rather than importing the application module directly — that
  * module has no package export, and this is a shape sanity check for the prompt loop, not the

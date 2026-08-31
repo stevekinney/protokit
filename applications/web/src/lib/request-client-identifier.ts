@@ -1,5 +1,8 @@
 import { environment } from '@web/env';
-import { resolveNetworkIdentity, type TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
+import {
+	resolveOauthNetworkIdentity,
+	type TrustedProxyConfiguration,
+} from '@lostgradient/mcp/oauth';
 
 /**
  * Builds the trusted-proxy configuration from the environment. Trusts
@@ -32,7 +35,7 @@ export function getRequestClientIdentifier(input: {
 	request: Request;
 	socketAddress?: string;
 }): string {
-	return resolveNetworkIdentity({
+	return resolveOauthNetworkIdentity({
 		socketAddress: input.socketAddress,
 		headers: input.request.headers,
 		configuration: getTrustedProxyConfiguration(),

@@ -1,6 +1,6 @@
 import { importJWK, jwtVerify, type JWK, type JWTPayload } from 'jose';
 import { logger } from '@lostgradient/mcp/logger';
-import { constantTimeEquals } from '@web/lib/constant-time-equals';
+import { constantTimeEquals } from '@lostgradient/mcp/oauth';
 import {
 	fetchGoogleEndpointBounded,
 	GoogleOutboundFetchError,

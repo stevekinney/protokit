@@ -39,7 +39,7 @@ function buildRateLimitKey(route: HostRateLimitRoute, identifier: string): strin
 		: `rate_limit:${route}:${identifier}`;
 }
 
-async function resolveAtomicStore(): Promise<AtomicSlidingWindowStore> {
+export async function resolveOauthAtomicSlidingWindowStore(): Promise<AtomicSlidingWindowStore> {
 	if (!isRedisConfigured()) {
 		if (environment.nodeEnv === 'production') {
 			// Belt-and-suspenders: `assertProductionStartupInvariants` should have
@@ -70,7 +70,7 @@ async function consumeRateLimit(input: {
 	maximumRequests: number;
 	windowSeconds: number;
 }): Promise<SlidingWindowRateLimiterResult> {
-	const atomicStore = await resolveAtomicStore();
+	const atomicStore = await resolveOauthAtomicSlidingWindowStore();
 
 	return slidingWindowRateLimiter.consume({
 		key: buildRateLimitKey(input.route, input.identifier),
@@ -119,7 +119,7 @@ function createSharedRequestRateLimiter(): RequestRateLimiter {
 			},
 		},
 	};
-	return new RequestRateLimiter(sharedConfiguration, resolveAtomicStore);
+	return new RequestRateLimiter(sharedConfiguration, resolveOauthAtomicSlidingWindowStore);
 }
 
 async function consumeSharedRateLimit(

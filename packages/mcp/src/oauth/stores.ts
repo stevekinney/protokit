@@ -135,6 +135,8 @@ export interface CodeStore {
 export type RefreshTokenRevocationTarget = {
 	/** Subject whose live MCP streams must be disconnected after revocation. */
 	userId: string;
+	/** Token family whose replay was detected or whose grant was revoked. */
+	familyId: string;
 };
 
 export interface TokenStore {

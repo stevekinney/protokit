@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { isIPv4, isIPv6 } from 'node:net';
 import { canonicalizeIpAddress, expandIpv6Groups } from './canonicalize-ip-address.js';
 
@@ -87,6 +88,14 @@ export function isExactContentType(value: string | null, expectedMediaType: stri
 		else if (character === ',' && !inQuotes) return false;
 	}
 	return value.split(';')[0]?.trim().toLowerCase() === expectedMediaType;
+}
+
+/** Compares UTF-8 credentials without data-dependent comparison timing. */
+export function constantTimeEquals(leftValue: string, rightValue: string): boolean {
+	const leftBuffer = Buffer.from(leftValue, 'utf8');
+	const rightBuffer = Buffer.from(rightValue, 'utf8');
+	if (leftBuffer.length !== rightBuffer.length) return false;
+	return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 export function withDeadline<T>(promise: Promise<T>, timeoutMilliseconds: number): Promise<T> {

@@ -161,6 +161,13 @@ require(typeof oauthContract.isAddressInCidr === 'function', '/oauth CIDR matche
 require(typeof oauthContract.isValidRedirectUri === 'function', '/oauth redirect validator is not a function');
 require(typeof oauthContract.isValidClientName === 'function', '/oauth client-name validator is not a function');
 require(typeof oauthContract.isExactContentType === 'function', '/oauth content-type validator is not a function');
+require(typeof oauthContract.constantTimeEquals === 'function', '/oauth constant-time comparison is not a function');
+require(typeof oauthContract.isValidPkceCodeVerifier === 'function', '/oauth PKCE verifier validator is not a function');
+require(typeof oauthContract.resolveOauthNetworkIdentity === 'function', '/oauth network identity resolver is not a function');
+require(typeof oauthContract.authenticateOauthClient === 'function', '/oauth client authenticator is not a function');
+require(typeof oauthContract.handleOauthRegisterPost === 'function', '/oauth registration handler is not a function');
+require(typeof oauthContract.handleOauthTokenPost === 'function', '/oauth token handler is not a function');
+require(typeof oauthContract.handleOauthRevokePost === 'function', '/oauth revocation handler is not a function');
 require(typeof oauthContract.withDeadline === 'function', '/oauth deadline helper is not a function');
 require(typeof clientMetadataDocuments.fetchClientIdMetadataDocument === 'function', '/oauth/client-metadata-documents fetcher is not a function');
 require(clientMetadataDocuments.safeFetchPublicHttpsUrl === oauthContract.safeFetchPublicHttpsUrl, 'safe fetch differs between /oauth and the dedicated subpath');

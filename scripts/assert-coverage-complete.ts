@@ -194,6 +194,29 @@ export const LINE_COVERAGE_WAIVED_FILES: ReadonlySet<string> = new Set([
  */
 export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>> = new Map([
 	[
+		// Bun attributes every exercised statement inside these two catch
+		// blocks, including the returned OAuth error response, but never marks
+		// the `catch (error)` clause itself. The package endpoint error suite
+		// drives unsupported content types, malformed bodies, and oversized
+		// bodies through both handlers; only the clause line remains at zero.
+		'packages/mcp/src/oauth/token-endpoint.ts',
+		new Set([301]),
+	],
+	[
+		// Same Bun/SWC catch-clause instrumentation artifact as the token
+		// endpoint immediately above, proven through the revocation endpoint's
+		// package-level malformed-body cases.
+		'packages/mcp/src/oauth/revocation-endpoint.ts',
+		new Set([25]),
+	],
+	[
+		// Closing brace of the InvalidOauthRequestBodyError branch. Every
+		// return inside the branch is exercised for malformed JSON and an
+		// unsupported content type; Bun records only this brace as uncovered.
+		'packages/mcp/src/oauth/registration-endpoint.ts',
+		new Set([74]),
+	],
+	[
 		// Two defense-in-depth guards inside the SDK server factory, both
 		// unreachable through the only entry point that reaches them.
 		// `handleMcpRequest` calls `readMcpRequestAuthExtra(authInfo)` and
@@ -209,7 +232,7 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		// immediately after its `return`. Every line of that return body
 		// registers real hits from the oversized-body test; only the brace
 		// never does -- the same Bun/SWC instrumentation artifact already
-		// documented for `trusted-proxy.ts` line 180.
+		// documented for the package OAuth network identity boundary.
 		'applications/web/src/lib/mcp-handler.ts',
 		new Set([88, 96, 293]),
 	],
@@ -258,7 +281,7 @@ export const LINE_COVERAGE_WAIVED_LINES: ReadonlyMap<string, ReadonlySet<number>
 		// (this file's own test file run alone, no other test file involved)
 		// -- a Bun/SWC coverage-instrumentation artifact on this exact brace,
 		// not a real code gap.
-		'applications/web/src/lib/trusted-proxy.ts',
+		'packages/mcp/src/oauth/network-identity.ts',
 		new Set([180]),
 	],
 	[

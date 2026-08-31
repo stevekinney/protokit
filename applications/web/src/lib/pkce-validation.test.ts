@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from '@web/lib/pkce-validation';
+import { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from '@lostgradient/mcp/oauth';
 
 // The exact example values from RFC 7636 Appendix B.
 const rfc7636CodeVerifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';

@@ -3,7 +3,7 @@ import {
 	checkBearerCredential,
 	isPlaintextTransport,
 } from '@web/lib/bearer-credential-authentication';
-import type { TrustedProxyConfiguration } from '@web/lib/trusted-proxy';
+import type { TrustedProxyConfiguration } from '@lostgradient/mcp/oauth';
 
 describe('checkBearerCredential', () => {
 	it('accepts a credential separated by more than one space', () => {

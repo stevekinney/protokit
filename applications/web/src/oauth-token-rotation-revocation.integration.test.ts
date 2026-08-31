@@ -444,9 +444,10 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 		const familyId = randomUUID();
 		const oneHourFromNow = new Date(Date.now() + 60 * 60 * 1000);
 		const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+		const oneSecondAgo = new Date(Date.now() - 1000);
 
 		// The ancestor: its refresh token is already revoked (as a real
-		// rotation would leave it), but its access token was never revoked --
+		// rotation would leave it), but its access token was never revoked—
 		// simulating the best-effort revoke having failed and been swallowed.
 		const ancestorAccessToken = randomBytes(48).toString('hex');
 		const ancestorRefreshToken = randomBytes(48).toString('hex');
@@ -477,7 +478,9 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 				resource,
 				accessTokenHash: hashCredential(ancestorAccessToken),
 				familyId,
-				expiresAt: thirtyDaysFromNow,
+				// Replay detection must outlive the ancestor's own expiry while a
+				// descendant in the same family can still be used.
+				expiresAt: oneSecondAgo,
 				revokedAt: new Date(),
 			}),
 			database.insert(schema.oauthTokens).values({
@@ -832,6 +835,10 @@ describeWithRedis('client-bound, atomic refresh rotation and revocation (require
 			access_token: string;
 			refresh_token: string;
 		};
+		await database
+			.update(schema.oauthRefreshTokens)
+			.set({ expiresAt: new Date(Date.now() - 1000) })
+			.where(eq(schema.oauthRefreshTokens.refreshToken, hashCredential(originalRefreshToken)));
 
 		// Revoke the now-dead original refresh token instead of replaying it
 		// through /oauth/token.

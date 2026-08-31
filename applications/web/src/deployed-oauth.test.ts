@@ -5,7 +5,7 @@ import {
 	generatePkcePair,
 	startLoopbackCallbackListener,
 } from '@web/deployed-oauth';
-import { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from '@web/lib/pkce-validation';
+import { isValidPkceCodeChallenge, isValidPkceCodeVerifier } from '@lostgradient/mcp/oauth';
 
 function fakeResponse(
 	status: number,
