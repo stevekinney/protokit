@@ -120,7 +120,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 			resource: text('resource').notNull(),
 			accessTokenHash: text('access_token_hash')
 				.notNull()
-				.references(() => accessTokens.accessTokenHash),
+				.references(() => accessTokens.accessTokenHash, { onDelete: 'cascade' }),
 			familyId: text('family_id').notNull(),
 			expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 			revokedAt: timestamp('revoked_at', { withTimezone: true }),

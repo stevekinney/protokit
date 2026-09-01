@@ -48,7 +48,7 @@ const setup = (async () => {
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_authorization_transactions (transaction_id_hash text PRIMARY KEY, csrf_token_hash text NOT NULL, consent_binding_hash text NOT NULL, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, state text, issuer text NOT NULL, resource text NOT NULL, scope text NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz, created_at timestamptz NOT NULL);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_codes (code_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, scope text, state text, resource text NOT NULL, expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_access_tokens (access_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
-		CREATE TABLE IF NOT EXISTS mcp_postgres_test_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES mcp_postgres_test_access_tokens(access_token_hash), family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+		CREATE TABLE IF NOT EXISTS mcp_postgres_test_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES mcp_postgres_test_access_tokens(access_token_hash) ON DELETE CASCADE, family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
 	`);
 })();
 
@@ -182,6 +182,26 @@ runOAuthStoreConformance('postgres', async () => {
 });
 
 describe('Postgres OAuth durability', () => {
+	test('deleting an access token cascades to its paired refresh token', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: tokenRecord('cascade-access', new Date('2099-01-01')),
+			refreshToken: refreshRecord('cascade-refresh', 'cascade-access', new Date('2099-01-01')),
+		});
+
+		const deleted = await connection.query(
+			"DELETE FROM mcp_postgres_test_access_tokens WHERE access_token_hash = 'cascade-access'",
+		);
+		const pairedRefreshTokens = await connection.query(
+			"SELECT refresh_token_hash FROM mcp_postgres_test_refresh_tokens WHERE access_token_hash = 'cascade-access'",
+		);
+
+		expect(deleted.rowCount).toBe(1);
+		expect(pairedRefreshTokens.rowCount).toBe(0);
+	});
+
 	test('serializes refresh rotation and family revocation on the family lock', async () => {
 		await resetFixture();
 		await seedClient();
@@ -377,7 +397,7 @@ describe('Postgres OAuth durability', () => {
 				CREATE TABLE ${prefix}_authorization_transactions (transaction_id_hash text PRIMARY KEY, csrf_token_hash text NOT NULL, consent_binding_hash text NOT NULL, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, state text, issuer text NOT NULL, resource text NOT NULL, scope text NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz, created_at timestamptz NOT NULL);
 				CREATE TABLE ${prefix}_codes (code_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, scope text, state text, resource text NOT NULL, expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL);
 				CREATE TABLE ${prefix}_access_tokens (access_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
-				CREATE TABLE ${prefix}_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES ${prefix}_access_tokens(access_token_hash), family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+				CREATE TABLE ${prefix}_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES ${prefix}_clients(client_id) ON DELETE CASCADE, owner_id bigint NOT NULL REFERENCES ${prefix}_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES ${prefix}_access_tokens(access_token_hash) ON DELETE CASCADE, family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
 				INSERT INTO ${prefix}_users VALUES (${largeUserId});
 				INSERT INTO ${prefix}_clients VALUES ('client-one', NULL, 'Bigint Client', 'public', 'none', NULL, '[]', '[]', '[]', NULL, NULL, now(), now());
 			`);
