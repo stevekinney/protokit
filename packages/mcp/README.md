@@ -143,9 +143,9 @@ Concurrency is a resource-lifetime concern, not a handler-promise concern. For a
 
 Call `setLogger(hostLogger)` before serving requests to route every engine log record through the host's existing sink and redaction policy. The logger is structural and deliberately small: `info`, `warn`, `error`, and `child`. A host does not need to import pino or implement any other pino API. The exported `logger` and `getLogger()` remain the package's full pino-backed logger for compatibility; injection changes the engine's internal sink. If `setLogger` is not called, engine records use that same lazy pino logger and existing behavior.
 
-## Unreleased breaking change
+## Required server identity in 0.2.0
 
-`MCP_SERVER_NAME` is required in the next release. The package no longer defaults to the template-branded `template-mcp-server` identity because that fallback was silently advertised to every connected MCP client. Set the explicit server name before constructing a server.
+`MCP_SERVER_NAME` is required starting in 0.2.0. The package no longer defaults to the template-branded `template-mcp-server` identity because that fallback was silently advertised to every connected MCP client. Set the explicit server name before constructing a server.
 
 ## Mounting in SvelteKit
 

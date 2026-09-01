@@ -88,6 +88,23 @@ describe('claude-code-review.yml: fork-reachable pull_request automation authori
 	});
 });
 
+describe('release-mcp.yml: tokenless trusted publishing', () => {
+	const { workflow } = loadWorkflow('release-mcp.yml');
+	const publish = workflow.jobs.publish;
+
+	test('grants only the permissions required for npm OIDC publishing', () => {
+		expect(publish.permissions).toEqual({ contents: 'read', 'id-token': 'write' });
+		expect(jobUsesSecrets(publish)).toBe(false);
+	});
+
+	test('installs an OIDC-capable npm CLI and publishes without a registry token', () => {
+		const runCommands = (publish.steps ?? []).map((step) => step.run ?? '').join('\n');
+		expect(runCommands).toContain('npm install --global npm@11.5.1');
+		expect(runCommands).toContain('npm publish --access public');
+		expect(runCommands).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/);
+	});
+});
+
 describe('every workflow: least-privilege scaffolding', () => {
 	test('every workflow declares an explicit top-level `permissions:` block', () => {
 		for (const fileName of [
@@ -95,6 +112,7 @@ describe('every workflow: least-privilege scaffolding', () => {
 			'claude-code-review.yml',
 			'production.yml',
 			'pull-request.yml',
+			'release-mcp.yml',
 		]) {
 			const { workflow } = loadWorkflow(fileName);
 			expect(workflow.permissions).toBeDefined();
@@ -107,6 +125,7 @@ describe('every workflow: least-privilege scaffolding', () => {
 			'claude-code-review.yml',
 			'production.yml',
 			'pull-request.yml',
+			'release-mcp.yml',
 		]) {
 			const { workflow } = loadWorkflow(fileName);
 			for (const [jobName, job] of Object.entries(workflow.jobs)) {

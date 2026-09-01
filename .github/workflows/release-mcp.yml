@@ -28,13 +28,12 @@ jobs:
     name: Build, verify, and publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Requires a protected "npm-publish" GitHub environment holding the
-    # NPM_TOKEN secret, with required reviewers configured in the repository
-    # settings. That protection is what actually gates publishing, not this
-    # file: without it the token is an ordinary repository secret and any
-    # collaborator with write access could reach the publish step. Same
-    # reasoning, and the same pattern, as `production.yml`'s `production`
-    # environment.
+    # Requires a protected "npm-publish" GitHub environment with required
+    # reviewers configured in the repository settings. The package's npm
+    # trusted publisher is restricted to this workflow and environment, so
+    # publishing uses a short-lived OIDC credential rather than a registry
+    # token. Same reasoning, and the same pattern, as `production.yml`'s
+    # `production` environment.
     environment: npm-publish
     permissions:
       contents: read
@@ -69,6 +68,11 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      # npm trusted publishing requires npm 11.5.1 or later. Pin the minimum
+      # supported version instead of relying on whichever npm ships with the
+      # selected Node release.
+      - run: npm install --global npm@11.5.1
 
       - run: bun install --frozen-lockfile
 
@@ -116,7 +120,6 @@ jobs:
       - name: Publish to npm
         if: github.event_name == 'release'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
         # A scoped package defaults to restricted; without --access public the
         # publish either fails or succeeds privately, which is worse.
@@ -135,7 +138,7 @@ jobs:
           esac
           if [ "$RELEASE_IS_PRERELEASE" = 'true' ]; then tag='next'; fi
           echo "Publishing $version under dist-tag '$tag'."
-          npm publish --access public --provenance --tag "$tag"
+          npm publish --access public --tag "$tag"
         working-directory: packages/mcp
 
       - name: Rehearsal summary
