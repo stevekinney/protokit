@@ -1,6 +1,6 @@
 {
 	"name": "@lostgradient/mcp",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "A Model Context Protocol server engine: registries, scope vocabularies, and an OAuth-ready request boundary.",
 	"license": "MIT",
 	"author": "Steve Kinney <hello@stevekinney.net>",
