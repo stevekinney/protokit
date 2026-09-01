@@ -190,6 +190,9 @@ describe('Postgres OAuth durability', () => {
 			accessToken: tokenRecord('cascade-access', new Date('2099-01-01')),
 			refreshToken: refreshRecord('cascade-refresh', 'cascade-access', new Date('2099-01-01')),
 		});
+		const pairedRefreshTokenBeforeDeletion = await connection.query(
+			"SELECT refresh_token_hash FROM mcp_postgres_test_refresh_tokens WHERE access_token_hash = 'cascade-access'",
+		);
 
 		const deleted = await connection.query(
 			"DELETE FROM mcp_postgres_test_access_tokens WHERE access_token_hash = 'cascade-access'",
@@ -198,6 +201,7 @@ describe('Postgres OAuth durability', () => {
 			"SELECT refresh_token_hash FROM mcp_postgres_test_refresh_tokens WHERE access_token_hash = 'cascade-access'",
 		);
 
+		expect(pairedRefreshTokenBeforeDeletion.rowCount).toBe(1);
 		expect(deleted.rowCount).toBe(1);
 		expect(pairedRefreshTokens.rowCount).toBe(0);
 	});
