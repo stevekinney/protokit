@@ -1,9 +1,16 @@
 {
 	"name": "@lostgradient/mcp",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "A Model Context Protocol server engine: registries, scope vocabularies, and an OAuth-ready request boundary.",
 	"license": "MIT",
 	"author": "Steve Kinney <hello@stevekinney.net>",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/stevekinney/protokit.git",
+		"directory": "packages/mcp"
+	},
+	"homepage": "https://github.com/stevekinney/protokit/tree/main/packages/mcp#readme",
+	"bugs": "https://github.com/stevekinney/protokit/issues",
 	"type": "module",
 	"sideEffects": false,
 	"files": [

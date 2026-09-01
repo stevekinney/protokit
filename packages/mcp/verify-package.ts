@@ -33,7 +33,7 @@
  * and every npm auth-bearing environment variable stripped.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -71,6 +71,28 @@ function run(command: string[], cwd: string, env?: Record<string, string>): stri
 		throw new Error(`${command[0]} failed with exit code ${result.exitCode}.`);
 	}
 	return stdout.trim();
+}
+
+async function listFilesRecursively(directory: string): Promise<string[]> {
+	const entries = await readdir(directory, { withFileTypes: true });
+	const files: string[] = [];
+	for (const entry of entries) {
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) files.push(...(await listFilesRecursively(path)));
+		else files.push(path);
+	}
+	return files;
+}
+
+function collectDependencyNames(tree: unknown, names = new Set<string>()): Set<string> {
+	if (typeof tree !== 'object' || tree === null) return names;
+	const dependencies = (tree as { dependencies?: unknown }).dependencies;
+	if (typeof dependencies !== 'object' || dependencies === null) return names;
+	for (const [name, dependency] of Object.entries(dependencies)) {
+		names.add(name);
+		collectDependencyNames(dependency, names);
+	}
+	return names;
 }
 
 const consumer = await mkdtemp(join(tmpdir(), 'lostgradient-mcp-consumer-'));
@@ -117,6 +139,29 @@ try {
 		anonymousEnvironment(),
 	);
 
+	const installedPackageRoot = join(consumer, 'node_modules', '@lostgradient', 'mcp');
+	const installedDependencyTree = JSON.parse(
+		run(['npm', 'ls', '--all', '--json'], consumer, anonymousEnvironment()),
+	) as unknown;
+	const templateDependencies = [...collectDependencyNames(installedDependencyTree)].filter((name) =>
+		name.startsWith('@template/'),
+	);
+	if (templateDependencies.length > 0) {
+		throw new Error(
+			`Packed artifact installed private template dependencies: ${templateDependencies.join(', ')}.`,
+		);
+	}
+
+	const installedJavaScriptFiles = (
+		await listFilesRecursively(join(installedPackageRoot, 'dist'))
+	).filter((path) => path.endsWith('.js'));
+	for (const path of installedJavaScriptFiles) {
+		const source = await readFile(path, 'utf8');
+		if (/\bwith\s*\{\s*type\s*:/.test(source)) {
+			throw new Error(`Import-attribute syntax survived in the packed artifact: ${path}.`);
+		}
+	}
+
 	const probe = join(consumer, 'probe.mjs');
 	await writeFile(
 		probe,
@@ -129,7 +174,7 @@ import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
 import { createInMemoryOAuthStores, InMemoryClientStore, InMemoryCodeStore, InMemoryTokenStore, InMemoryTransactionStore } from '@lostgradient/mcp/oauth/testing';
 import { createPostgresOAuthSchema, createPostgresOAuthStores, PostgresClientStore, PostgresCodeStore, PostgresTokenStore, PostgresTransactionStore } from '@lostgradient/mcp/oauth/postgres';
 import { createInMemorySlidingWindowStore, createRateLimitedResponse, RequestRateLimiter } from '@lostgradient/mcp/rate-limit';
-import { createMcpHttpServingLayer, createMcpServingHandler, McpUserHandlerCache } from '@lostgradient/mcp/http';
+import { buildMcpAuthInfo, createMcpHttpServingLayer, createMcpServingHandler, McpUserHandlerCache } from '@lostgradient/mcp/http';
 import * as svelteKitContract from '@lostgradient/mcp/sveltekit';
 
 const problems = [];
@@ -156,7 +201,16 @@ for (const subpath of ['', '/logger', '/env', '/metrics', '/environment-schema',
 
 // The engine must be usable, not merely importable.
 const vocabulary = defineScopes({ 'repositories:read': 'Read repository metadata.' });
-const registry = vocabulary.defineRegistry({ tools: [], resources: [], prompts: [] });
+const protectedResource = vocabulary.defineResource({
+  name: 'private_repository',
+  title: 'Private repository',
+  uri: 'repository://private',
+  description: 'A repository visible only with the consumer-defined scope.',
+  mimeType: 'application/json',
+  requiredScope: 'repositories:read',
+  handler: async (uri) => ({ contents: [{ uri: uri.href, mimeType: 'application/json', text: '{}' }] }),
+});
+const registry = vocabulary.defineRegistry({ tools: [], resources: [protectedResource], prompts: [] });
 require(Array.isArray(getSupportedScopes(registry)), 'getSupportedScopes did not return a list');
 require(
   parseMcpServerEnvironment({ NODE_ENV: 'test', MCP_SERVER_NAME: 'packed-consumer-mcp-server' }).NODE_ENV === 'test',
@@ -202,6 +256,60 @@ require(!('svelteKitMountTestHooks' in svelteKitContract), '/sveltekit exposes i
 require(typeof PostgresCodeStore === 'function', 'PostgresCodeStore is not a constructor');
 require(typeof PostgresTokenStore === 'function', 'PostgresTokenStore is not a constructor');
 require(typeof PostgresClientStore === 'function', 'PostgresClientStore is not a constructor');
+
+// The library-owned HTTP boundary must enforce a consumer registry's resource
+// scopes for subscriptions/listen. A host must not reproduce this check.
+const servingEvents = [];
+const servingHandler = createMcpServingHandler({
+  registry,
+  configuration: {
+    protocolVersion: '2026-07-28',
+    maximumRequestBodyBytes: 64 * 1024,
+    maximumSubscriptionsPerUser: 10,
+    userHandlerSweepIntervalMilliseconds: 60_000,
+    userHandlerIdleMilliseconds: 60_000,
+    enableUiExtension: false,
+    enableConformanceMode: false,
+  },
+  seams: {
+    reportDegradation: () => {},
+    recordEvent: (outcome) => servingEvents.push(outcome),
+    onError: (error) => problems.push('serving handler error: ' + String(error)),
+  },
+});
+const underScopedListenResponse = await servingHandler.handle(
+  new Request('https://consumer.example/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'subscriptions/listen',
+      params: { notifications: { resourceSubscriptions: ['repository://private'] } },
+    }),
+  }),
+  buildMcpAuthInfo({
+    accessToken: 'packed-artifact-token',
+    expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+    extra: {
+      userId: 'packed-artifact-user',
+      userProfile: {
+        id: 'packed-artifact-user',
+        email: 'user@example.com',
+        name: 'Packed Artifact User',
+        image: null,
+        role: 'user',
+      },
+      oauthClientId: 'packed-artifact-client',
+      scopes: [],
+      resource: 'https://consumer.example/mcp',
+      requestId: 'packed-artifact-request',
+    },
+  }),
+);
+require(underScopedListenResponse.status === 403, 'library HTTP boundary did not reject an under-scoped subscription');
+require(servingEvents.includes('insufficient_scope'), 'library HTTP boundary did not record insufficient_scope');
+await servingHandler.shutdown();
 
 if (problems.length > 0) {
   console.error('Packaged artifact is not consumable:');
