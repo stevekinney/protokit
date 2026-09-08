@@ -1,5 +1,6 @@
 import type { AccessToken, RefreshToken, TokenStore } from '../stores.js';
 import {
+	coerceRowDates,
 	columnIdentifier,
 	countRows,
 	qualifiedColumnIdentifier,
@@ -46,7 +47,8 @@ export class PostgresTokenStore implements TokenStore {
 		const result = await this.database
 			.execute(sql`SELECT ${returnedAccessToken(userId)} FROM ${this.schema.accessTokens}
 			WHERE access_token_hash = ${tokenHash}`);
-		return resultRows<AccessToken>(result)[0] ?? null;
+		const row = resultRows<AccessToken>(result)[0];
+		return row ? coerceRowDates(row, ['expiresAt', 'createdAt'], ['revokedAt']) : null;
 	}
 
 	async rotateRefreshToken(

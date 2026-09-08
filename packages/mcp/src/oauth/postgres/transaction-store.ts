@@ -1,6 +1,7 @@
 import type { ConsumedAuthorizationTransaction, TransactionStore } from '../stores.js';
 import {
 	affectedRows,
+	coerceRowDates,
 	columnIdentifier,
 	hashOpaqueValue,
 	resultRows,
@@ -47,7 +48,8 @@ export class PostgresTransactionStore implements TransactionStore {
 				client_id AS "clientId", redirect_uri AS "redirectUri", code_challenge AS "codeChallenge",
 				code_challenge_method AS "codeChallengeMethod", state, issuer, resource, scope,
 				expires_at AS "expiresAt", consumed_at AS "consumedAt", created_at AS "createdAt"`);
-		return resultRows<ConsumedAuthorizationTransaction>(result)[0] ?? null;
+		const row = resultRows<ConsumedAuthorizationTransaction>(result)[0];
+		return row ? coerceRowDates(row, ['expiresAt', 'consumedAt', 'createdAt']) : null;
 	}
 
 	async unconsume(transactionId: string, consumedAt: Date): Promise<boolean> {

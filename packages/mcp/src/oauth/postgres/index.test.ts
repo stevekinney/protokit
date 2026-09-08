@@ -567,3 +567,108 @@ describe('Postgres OAuth durability', () => {
 		expect(await stores.tokens.purgeExpired(new Date())).toBe(2000);
 	});
 });
+
+describe('Postgres OAuth timestamp coercion', () => {
+	// The raw-SQL read paths bypass drizzle's column mapping, and every drizzle
+	// pg-family driver overrides the timestamptz/timestamp/date parser to return
+	// the raw string. Without coercion these columns arrive as strings even
+	// though the store types declare Date, and any consumer calling a Date method
+	// (buildMcpAuthInfo's expiresAt.getTime(), the client-secret expiry check)
+	// crashes in production. Only the rotation path (mapAccess/mapRefresh) coerced
+	// before; these assert every read-back path returns real Date instances.
+	test('access-token findByHash returns Date-typed timestamps', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.tokens.issueAuthorizationGrant({
+			accessToken: {
+				...tokenRecord('coerce-access', new Date('2099-01-01')),
+				revokedAt: new Date('2026-06-01'),
+			},
+		});
+		const token = await stores.tokens.findByHash('coerce-access');
+		expect(token).not.toBeNull();
+		expect(token!.expiresAt).toBeInstanceOf(Date);
+		expect(token!.createdAt).toBeInstanceOf(Date);
+		expect(token!.revokedAt).toBeInstanceOf(Date);
+	});
+
+	test('client findById returns Date-typed timestamps', async () => {
+		await resetFixture();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.clients.register({
+			...clientRecord(),
+			clientId: 'coerce-client',
+			clientSecretExpiresAt: new Date('2099-01-01'),
+		});
+		const client = await stores.clients.findById('coerce-client');
+		expect(client).not.toBeNull();
+		expect(client!.clientSecretExpiresAt).toBeInstanceOf(Date);
+		expect(client!.createdAt).toBeInstanceOf(Date);
+		expect(client!.updatedAt).toBeInstanceOf(Date);
+	});
+
+	test('code findByHash and consume return Date-typed timestamps', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.codes.issue({
+			codeHash: 'coerce-code',
+			clientId: 'client-one',
+			userId: 'user-one',
+			redirectUri: 'https://client.example/callback',
+			codeChallenge: 'challenge',
+			codeChallengeMethod: 'S256',
+			scope: '',
+			state: null,
+			resource: 'resource',
+			expiresAt: new Date('2099-01-01'),
+			usedAt: null,
+			createdAt: new Date('2026-01-01'),
+		});
+		const found = await stores.codes.findByHash('coerce-code');
+		expect(found).not.toBeNull();
+		expect(found!.expiresAt).toBeInstanceOf(Date);
+		expect(found!.createdAt).toBeInstanceOf(Date);
+		const consumed = await stores.codes.consume('coerce-code', new Date());
+		expect(consumed).not.toBeNull();
+		expect(consumed!.expiresAt).toBeInstanceOf(Date);
+		expect(consumed!.usedAt).toBeInstanceOf(Date);
+		expect(consumed!.createdAt).toBeInstanceOf(Date);
+	});
+
+	test('transaction consume returns Date-typed timestamps', async () => {
+		await resetFixture();
+		await seedClient();
+		const stores = createPostgresOAuthStores(database, schema);
+		await stores.transactions.create({
+			transactionId: 'coerce-transaction',
+			csrfToken: 'coerce-csrf',
+			consentBinding: 'coerce-binding',
+			record: {
+				userId: 'user-one',
+				clientId: 'client-one',
+				redirectUri: 'https://client.example/callback',
+				codeChallenge: 'challenge',
+				codeChallengeMethod: 'S256',
+				state: null,
+				issuer: 'https://issuer.example',
+				resource: 'resource',
+				scope: '',
+				expiresAt: new Date('2099-01-01'),
+				consumedAt: null,
+				createdAt: new Date('2026-01-01'),
+			},
+		});
+		const consumed = await stores.transactions.consume(
+			'coerce-transaction',
+			'coerce-csrf',
+			'coerce-binding',
+			'user-one',
+		);
+		expect(consumed).not.toBeNull();
+		expect(consumed!.expiresAt).toBeInstanceOf(Date);
+		expect(consumed!.consumedAt).toBeInstanceOf(Date);
+		expect(consumed!.createdAt).toBeInstanceOf(Date);
+	});
+});
