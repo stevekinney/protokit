@@ -1,6 +1,7 @@
 import type { AuthorizationCode, CodeStore, ConsumedAuthorizationCode } from '../stores.js';
 import {
 	affectedRows,
+	coerceRowDates,
 	columnIdentifier,
 	resultRows,
 	sql,
@@ -35,7 +36,8 @@ export class PostgresCodeStore implements CodeStore {
 		const result = await this.database.execute(
 			sql`SELECT ${returnedCode(userId)} FROM ${this.schema.codes} WHERE code_hash = ${codeHash}`,
 		);
-		return resultRows<AuthorizationCode>(result)[0] ?? null;
+		const row = resultRows<AuthorizationCode>(result)[0];
+		return row ? coerceRowDates(row, ['expiresAt', 'createdAt'], ['usedAt']) : null;
 	}
 
 	async consume(codeHash: string, now: Date): Promise<ConsumedAuthorizationCode | null> {
@@ -43,7 +45,8 @@ export class PostgresCodeStore implements CodeStore {
 		const result = await this.database
 			.execute(sql`UPDATE ${this.schema.codes} SET used_at = date_trunc('milliseconds', clock_timestamp())
 			WHERE code_hash = ${codeHash} AND used_at IS NULL AND expires_at > ${now} RETURNING ${returnedCode(userId)}`);
-		return resultRows<ConsumedAuthorizationCode>(result)[0] ?? null;
+		const row = resultRows<ConsumedAuthorizationCode>(result)[0];
+		return row ? coerceRowDates(row, ['expiresAt', 'usedAt', 'createdAt']) : null;
 	}
 
 	async unconsume(codeHash: string, usedAt: Date): Promise<boolean> {

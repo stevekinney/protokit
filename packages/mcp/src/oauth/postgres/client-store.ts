@@ -1,5 +1,5 @@
 import type { ClientStore, RegisteredClient } from '../stores.js';
-import { resultRows, sql, type PostgresOAuthDatabase } from './database.js';
+import { coerceRowDates, resultRows, sql, type PostgresOAuthDatabase } from './database.js';
 import type { PostgresOAuthSchema } from './schema.js';
 
 const returnedClient = sql`client_id AS "clientId", client_secret_hash AS "clientSecretHash",
@@ -48,7 +48,9 @@ export class PostgresClientStore implements ClientStore {
 			sql`SELECT ${returnedClient} FROM ${this.schema.clients} WHERE client_id = ${clientId}`,
 		);
 		const client = resultRows<RegisteredClient>(result)[0];
-		return client ? structuredClone(client) : null;
+		if (!client) return null;
+		coerceRowDates(client, ['createdAt', 'updatedAt'], ['clientSecretExpiresAt']);
+		return structuredClone(client);
 	}
 
 	async update(clientId: string, patch: Partial<RegisteredClient>): Promise<void> {
