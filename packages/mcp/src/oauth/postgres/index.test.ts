@@ -5,6 +5,7 @@ import { bigint, integer, pgTable, serial, text, uuid } from 'drizzle-orm/pg-cor
 import { runOAuthStoreConformance } from '../../testing/oauth-store-conformance.js';
 import type { AccessToken, RefreshToken, RegisteredClient } from '../stores.js';
 import { createPostgresOAuthSchema, createPostgresOAuthStores } from './index.js';
+import { toDate, toNullableDate } from './database.js';
 
 describe('createPostgresOAuthSchema', () => {
 	test('accepts host-owned UUID and integer user identifiers', () => {
@@ -565,6 +566,31 @@ describe('Postgres OAuth durability', () => {
 		expect(await stores.transactions.purgeExpired(new Date())).toBe(1000);
 		expect(await stores.codes.purgeExpired(new Date())).toBe(1000);
 		expect(await stores.tokens.purgeExpired(new Date())).toBe(2000);
+	});
+});
+
+describe('timestamp coercion helpers', () => {
+	test('toDate parses timestamp strings and passes Date instances through', () => {
+		expect(toDate('2026-01-01T00:00:00.000Z')).toBeInstanceOf(Date);
+		expect(toDate('2026-01-01T00:00:00.000Z').getTime()).toBe(
+			Date.parse('2026-01-01T00:00:00.000Z'),
+		);
+		const already = new Date('2026-06-01');
+		expect(toDate(already)).toBe(already);
+	});
+
+	test('toDate throws on null, undefined, and unparseable values rather than coercing silently', () => {
+		expect(() => toDate(null)).toThrow();
+		expect(() => toDate(undefined)).toThrow();
+		expect(() => toDate('not-a-timestamp')).toThrow();
+		expect(() => toDate(new Date('not-a-timestamp'))).toThrow();
+	});
+
+	test('toNullableDate maps null and undefined to null and validates present values', () => {
+		expect(toNullableDate(null)).toBeNull();
+		expect(toNullableDate(undefined)).toBeNull();
+		expect(toNullableDate('2026-01-01T00:00:00.000Z')).toBeInstanceOf(Date);
+		expect(() => toNullableDate('not-a-timestamp')).toThrow();
 	});
 });
 

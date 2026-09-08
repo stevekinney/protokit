@@ -34,12 +34,28 @@ export function resultRows<T>(result: unknown): T[] {
  * `expiresAt.getTime()`, or the client-secret expiry check) throws in
  * production. A value already a `Date` (a driver without the override) passes
  * through unchanged.
+ *
+ * Fails loudly rather than coercing silently: a `NOT NULL` column that comes
+ * back null would make `new Date(null)` the Unix epoch, and an unparseable
+ * string would make an `Invalid Date` — both still `Date` instances that would
+ * corrupt `expiresAt`/`createdAt` or propagate `NaN` downstream. So null,
+ * undefined, and unparseable values throw here instead.
  */
 export function toDate(value: unknown): Date {
-	return value instanceof Date ? value : new Date(value as string);
+	if (value === null || value === undefined) {
+		throw new TypeError('OAuth store timestamp column was null; expected a NOT NULL timestamp.');
+	}
+	const date = value instanceof Date ? value : new Date(value as string);
+	if (Number.isNaN(date.getTime())) {
+		throw new TypeError(`OAuth store timestamp could not be parsed: ${String(value)}`);
+	}
+	return date;
 }
 
-/** Null-safe {@link toDate} for nullable timestamp columns. */
+/**
+ * Null-safe {@link toDate} for nullable timestamp columns: null and undefined
+ * map to null, and any present value is validated by {@link toDate}.
+ */
 export function toNullableDate(value: unknown): Date | null {
 	return value === null || value === undefined ? null : toDate(value);
 }
