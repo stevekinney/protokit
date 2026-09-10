@@ -91,10 +91,13 @@ export function createMcpHttpServingLayer(input: {
 					headers: protocolHeaders,
 				});
 			}
-			// A cheap tee taken before dispatch; only parsed below if the response is
-			// a stream, so ordinary request/response calls never parse it twice.
-			const listenProbe = input.markServerOnlyCloseableStream ? context.request.clone() : undefined;
 			try {
+				// A cheap tee taken before dispatch; only parsed below if the response is a
+				// stream, so ordinary request/response calls never parse it twice. Kept inside
+				// the try so a failed clone still releases the concurrency slot.
+				const listenProbe = input.markServerOnlyCloseableStream
+					? context.request.clone()
+					: undefined;
 				const response = await input.handler.handle(context.request, authentication as AuthInfo);
 				const headers = new Headers(response.headers);
 				for (const [name, value] of Object.entries(corsHeaders)) headers.set(name, value);
