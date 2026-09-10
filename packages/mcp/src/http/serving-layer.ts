@@ -8,8 +8,8 @@ import {
 	type McpAuthenticationConfiguration,
 	type McpAuthenticationSeams,
 } from './authenticate.js';
-import { SERVER_ONLY_CLOSEABLE_HEADER } from './handler.js';
 import type { McpServingHandler } from './handler.js';
+import { inspectListenRequest } from './listen-inspection.js';
 import { readMcpRequestAuthExtra } from './request-context.js';
 import {
 	createMcpCorsHeaders,
@@ -30,7 +30,14 @@ export function createMcpHttpServingLayer(input: {
 	authenticationSeams: McpAuthenticationSeams;
 	rateLimiter: Pick<RequestRateLimiter, 'consume'>;
 	concurrencyLimiter: Pick<McpConcurrencyLimiter, 'acquire'>;
-	handler: Pick<McpServingHandler, 'handle' | 'markServerOnlyCloseableStream'>;
+	handler: Pick<McpServingHandler, 'handle'>;
+	/**
+	 * Applied to the FINAL response for a `subscriptions/listen` request so a
+	 * graceful-shutdown drain can exclude it. Provided here (not read off the
+	 * handler) because this layer owns the response after its CORS and
+	 * concurrency re-wraps, which replace the object the handler could tag.
+	 */
+	markServerOnlyCloseableStream?: (response: Response) => Response;
 }): McpHttpServingLayer {
 	return {
 		async handle(context) {
@@ -84,6 +91,9 @@ export function createMcpHttpServingLayer(input: {
 					headers: protocolHeaders,
 				});
 			}
+			// A cheap tee taken before dispatch; only parsed below if the response is
+			// a stream, so ordinary request/response calls never parse it twice.
+			const listenProbe = input.markServerOnlyCloseableStream ? context.request.clone() : undefined;
 			try {
 				const response = await input.handler.handle(context.request, authentication as AuthInfo);
 				const headers = new Headers(response.headers);
@@ -97,14 +107,16 @@ export function createMcpHttpServingLayer(input: {
 					responseWithCorsHeaders,
 					concurrencySlot,
 				);
-				// A listen stream carries an internal marker header (set by the handler)
-				// through the re-wraps above, which replace both the Response and its
-				// body and so drop any identity-based tag. Apply the host's
-				// server-only-closeable seam to THIS final response and strip the marker
-				// so a graceful-shutdown drain sees the tag on the object it receives.
-				if (settled.headers.has(SERVER_ONLY_CLOSEABLE_HEADER)) {
-					settled.headers.delete(SERVER_ONLY_CLOSEABLE_HEADER);
-					return input.handler.markServerOnlyCloseableStream?.(settled) ?? settled;
+				// The handler tags its own response for direct callers, but this layer
+				// rebuilt the Response and its body twice above; apply the seam to the
+				// object this layer actually returns. Gate the request re-parse on the
+				// response being an event stream so only listen responses pay for it.
+				if (
+					listenProbe &&
+					(settled.headers.get('content-type') ?? '').includes('text/event-stream') &&
+					(await inspectListenRequest(listenProbe)).isListenRequest
+				) {
+					return input.markServerOnlyCloseableStream?.(settled) ?? settled;
 				}
 				return settled;
 			} catch (error) {

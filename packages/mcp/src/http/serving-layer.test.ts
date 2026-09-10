@@ -3,7 +3,6 @@ import { describe, expect, test } from 'bun:test';
 import type { OAuthRequestContext } from '../oauth/index.js';
 import type { AccessToken, TokenStore } from '../oauth/stores.js';
 import type { McpAuthenticationConfiguration } from './authenticate.js';
-import { SERVER_ONLY_CLOSEABLE_HEADER } from './handler.js';
 import { createMcpHttpServingLayer } from './serving-layer.js';
 
 const resource = 'https://server.example/mcp';
@@ -42,6 +41,26 @@ function context(method = 'POST'): OAuthRequestContext {
 		request,
 		requestUrl: new URL(resource),
 		requestId: 'request-1',
+		socketAddress: '203.0.113.1',
+		identity: null,
+	};
+}
+
+function listenContext(): OAuthRequestContext {
+	const request = new Request(resource, {
+		method: 'POST',
+		headers: { authorization: 'Bearer valid', 'content-type': 'application/json' },
+		body: JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'subscriptions/listen',
+			params: { notifications: { resourceSubscriptions: ['res://x'] } },
+		}),
+	});
+	return {
+		request,
+		requestUrl: new URL(resource),
+		requestId: 'request-listen',
 		socketAddress: '203.0.113.1',
 		identity: null,
 	};
@@ -118,12 +137,12 @@ function harness(
 				};
 			},
 		},
+		markServerOnlyCloseableStream: input.markServerOnlyCloseableStream,
 		handler: {
 			handle: async () => {
 				operations.push('handler');
 				return input.handle ? input.handle() : new Response('ok');
 			},
-			markServerOnlyCloseableStream: input.markServerOnlyCloseableStream,
 		},
 	});
 	return {
@@ -258,7 +277,7 @@ describe('MCP HTTP serving order', () => {
 		expect(state.releaseCount).toBe(1);
 	});
 
-	test('tags the final listen response with the server-only-closeable seam and strips the marker (TRI-128)', async () => {
+	test('tags the final listen response via the serving-layer seam (TRI-128)', async () => {
 		const tagged = new WeakSet<Response>();
 		const listening = harness({
 			markServerOnlyCloseableStream: (response) => {
@@ -267,17 +286,13 @@ describe('MCP HTTP serving order', () => {
 			},
 			handle: async () =>
 				new Response('event: connected\n\n', {
-					headers: {
-						'content-type': 'text/event-stream',
-						[SERVER_ONLY_CLOSEABLE_HEADER]: '1',
-					},
+					headers: { 'content-type': 'text/event-stream' },
 				}),
 		});
-		const response = await listening.layer.handle(context());
 		// The seam is applied to the exact response the layer returns — after the
-		// CORS and concurrency re-wraps — and the internal marker is not leaked.
+		// CORS and concurrency re-wraps that replace the object the handler tagged.
+		const response = await listening.layer.handle(listenContext());
 		expect(tagged.has(response)).toBe(true);
-		expect(response.headers.has(SERVER_ONLY_CLOSEABLE_HEADER)).toBe(false);
 	});
 
 	test('does not tag a non-listen response (TRI-128)', async () => {

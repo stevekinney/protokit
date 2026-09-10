@@ -14,15 +14,7 @@ import { readMcpRequestAuthExtra } from './request-context.js';
 import { createMcpProtocolErrorResponse } from './responses.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import { createUserServerEventBus } from './user-server-event-bus.js';
-
-/**
- * Internal marker set on a `subscriptions/listen` response so the serving
- * layer can re-apply the host's server-only-closeable seam to the FINAL
- * response after its CORS and concurrency re-wraps (which replace both the
- * Response and its body). Stripped by the serving layer before the client
- * sees it (TRI-128).
- */
-export const SERVER_ONLY_CLOSEABLE_HEADER = 'x-mcp-server-only-closeable';
+import { inspectListenRequest } from './listen-inspection.js';
 
 class McpPayloadTooLargeError extends Error {}
 
@@ -69,40 +61,6 @@ function boundRequestBody(request: Request, maximumBytes: number): Request {
 	} as RequestInit);
 }
 
-type ListenInspection = { isListenRequest: boolean; requestedResourceUris: string[] };
-
-function readRequestedResourceUris(message: object): string[] {
-	const parameters = (message as { params?: unknown }).params;
-	if (typeof parameters !== 'object' || parameters === null) return [];
-	const notifications = (parameters as { notifications?: unknown }).notifications;
-	if (typeof notifications !== 'object' || notifications === null) return [];
-	const uris = (notifications as { resourceSubscriptions?: unknown }).resourceSubscriptions;
-	return Array.isArray(uris) ? uris.filter((uri): uri is string => typeof uri === 'string') : [];
-}
-
-async function inspectListenRequest(request: Request): Promise<ListenInspection> {
-	const none = { isListenRequest: false, requestedResourceUris: [] };
-	if (!request.body) return none;
-	try {
-		const parsed: unknown = await request.clone().json();
-		const messages = Array.isArray(parsed) ? parsed : [parsed];
-		const listens = messages.filter(
-			(message): message is object =>
-				typeof message === 'object' &&
-				message !== null &&
-				(message as { method?: unknown }).method === 'subscriptions/listen',
-		);
-		return listens.length === 0
-			? none
-			: {
-					isListenRequest: true,
-					requestedResourceUris: listens.flatMap(readRequestedResourceUris),
-				};
-	} catch {
-		return none;
-	}
-}
-
 export type McpHandlerConfiguration = {
 	protocolVersion: string;
 	maximumRequestBodyBytes: number;
@@ -128,7 +86,6 @@ export type McpServingHandler = {
 	publishGrantRevocation(userId: string): Promise<void>;
 	closeUser(userId: string): Promise<boolean>;
 	shutdown(): Promise<void>;
-	markServerOnlyCloseableStream?(response: Response): Response;
 };
 
 export function createMcpServingHandler<Scope extends string>(input: {
@@ -196,7 +153,6 @@ export function createMcpServingHandler<Scope extends string>(input: {
 
 	return {
 		start: () => revocations.start(),
-		markServerOnlyCloseableStream: seams.markServerOnlyCloseableStream,
 		async handle(request, authInfo) {
 			const options: McpHandlerRequestOptions = { authInfo };
 			let boundedRequest: Request;
@@ -237,13 +193,9 @@ export function createMcpServingHandler<Scope extends string>(input: {
 			const response = await cache.dispatch(extra.userId, (handler) =>
 				handler.fetch(boundedRequest, options),
 			);
-			if (inspection.isListenRequest) {
-				// The tag applied here would be lost to the serving layer's CORS and
-				// concurrency re-wraps; instead mark the response so the serving layer
-				// can apply the seam to the final response it returns (TRI-128).
-				response.headers.set(SERVER_ONLY_CLOSEABLE_HEADER, '1');
-			}
-			return response;
+			return inspection.isListenRequest
+				? (seams.markServerOnlyCloseableStream?.(response) ?? response)
+				: response;
 		},
 		publishUserResourceUpdate(userId, uri) {
 			const existing = cache.peek(userId);
