@@ -318,6 +318,32 @@ describe('MCP HTTP serving order', () => {
 		expect(releasing.releaseCount).toBe(1);
 	});
 
+	test('resolves without hanging when the handler ignores the body on the probe path (TRI-128)', async () => {
+		const releasing = harness({
+			markServerOnlyCloseableStream: (response) => response,
+			handle: async () => new Response('ok'),
+		});
+		const request = new Request(resource, {
+			method: 'POST',
+			headers: { authorization: 'Bearer valid' },
+			body: 'unconsumed',
+		});
+		// The handler returns a non-stream response without reading the body, so the
+		// probe tee's peer stays unread. Cancelling it must not be awaited, or this
+		// never resolves.
+		const unreadContext: OAuthRequestContext = {
+			request,
+			requestUrl: new URL(resource),
+			requestId: 'request-noconsume',
+			socketAddress: '203.0.113.1',
+			identity: null,
+		};
+		const response = await releasing.layer.handle(unreadContext);
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(releasing.releaseCount).toBe(1);
+	});
+
 	test('does not tag a non-listen response (TRI-128)', async () => {
 		const tagged = new WeakSet<Response>();
 		const ordinary = harness({
