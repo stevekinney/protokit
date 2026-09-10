@@ -169,7 +169,7 @@ export function createMcpServingHandler<Scope extends string>(input: {
 			}
 			const extra = readMcpRequestAuthExtra(authInfo);
 			if (!extra) throw new Error('MCP request reached the handler without verified auth context.');
-			const inspection = await inspectListenRequest(boundedRequest);
+			const inspection = await inspectListenRequest(boundedRequest.clone());
 			if (
 				inspection.isListenRequest &&
 				!areResourceSubscriptionsAuthorized(

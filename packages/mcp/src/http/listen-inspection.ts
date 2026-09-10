@@ -19,7 +19,8 @@ export async function inspectListenRequest(request: Request): Promise<ListenInsp
 	const none = { isListenRequest: false, requestedResourceUris: [] };
 	if (!request.body) return none;
 	try {
-		const parsed: unknown = await request.clone().json();
+		// Consumes the request body; callers that still need the body pass a clone.
+		const parsed: unknown = await request.json();
 		const messages = Array.isArray(parsed) ? parsed : [parsed];
 		const listens = messages.filter(
 			(message): message is object =>

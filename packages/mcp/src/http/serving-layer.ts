@@ -111,15 +111,21 @@ export function createMcpHttpServingLayer(input: {
 					concurrencySlot,
 				);
 				// The handler tags its own response for direct callers, but this layer
-				// rebuilt the Response and its body twice above; apply the seam to the
-				// object this layer actually returns. Gate the request re-parse on the
-				// response being an event stream so only listen responses pay for it.
-				if (
-					listenProbe &&
-					(settled.headers.get('content-type') ?? '').includes('text/event-stream') &&
-					(await inspectListenRequest(listenProbe)).isListenRequest
-				) {
-					return input.markServerOnlyCloseableStream?.(settled) ?? settled;
+				// rebuilt the Response and its body twice above, so apply the seam to the
+				// object this layer actually returns. Only listen responses are event
+				// streams, so gate the probe parse on that; on any other path cancel the
+				// probe, whose body is a tee of the request that would otherwise buffer.
+				if (listenProbe) {
+					const isEventStream = (settled.headers.get('content-type') ?? '')
+						.toLowerCase()
+						.includes('text/event-stream');
+					if (isEventStream) {
+						if ((await inspectListenRequest(listenProbe)).isListenRequest) {
+							return input.markServerOnlyCloseableStream?.(settled) ?? settled;
+						}
+					} else {
+						await listenProbe.body?.cancel().catch(() => {});
+					}
 				}
 				return settled;
 			} catch (error) {
