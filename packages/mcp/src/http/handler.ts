@@ -15,6 +15,15 @@ import { createMcpProtocolErrorResponse } from './responses.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import { createUserServerEventBus } from './user-server-event-bus.js';
 
+/**
+ * Internal marker set on a `subscriptions/listen` response so the serving
+ * layer can re-apply the host's server-only-closeable seam to the FINAL
+ * response after its CORS and concurrency re-wraps (which replace both the
+ * Response and its body). Stripped by the serving layer before the client
+ * sees it (TRI-128).
+ */
+export const SERVER_ONLY_CLOSEABLE_HEADER = 'x-mcp-server-only-closeable';
+
 class McpPayloadTooLargeError extends Error {}
 
 function boundRequestBody(request: Request, maximumBytes: number): Request {
@@ -119,6 +128,7 @@ export type McpServingHandler = {
 	publishGrantRevocation(userId: string): Promise<void>;
 	closeUser(userId: string): Promise<boolean>;
 	shutdown(): Promise<void>;
+	markServerOnlyCloseableStream?(response: Response): Response;
 };
 
 export function createMcpServingHandler<Scope extends string>(input: {
@@ -186,6 +196,7 @@ export function createMcpServingHandler<Scope extends string>(input: {
 
 	return {
 		start: () => revocations.start(),
+		markServerOnlyCloseableStream: seams.markServerOnlyCloseableStream,
 		async handle(request, authInfo) {
 			const options: McpHandlerRequestOptions = { authInfo };
 			let boundedRequest: Request;
@@ -226,9 +237,13 @@ export function createMcpServingHandler<Scope extends string>(input: {
 			const response = await cache.dispatch(extra.userId, (handler) =>
 				handler.fetch(boundedRequest, options),
 			);
-			return inspection.isListenRequest
-				? (seams.markServerOnlyCloseableStream?.(response) ?? response)
-				: response;
+			if (inspection.isListenRequest) {
+				// The tag applied here would be lost to the serving layer's CORS and
+				// concurrency re-wraps; instead mark the response so the serving layer
+				// can apply the seam to the final response it returns (TRI-128).
+				response.headers.set(SERVER_ONLY_CLOSEABLE_HEADER, '1');
+			}
+			return response;
 		},
 		publishUserResourceUpdate(userId, uri) {
 			const existing = cache.peek(userId);

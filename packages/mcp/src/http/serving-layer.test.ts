@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import type { OAuthRequestContext } from '../oauth/index.js';
 import type { AccessToken, TokenStore } from '../oauth/stores.js';
 import type { McpAuthenticationConfiguration } from './authenticate.js';
+import { SERVER_ONLY_CLOSEABLE_HEADER } from './handler.js';
 import { createMcpHttpServingLayer } from './serving-layer.js';
 
 const resource = 'https://server.example/mcp';
@@ -52,6 +53,7 @@ function harness(
 		userAllowed?: boolean;
 		concurrencyAllowed?: boolean;
 		handle?: () => Promise<Response>;
+		markServerOnlyCloseableStream?: (response: Response) => Response;
 		trustedProxy?: McpAuthenticationConfiguration['trustedProxy'];
 		allowedOrigins?: ReadonlySet<string>;
 	} = {},
@@ -121,6 +123,7 @@ function harness(
 				operations.push('handler');
 				return input.handle ? input.handle() : new Response('ok');
 			},
+			markServerOnlyCloseableStream: input.markServerOnlyCloseableStream,
 		},
 	});
 	return {
@@ -253,5 +256,40 @@ describe('MCP HTTP serving order', () => {
 		await response.text();
 		await Promise.resolve();
 		expect(state.releaseCount).toBe(1);
+	});
+
+	test('tags the final listen response with the server-only-closeable seam and strips the marker (TRI-128)', async () => {
+		const tagged = new WeakSet<Response>();
+		const listening = harness({
+			markServerOnlyCloseableStream: (response) => {
+				tagged.add(response);
+				return response;
+			},
+			handle: async () =>
+				new Response('event: connected\n\n', {
+					headers: {
+						'content-type': 'text/event-stream',
+						[SERVER_ONLY_CLOSEABLE_HEADER]: '1',
+					},
+				}),
+		});
+		const response = await listening.layer.handle(context());
+		// The seam is applied to the exact response the layer returns — after the
+		// CORS and concurrency re-wraps — and the internal marker is not leaked.
+		expect(tagged.has(response)).toBe(true);
+		expect(response.headers.has(SERVER_ONLY_CLOSEABLE_HEADER)).toBe(false);
+	});
+
+	test('does not tag a non-listen response (TRI-128)', async () => {
+		const tagged = new WeakSet<Response>();
+		const ordinary = harness({
+			markServerOnlyCloseableStream: (response) => {
+				tagged.add(response);
+				return response;
+			},
+			handle: async () => new Response('ok'),
+		});
+		const response = await ordinary.layer.handle(context());
+		expect(tagged.has(response)).toBe(false);
 	});
 });

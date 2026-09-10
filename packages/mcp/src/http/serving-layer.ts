@@ -8,6 +8,7 @@ import {
 	type McpAuthenticationConfiguration,
 	type McpAuthenticationSeams,
 } from './authenticate.js';
+import { SERVER_ONLY_CLOSEABLE_HEADER } from './handler.js';
 import type { McpServingHandler } from './handler.js';
 import { readMcpRequestAuthExtra } from './request-context.js';
 import {
@@ -29,7 +30,7 @@ export function createMcpHttpServingLayer(input: {
 	authenticationSeams: McpAuthenticationSeams;
 	rateLimiter: Pick<RequestRateLimiter, 'consume'>;
 	concurrencyLimiter: Pick<McpConcurrencyLimiter, 'acquire'>;
-	handler: Pick<McpServingHandler, 'handle'>;
+	handler: Pick<McpServingHandler, 'handle' | 'markServerOnlyCloseableStream'>;
 }): McpHttpServingLayer {
 	return {
 		async handle(context) {
@@ -92,7 +93,20 @@ export function createMcpHttpServingLayer(input: {
 					statusText: response.statusText,
 					headers,
 				});
-				return attachConcurrencySlotToResponseLifetime(responseWithCorsHeaders, concurrencySlot);
+				const settled = attachConcurrencySlotToResponseLifetime(
+					responseWithCorsHeaders,
+					concurrencySlot,
+				);
+				// A listen stream carries an internal marker header (set by the handler)
+				// through the re-wraps above, which replace both the Response and its
+				// body and so drop any identity-based tag. Apply the host's
+				// server-only-closeable seam to THIS final response and strip the marker
+				// so a graceful-shutdown drain sees the tag on the object it receives.
+				if (settled.headers.has(SERVER_ONLY_CLOSEABLE_HEADER)) {
+					settled.headers.delete(SERVER_ONLY_CLOSEABLE_HEADER);
+					return input.handler.markServerOnlyCloseableStream?.(settled) ?? settled;
+				}
+				return settled;
 			} catch (error) {
 				await concurrencySlot.release();
 				throw error;
