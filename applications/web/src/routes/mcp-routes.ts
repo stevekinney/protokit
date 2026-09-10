@@ -7,6 +7,7 @@ import { metricsCollector } from '@lostgradient/mcp/metrics';
 import { environment } from '@web/env';
 import { hashCredential } from '@web/lib/hash-credential';
 import { handleMcpRequest } from '@web/lib/mcp-handler';
+import { markAsServerOnlyCloseableStream } from '@web/lib/in-flight-request-tracker';
 import { parseAllowedOrigins } from '@web/lib/mcp-origin-validation';
 import { mcpLatestProtocolVersion } from '@web/lib/mcp-protocol-constants';
 import { getMcpResourceUrl } from '@web/lib/mcp-request-context';
@@ -119,6 +120,7 @@ export async function handleMcpRequestWithAuthentication(
 					userId: key.replace(/^rate_limit:mcp_concurrent:/, ''),
 				}),
 		},
+		markServerOnlyCloseableStream: markAsServerOnlyCloseableStream,
 		handler: { handle: handleMcpRequest },
 	});
 	return servingLayer.handle({

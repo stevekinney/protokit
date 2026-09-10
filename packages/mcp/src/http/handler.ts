@@ -14,6 +14,7 @@ import { readMcpRequestAuthExtra } from './request-context.js';
 import { createMcpProtocolErrorResponse } from './responses.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import { createUserServerEventBus } from './user-server-event-bus.js';
+import { inspectListenRequest } from './listen-inspection.js';
 
 class McpPayloadTooLargeError extends Error {}
 
@@ -58,40 +59,6 @@ function boundRequestBody(request: Request, maximumBytes: number): Request {
 		duplex: 'half',
 		signal: request.signal,
 	} as RequestInit);
-}
-
-type ListenInspection = { isListenRequest: boolean; requestedResourceUris: string[] };
-
-function readRequestedResourceUris(message: object): string[] {
-	const parameters = (message as { params?: unknown }).params;
-	if (typeof parameters !== 'object' || parameters === null) return [];
-	const notifications = (parameters as { notifications?: unknown }).notifications;
-	if (typeof notifications !== 'object' || notifications === null) return [];
-	const uris = (notifications as { resourceSubscriptions?: unknown }).resourceSubscriptions;
-	return Array.isArray(uris) ? uris.filter((uri): uri is string => typeof uri === 'string') : [];
-}
-
-async function inspectListenRequest(request: Request): Promise<ListenInspection> {
-	const none = { isListenRequest: false, requestedResourceUris: [] };
-	if (!request.body) return none;
-	try {
-		const parsed: unknown = await request.clone().json();
-		const messages = Array.isArray(parsed) ? parsed : [parsed];
-		const listens = messages.filter(
-			(message): message is object =>
-				typeof message === 'object' &&
-				message !== null &&
-				(message as { method?: unknown }).method === 'subscriptions/listen',
-		);
-		return listens.length === 0
-			? none
-			: {
-					isListenRequest: true,
-					requestedResourceUris: listens.flatMap(readRequestedResourceUris),
-				};
-	} catch {
-		return none;
-	}
 }
 
 export type McpHandlerConfiguration = {
@@ -202,7 +169,7 @@ export function createMcpServingHandler<Scope extends string>(input: {
 			}
 			const extra = readMcpRequestAuthExtra(authInfo);
 			if (!extra) throw new Error('MCP request reached the handler without verified auth context.');
-			const inspection = await inspectListenRequest(boundedRequest);
+			const inspection = await inspectListenRequest(boundedRequest.clone());
 			if (
 				inspection.isListenRequest &&
 				!areResourceSubscriptionsAuthorized(

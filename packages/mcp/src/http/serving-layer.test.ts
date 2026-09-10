@@ -46,12 +46,33 @@ function context(method = 'POST'): OAuthRequestContext {
 	};
 }
 
+function listenContext(): OAuthRequestContext {
+	const request = new Request(resource, {
+		method: 'POST',
+		headers: { authorization: 'Bearer valid', 'content-type': 'application/json' },
+		body: JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'subscriptions/listen',
+			params: { notifications: { resourceSubscriptions: ['res://x'] } },
+		}),
+	});
+	return {
+		request,
+		requestUrl: new URL(resource),
+		requestId: 'request-listen',
+		socketAddress: '203.0.113.1',
+		identity: null,
+	};
+}
+
 function harness(
 	input: {
 		networkAllowed?: boolean;
 		userAllowed?: boolean;
 		concurrencyAllowed?: boolean;
 		handle?: () => Promise<Response>;
+		markServerOnlyCloseableStream?: (response: Response) => Response;
 		trustedProxy?: McpAuthenticationConfiguration['trustedProxy'];
 		allowedOrigins?: ReadonlySet<string>;
 	} = {},
@@ -116,6 +137,7 @@ function harness(
 				};
 			},
 		},
+		markServerOnlyCloseableStream: input.markServerOnlyCloseableStream,
 		handler: {
 			handle: async () => {
 				operations.push('handler');
@@ -253,5 +275,85 @@ describe('MCP HTTP serving order', () => {
 		await response.text();
 		await Promise.resolve();
 		expect(state.releaseCount).toBe(1);
+	});
+
+	test('tags the final listen response via the serving-layer seam (TRI-128)', async () => {
+		const tagged = new WeakSet<Response>();
+		const listening = harness({
+			markServerOnlyCloseableStream: (response) => {
+				tagged.add(response);
+				return response;
+			},
+			handle: async () =>
+				new Response('event: connected\n\n', {
+					headers: { 'content-type': 'text/event-stream' },
+				}),
+		});
+		// The seam is applied to the exact response the layer returns — after the
+		// CORS and concurrency re-wraps that replace the object the handler tagged.
+		const response = await listening.layer.handle(listenContext());
+		expect(tagged.has(response)).toBe(true);
+	});
+
+	test('releases the concurrency slot when the listen probe clone fails (TRI-128)', async () => {
+		const releasing = harness({
+			markServerOnlyCloseableStream: (response) => response,
+		});
+		const request = new Request(resource, {
+			method: 'POST',
+			headers: { authorization: 'Bearer valid' },
+			body: 'locked',
+		});
+		// Lock the body so the serving layer probe clone() throws after the slot is
+		// acquired; the slot must still be released rather than held until its TTL.
+		request.body?.getReader();
+		const lockedContext: OAuthRequestContext = {
+			request,
+			requestUrl: new URL(resource),
+			requestId: 'request-locked',
+			socketAddress: '203.0.113.1',
+			identity: null,
+		};
+		await expect(releasing.layer.handle(lockedContext)).rejects.toThrow();
+		expect(releasing.releaseCount).toBe(1);
+	});
+
+	test('resolves without hanging when the handler ignores the body on the probe path (TRI-128)', async () => {
+		const releasing = harness({
+			markServerOnlyCloseableStream: (response) => response,
+			handle: async () => new Response('ok'),
+		});
+		const request = new Request(resource, {
+			method: 'POST',
+			headers: { authorization: 'Bearer valid' },
+			body: 'unconsumed',
+		});
+		// The handler returns a non-stream response without reading the body, so the
+		// probe tee's peer stays unread. Cancelling it must not be awaited, or this
+		// never resolves.
+		const unreadContext: OAuthRequestContext = {
+			request,
+			requestUrl: new URL(resource),
+			requestId: 'request-noconsume',
+			socketAddress: '203.0.113.1',
+			identity: null,
+		};
+		const response = await releasing.layer.handle(unreadContext);
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(releasing.releaseCount).toBe(1);
+	});
+
+	test('does not tag a non-listen response (TRI-128)', async () => {
+		const tagged = new WeakSet<Response>();
+		const ordinary = harness({
+			markServerOnlyCloseableStream: (response) => {
+				tagged.add(response);
+				return response;
+			},
+			handle: async () => new Response('ok'),
+		});
+		const response = await ordinary.layer.handle(context());
+		expect(tagged.has(response)).toBe(false);
 	});
 });

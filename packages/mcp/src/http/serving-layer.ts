@@ -9,6 +9,7 @@ import {
 	type McpAuthenticationSeams,
 } from './authenticate.js';
 import type { McpServingHandler } from './handler.js';
+import { inspectListenRequest } from './listen-inspection.js';
 import { readMcpRequestAuthExtra } from './request-context.js';
 import {
 	createMcpCorsHeaders,
@@ -30,6 +31,13 @@ export function createMcpHttpServingLayer(input: {
 	rateLimiter: Pick<RequestRateLimiter, 'consume'>;
 	concurrencyLimiter: Pick<McpConcurrencyLimiter, 'acquire'>;
 	handler: Pick<McpServingHandler, 'handle'>;
+	/**
+	 * Applied to the FINAL response for a `subscriptions/listen` request so a
+	 * graceful-shutdown drain can exclude it. Provided here (not read off the
+	 * handler) because this layer owns the response after its CORS and
+	 * concurrency re-wraps, which replace the object the handler could tag.
+	 */
+	markServerOnlyCloseableStream?: (response: Response) => Response;
 }): McpHttpServingLayer {
 	return {
 		async handle(context) {
@@ -84,6 +92,12 @@ export function createMcpHttpServingLayer(input: {
 				});
 			}
 			try {
+				// A cheap tee taken before dispatch; only parsed below if the response is a
+				// stream, so ordinary request/response calls never parse it twice. Kept inside
+				// the try so a failed clone still releases the concurrency slot.
+				const listenProbe = input.markServerOnlyCloseableStream
+					? context.request.clone()
+					: undefined;
 				const response = await input.handler.handle(context.request, authentication as AuthInfo);
 				const headers = new Headers(response.headers);
 				for (const [name, value] of Object.entries(corsHeaders)) headers.set(name, value);
@@ -92,7 +106,32 @@ export function createMcpHttpServingLayer(input: {
 					statusText: response.statusText,
 					headers,
 				});
-				return attachConcurrencySlotToResponseLifetime(responseWithCorsHeaders, concurrencySlot);
+				const settled = attachConcurrencySlotToResponseLifetime(
+					responseWithCorsHeaders,
+					concurrencySlot,
+				);
+				// The handler tags its own response for direct callers, but this layer
+				// rebuilt the Response and its body twice above, so apply the seam to the
+				// object this layer actually returns. Only listen responses are event
+				// streams, so gate the probe parse on that; on any other path cancel the
+				// probe, whose body is a tee of the request that would otherwise buffer.
+				if (listenProbe) {
+					const isEventStream = (settled.headers.get('content-type') ?? '')
+						.toLowerCase()
+						.includes('text/event-stream');
+					if (isEventStream) {
+						if ((await inspectListenRequest(listenProbe)).isListenRequest) {
+							return input.markServerOnlyCloseableStream?.(settled) ?? settled;
+						}
+					} else {
+						// Fire-and-forget: a tee branch's cancel() does not resolve until the
+						// peer (the request the handler holds) is also settled, which may never
+						// happen if the handler rejected without reading the body. Awaiting it
+						// would hang the response and leak the slot.
+						void listenProbe.body?.cancel().catch(() => {});
+					}
+				}
+				return settled;
 			} catch (error) {
 				await concurrencySlot.release();
 				throw error;
