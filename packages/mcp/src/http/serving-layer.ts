@@ -124,7 +124,11 @@ export function createMcpHttpServingLayer(input: {
 							return input.markServerOnlyCloseableStream?.(settled) ?? settled;
 						}
 					} else {
-						await listenProbe.body?.cancel().catch(() => {});
+						// Fire-and-forget: a tee branch's cancel() does not resolve until the
+						// peer (the request the handler holds) is also settled, which may never
+						// happen if the handler rejected without reading the body. Awaiting it
+						// would hang the response and leak the slot.
+						void listenProbe.body?.cancel().catch(() => {});
 					}
 				}
 				return settled;
