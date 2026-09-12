@@ -21,7 +21,9 @@ RUN \
 # get and build the proxy
 RUN git clone --depth=1 --branch $NEON_RELEASE_TAG https://github.com/neondatabase/neon.git
 WORKDIR /neon
-RUN cargo build --bin proxy --features "testing"
+# SQL-over-HTTP authenticates each request. Debug builds make that work dominate
+# integration-test latency; run the optimized binary without changing test limits.
+RUN cargo build --release --bin proxy --features "testing"
 
 
 FROM debian:bookworm-slim
@@ -63,7 +65,7 @@ RUN openssl req -new -x509 \
   -addext "subjectAltName = DNS:*.localtest.me"
 
 # copy the proxy binary
-COPY --from=rust-builder /neon/target/debug/proxy ./neon-proxy
+COPY --from=rust-builder /neon/target/release/proxy ./neon-proxy
 
 COPY ./Caddyfile Caddyfile
 COPY ./start.sh start.sh

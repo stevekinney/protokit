@@ -40,10 +40,13 @@ describe('hasValidLocalhostRebindingHeaders', () => {
 		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
 	});
 
-	it('returns true when host is localhost', () => {
-		const headers = new Headers({ host: 'localhost:3000' });
-		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
-	});
+	it.each(['localhost', 'localhost:3000'])(
+		'allows an absent origin for non-browser clients with host %s',
+		(host) => {
+			const headers = new Headers({ host });
+			expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
+		},
+	);
 
 	it('returns false when host is a non-localhost domain', () => {
 		const headers = new Headers({ host: 'evil.com:3000' });
@@ -76,9 +79,16 @@ describe('hasValidLocalhostRebindingHeaders', () => {
 		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
 	});
 
-	it('returns true when origin is null (sandboxed)', () => {
+	it('rejects an opaque origin even with a localhost host', () => {
+		// TRI-79: Inspector's Node-fetch MCP connection does not require an
+		// opaque origin. Sandboxed app traffic cannot establish a local origin.
+		const headers = new Headers({ host: 'localhost:3000', origin: 'null' });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
+	});
+
+	it('rejects an opaque origin without a host header', () => {
 		const headers = new Headers({ origin: 'null' });
-		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
 	});
 
 	it('treats an empty first host value (e.g. a leading comma) as absent', () => {
@@ -104,11 +114,21 @@ describe('hasValidLocalhostRebindingHeaders', () => {
 		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
 	});
 
-	it('treats a malformed origin header that URL cannot parse as absent', () => {
-		// `new URL(originHeader)` throws for a non-absolute-URL string; the
-		// catch branch must treat that the same as "no origin to validate"
-		// rather than rejecting the request outright.
-		const headers = new Headers({ origin: 'not-a-valid-url' });
-		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(true);
+	it.each([
+		'not-a-valid-url',
+		'',
+		'   ',
+		'data:text/plain,hello',
+		'foo://localhost',
+		'http://localhost/path',
+		'http://localhost/',
+		'http://user@localhost',
+		'http://localhost?query',
+		'http://localhost#fragment',
+	])('rejects an unverifiable present origin: %j', (origin) => {
+		// TRI-79: only an absent header gets the non-browser allowance;
+		// malformed, empty, and hostless values cannot identify localhost.
+		const headers = new Headers({ host: 'localhost:3000', origin });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
 	});
 });

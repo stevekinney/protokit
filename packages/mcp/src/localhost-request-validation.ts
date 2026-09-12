@@ -37,7 +37,13 @@ function parseHostnameFromOriginHeader(originHeader: string | null): string | nu
 	}
 
 	try {
-		return new URL(originHeader).hostname;
+		const parsedOrigin = new URL(originHeader);
+		// URL parsing also accepts opaque schemes and URLs with paths or credentials.
+		// An Origin header must contain only the serialized, non-opaque origin.
+		if (parsedOrigin.origin === 'null' || parsedOrigin.origin !== originHeader) {
+			return null;
+		}
+		return parsedOrigin.hostname;
 	} catch {
 		return null;
 	}
@@ -53,9 +59,14 @@ export function hasValidLocalhostRebindingHeaders(headers: Headers): boolean {
 		return false;
 	}
 
-	const requestOriginHost = parseHostnameFromOriginHeader(headers.get('origin'));
-	if (requestOriginHost && !isLocalhostHostname(requestOriginHost)) {
-		return false;
+	// TRI-79: Inspector's Node-fetch MCP connection needs the absent-header
+	// allowance. A present opaque or malformed origin cannot establish localhost.
+	const requestOrigin = headers.get('origin');
+	if (requestOrigin !== null) {
+		const requestOriginHost = parseHostnameFromOriginHeader(requestOrigin);
+		if (!requestOriginHost || !isLocalhostHostname(requestOriginHost)) {
+			return false;
+		}
 	}
 
 	return true;
