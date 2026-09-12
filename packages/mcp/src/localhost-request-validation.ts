@@ -37,7 +37,13 @@ function parseHostnameFromOriginHeader(originHeader: string | null): string | nu
 	}
 
 	try {
-		return new URL(originHeader).hostname;
+		const parsedOrigin = new URL(originHeader);
+		// URL parsing also accepts opaque schemes and URLs with paths or credentials.
+		// An Origin header must contain only the serialized, non-opaque origin.
+		if (parsedOrigin.origin === 'null' || parsedOrigin.origin !== originHeader) {
+			return null;
+		}
+		return parsedOrigin.hostname;
 	} catch {
 		return null;
 	}

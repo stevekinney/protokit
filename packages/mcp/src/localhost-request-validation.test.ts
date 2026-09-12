@@ -114,13 +114,21 @@ describe('hasValidLocalhostRebindingHeaders', () => {
 		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
 	});
 
-	it.each(['not-a-valid-url', '', '   ', 'data:text/plain,hello'])(
-		'rejects an unverifiable present origin: %j',
-		(origin) => {
-			// TRI-79: only an absent header gets the non-browser allowance;
-			// malformed, empty, and hostless values cannot identify localhost.
-			const headers = new Headers({ host: 'localhost:3000', origin });
-			expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
-		},
-	);
+	it.each([
+		'not-a-valid-url',
+		'',
+		'   ',
+		'data:text/plain,hello',
+		'foo://localhost',
+		'http://localhost/path',
+		'http://localhost/',
+		'http://user@localhost',
+		'http://localhost?query',
+		'http://localhost#fragment',
+	])('rejects an unverifiable present origin: %j', (origin) => {
+		// TRI-79: only an absent header gets the non-browser allowance;
+		// malformed, empty, and hostless values cannot identify localhost.
+		const headers = new Headers({ host: 'localhost:3000', origin });
+		expect(hasValidLocalhostRebindingHeaders(headers)).toBe(false);
+	});
 });
