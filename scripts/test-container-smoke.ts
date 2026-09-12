@@ -181,7 +181,43 @@ async function verifyProductionRefusesInsecureConfiguration(): Promise<void> {
 	}
 }
 
+async function postgresAcceptsConnections(containerName: string): Promise<boolean> {
+	// The image's temporary initialization server accepts Unix sockets before
+	// TCP is available. Migrations need the final server's TCP listener.
+	return (
+		(
+			await $`docker exec ${containerName} pg_isready -h 127.0.0.1 -U smoke -d smoke`
+				.quiet()
+				.nothrow()
+		).exitCode === 0
+	);
+}
+
+async function verifyPostgresReadiness(): Promise<void> {
+	console.log('[smoke] verifying a socket-only Postgres server is not ready for migrations');
+	const socketOnlyContainer = `protokit-smoke-socket-only-${runId}`;
+	try {
+		await $`docker run -d --name ${socketOnlyContainer} -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=smoke postgres:17 -c listen_addresses=`;
+		await waitForCondition('socket-only Postgres accepting local connections', async () => {
+			// Wait past the temporary initialization server and its shutdown.
+			const logs = await $`docker logs ${socketOnlyContainer}`.quiet();
+			if (!logs.stdout.toString().includes('PostgreSQL init process complete')) return false;
+			return (
+				(await $`docker exec ${socketOnlyContainer} pg_isready -U smoke`.quiet().nothrow())
+					.exitCode === 0
+			);
+		});
+		assert(
+			!(await postgresAcceptsConnections(socketOnlyContainer)),
+			'socket-only initialization server was accepted as ready for TCP migrations',
+		);
+	} finally {
+		await $`docker rm -fv ${socketOnlyContainer}`.quiet();
+	}
+}
+
 async function main(): Promise<void> {
+	await verifyPostgresReadiness();
 	await verifyReproducibleAssetBuild();
 
 	console.log(`[smoke] building production image (${imageTag})`);
@@ -202,14 +238,9 @@ async function main(): Promise<void> {
 	await $`docker run -d --name ${postgresContainer} --network ${networkName} --network-alias postgres -p 0:5432 -e POSTGRES_USER=smoke -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=smoke postgres:17`;
 	trackCleanup(`docker rm -f ${postgresContainer}`);
 
-	await waitForCondition('Postgres accepting connections', async () => {
-		try {
-			await $`docker exec ${postgresContainer} pg_isready -U smoke`.quiet();
-			return true;
-		} catch {
-			return false;
-		}
-	});
+	await waitForCondition('Postgres accepting connections', () =>
+		postgresAcceptsConnections(postgresContainer),
+	);
 
 	const postgresHostPort = await containerHostPort(postgresContainer, 5432);
 	const hostDatabaseUrl = `postgresql://smoke:smoke@localhost:${postgresHostPort}/smoke`;
@@ -237,18 +268,14 @@ async function main(): Promise<void> {
 	await $`docker run -d --name ${neonProxyContainer} --network ${networkName} --network-alias neon-proxy -e PG_CONNECTION_STRING=postgres://smoke:smoke@postgres:5432/smoke ${neonProxyImageTag}`;
 	trackCleanup(`docker rm -f ${neonProxyContainer}`);
 
-	await waitForCondition(
-		'Neon HTTP proxy accepting connections',
-		async () => {
-			try {
-				await $`docker exec ${neonProxyContainer} curl -s -o /dev/null http://localhost:4444/sql`.quiet();
-				return true;
-			} catch {
-				return false;
-			}
-		},
-		8,
-	);
+	await waitForCondition('Neon HTTP proxy accepting connections', async () => {
+		try {
+			await $`docker exec ${neonProxyContainer} curl -s -o /dev/null http://localhost:4444/sql`.quiet();
+			return true;
+		} catch {
+			return false;
+		}
+	});
 
 	console.log('[smoke] starting the application container');
 	const sessionSigningSecret = randomBytes(32).toString('hex');
