@@ -4,6 +4,7 @@ import {
 	pgTable,
 	text,
 	timestamp,
+	type AnyPgColumn,
 	type AnyPgTable,
 	type PgColumnBuilderBase,
 } from 'drizzle-orm/pg-core';
@@ -11,21 +12,6 @@ import {
 export type PostgresOAuthSchemaOptions<TUserId extends PgColumnBuilderBase> = {
 	prefix: string;
 	userId: () => TUserId;
-};
-
-type ColumnReference = { name: string };
-type OAuthTable<TColumns extends object = object> = AnyPgTable & TColumns;
-
-export type PostgresOAuthSchema = {
-	clients: OAuthTable;
-	transactions: OAuthTable<{ userId: ColumnReference; clientId: ColumnReference }>;
-	codes: OAuthTable<{ userId: ColumnReference; clientId: ColumnReference }>;
-	accessTokens: OAuthTable<{ userId: ColumnReference; clientId: ColumnReference }>;
-	refreshTokens: OAuthTable<{
-		userId: ColumnReference;
-		clientId: ColumnReference;
-		accessTokenHash: ColumnReference;
-	}>;
 };
 
 /**
@@ -156,3 +142,44 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 
 	return { clients, transactions, codes, accessTokens, refreshTokens };
 }
+
+type OAuthColumnContract<TColumn extends AnyPgColumn> =
+	TColumn extends AnyPgColumn<infer TConfiguration>
+		? AnyPgColumn<Omit<TConfiguration, 'tableName'>>
+		: never;
+
+type OAuthColumnContracts<TColumns extends Record<string, AnyPgColumn>> = {
+	[TKey in keyof TColumns]: OAuthColumnContract<TColumns[TKey]>;
+};
+
+type OAuthTable<TColumns extends Record<string, AnyPgColumn>> = AnyPgTable & TColumns;
+
+type OAuthTableColumns<TTable> =
+	TTable extends AnyPgTable<{
+		columns: infer TColumns extends Record<string, AnyPgColumn>;
+	}>
+		? TColumns
+		: never;
+
+type GeneralizeUserId<TColumns extends Record<string, AnyPgColumn>> = Omit<
+	OAuthColumnContracts<TColumns>,
+	'userId'
+> & {
+	userId: AnyPgColumn;
+};
+
+type FactoryPostgresOAuthSchema = ReturnType<typeof createPostgresOAuthSchema>;
+type FactoryOAuthTable<TKey extends keyof FactoryPostgresOAuthSchema> = OAuthTable<
+	OAuthColumnContracts<OAuthTableColumns<FactoryPostgresOAuthSchema[TKey]>>
+>;
+type FactoryOAuthTableWithHostUserId<TKey extends keyof FactoryPostgresOAuthSchema> = OAuthTable<
+	GeneralizeUserId<OAuthTableColumns<FactoryPostgresOAuthSchema[TKey]>>
+>;
+
+export type PostgresOAuthSchema = {
+	clients: FactoryOAuthTable<'clients'>;
+	transactions: FactoryOAuthTableWithHostUserId<'transactions'>;
+	codes: FactoryOAuthTableWithHostUserId<'codes'>;
+	accessTokens: FactoryOAuthTableWithHostUserId<'accessTokens'>;
+	refreshTokens: FactoryOAuthTableWithHostUserId<'refreshTokens'>;
+};
