@@ -1,7 +1,9 @@
+import { isIP } from 'node:net';
 import { canonicalizeIpAddress, stripPort } from './canonicalize-ip-address.js';
 import { isAddressInCidr } from './security-utilities.js';
 
-export type TrustedProxyHeader = 'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip';
+export type TrustedProxyHeader =
+	'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip' | 'fly-client-ip';
 
 export type TrustedProxyConfiguration = {
 	/** CIDR blocks (IPv4 or IPv6) whose immediate socket peer is trusted to supply a forwarding header. Empty means nothing is trusted. */
@@ -64,6 +66,11 @@ function extractForwardedAddress(
 ): string | null {
 	if (configuration.trustedProxyHeader === 'cf-connecting-ip') {
 		const value = headers.get('cf-connecting-ip');
+		return value ? stripPort(value) : null;
+	}
+
+	if (configuration.trustedProxyHeader === 'fly-client-ip') {
+		const value = headers.get('fly-client-ip');
 		return value ? stripPort(value) : null;
 	}
 
@@ -131,7 +138,7 @@ export function resolveOauthNetworkIdentity(input: {
 	}
 
 	const forwardedAddress = extractForwardedAddress(input.headers, input.configuration);
-	if (!forwardedAddress) {
+	if (!forwardedAddress || isIP(forwardedAddress) === 0) {
 		return canonicalSocketAddress;
 	}
 

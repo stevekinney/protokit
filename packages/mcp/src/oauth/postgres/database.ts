@@ -5,6 +5,14 @@ export type PostgresOAuthExecutor = {
 	execute(query: SQL): Promise<unknown>;
 };
 
+/**
+ * Database connection for the Postgres OAuth stores.
+ *
+ * Token revocation and rotation require interactive transactions and advisory
+ * transaction locks. Use a driver that supports `database.transaction(...)`,
+ * such as node-postgres or a Neon serverless WebSocket pool; neon-http is not
+ * sufficient because it does not support interactive transactions.
+ */
 export type PostgresOAuthDatabase = PostgresOAuthExecutor & {
 	transaction<T>(callback: (transaction: PostgresOAuthExecutor) => Promise<T>): Promise<T>;
 };

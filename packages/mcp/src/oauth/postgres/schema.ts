@@ -4,6 +4,8 @@ import {
 	pgTable,
 	text,
 	timestamp,
+	type AnyPgColumn,
+	type AnyPgTable,
 	type PgColumnBuilderBase,
 } from 'drizzle-orm/pg-core';
 
@@ -60,6 +62,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		(table) => [
 			index(`${prefix}_transactions_binding_idx`).on(table.consentBindingHash),
 			index(`${prefix}_transactions_user_idx`).on(table.userId),
+			index(`${prefix}_transactions_client_idx`).on(table.clientId),
 			index(`${prefix}_transactions_expires_idx`).on(table.expiresAt),
 		],
 	);
@@ -84,6 +87,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		},
 		(table) => [
 			index(`${prefix}_codes_user_idx`).on(table.userId),
+			index(`${prefix}_codes_client_idx`).on(table.clientId),
 			index(`${prefix}_codes_expires_idx`).on(table.expiresAt),
 		],
 	);
@@ -104,6 +108,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		},
 		(table) => [
 			index(`${prefix}_access_user_idx`).on(table.userId),
+			index(`${prefix}_access_client_idx`).on(table.clientId),
 			index(`${prefix}_access_expires_idx`).on(table.expiresAt),
 		],
 	);
@@ -128,6 +133,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		},
 		(table) => [
 			index(`${prefix}_refresh_user_idx`).on(table.userId),
+			index(`${prefix}_refresh_client_idx`).on(table.clientId),
 			index(`${prefix}_refresh_family_idx`).on(table.familyId),
 			index(`${prefix}_refresh_access_idx`).on(table.accessTokenHash),
 			index(`${prefix}_refresh_expires_idx`).on(table.expiresAt),
@@ -137,4 +143,43 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 	return { clients, transactions, codes, accessTokens, refreshTokens };
 }
 
-export type PostgresOAuthSchema = ReturnType<typeof createPostgresOAuthSchema>;
+type OAuthColumnContract<TColumn extends AnyPgColumn> =
+	TColumn extends AnyPgColumn<infer TConfiguration>
+		? AnyPgColumn<Omit<TConfiguration, 'tableName'>>
+		: never;
+
+type OAuthColumnContracts<TColumns extends Record<string, AnyPgColumn>> = {
+	[TKey in keyof TColumns]: OAuthColumnContract<TColumns[TKey]>;
+};
+
+type OAuthTable<TColumns extends Record<string, AnyPgColumn>> = AnyPgTable & TColumns;
+
+type OAuthTableColumns<TTable> =
+	TTable extends AnyPgTable<{
+		columns: infer TColumns extends Record<string, AnyPgColumn>;
+	}>
+		? TColumns
+		: never;
+
+type GeneralizeUserId<TColumns extends Record<string, AnyPgColumn>> = Omit<
+	OAuthColumnContracts<TColumns>,
+	'userId'
+> & {
+	userId: AnyPgColumn;
+};
+
+type FactoryPostgresOAuthSchema = ReturnType<typeof createPostgresOAuthSchema>;
+type FactoryOAuthTable<TKey extends keyof FactoryPostgresOAuthSchema> = OAuthTable<
+	OAuthColumnContracts<OAuthTableColumns<FactoryPostgresOAuthSchema[TKey]>>
+>;
+type FactoryOAuthTableWithHostUserId<TKey extends keyof FactoryPostgresOAuthSchema> = OAuthTable<
+	GeneralizeUserId<OAuthTableColumns<FactoryPostgresOAuthSchema[TKey]>>
+>;
+
+export type PostgresOAuthSchema = {
+	clients: FactoryOAuthTable<'clients'>;
+	transactions: FactoryOAuthTableWithHostUserId<'transactions'>;
+	codes: FactoryOAuthTableWithHostUserId<'codes'>;
+	accessTokens: FactoryOAuthTableWithHostUserId<'accessTokens'>;
+	refreshTokens: FactoryOAuthTableWithHostUserId<'refreshTokens'>;
+};

@@ -17,6 +17,7 @@ import {
 	primeSvelteKitMcpIdentity,
 	type SvelteKitLikeRequestEvent,
 } from './sveltekit-mount.js';
+import { createInMemorySlidingWindowStore } from './rate-limit/index.js';
 import { resetSvelteKitMountStateForTesting } from './sveltekit-mount-state.js';
 
 const registry = {
@@ -306,6 +307,173 @@ describe('createSvelteKitMcpMount', () => {
 			expect(startCount).toBe(0);
 		},
 	);
+
+	test('uses fly-client-ip for OAuth endpoint rate limiting while preserving raw socket peers', async () => {
+		const state = harness();
+		const mount = await createSvelteKitMcpMount({
+			oauthSeams: {
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyCidrs: ['10.0.0.0/8'],
+						trustedProxyHeader: 'fly-client-ip',
+					},
+					rateLimits: {
+						...oauthSeams.configuration.rateLimits,
+						categories: {
+							...oauthSeams.configuration.rateLimits.categories,
+							oauth_register: { maximumRequests: 1, windowSeconds: 60 },
+						},
+					},
+					rateLimitStores: {
+						...oauthSeams.configuration.rateLimitStores,
+						slidingWindow: createInMemorySlidingWindowStore(),
+					},
+				},
+			},
+			discoveryConfiguration,
+			registry,
+			identityHandleName: 'identityHandle',
+			longLivedProcess: true,
+			mcp: {
+				start: async () => {},
+				shutdown: async () => {},
+				publishGrantRevocation: async () => {},
+				handle: async (context) => {
+					state.addresses.push(context.socketAddress);
+					return new Response('mcp');
+				},
+			},
+		});
+		const firstRegistration = event('/oauth/register', '10.0.0.5');
+		firstRegistration.request = new Request(firstRegistration.url, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'fly-client-ip': '198.51.100.9' },
+			body: JSON.stringify({
+				client_name: 'First Client',
+				redirect_uris: ['https://client.example.com/first'],
+			}),
+		});
+		primeSvelteKitMcpIdentity(firstRegistration, null);
+		const secondRegistration = event('/oauth/register', '10.0.0.6');
+		secondRegistration.request = new Request(secondRegistration.url, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'fly-client-ip': '198.51.100.9' },
+			body: JSON.stringify({
+				client_name: 'Second Client',
+				redirect_uris: ['https://client.example.com/second'],
+			}),
+		});
+		primeSvelteKitMcpIdentity(secondRegistration, null);
+		const mcpEvent = event('/mcp', '10.0.0.7');
+		mcpEvent.request = new Request(mcpEvent.url, {
+			headers: { 'fly-client-ip': '198.51.100.9' },
+		});
+		primeSvelteKitMcpIdentity(mcpEvent, null);
+
+		const firstResponse = await mount.handle({
+			event: firstRegistration,
+			resolve: async () => new Response('host'),
+		});
+		const secondResponse = await mount.handle({
+			event: secondRegistration,
+			resolve: async () => new Response('host'),
+		});
+		await mount.handle({ event: mcpEvent, resolve: async () => new Response('host') });
+
+		expect(firstResponse.status).toBe(201);
+		expect(secondResponse.status).toBe(429);
+		expect(state.addresses).toEqual(['10.0.0.7']);
+		await mount.dispose();
+	});
+
+	test('warns when OAuth rate-limit categories are configured without stores', async () => {
+		const mountModuleUrl = new URL('./sveltekit-mount.ts', import.meta.url).href;
+		const fixtureModuleUrl = new URL('./oauth/testing/contract-fixtures.ts', import.meta.url).href;
+		const child = Bun.spawn({
+			cmd: [
+				process.execPath,
+				'--no-env-file',
+				'--eval',
+				`
+					if (process.env.NODE_ENV !== undefined) {
+						throw new Error('NODE_ENV must be absent for this regression test');
+					}
+					if (process.env.MCP_SERVER_NAME !== undefined) {
+						throw new Error('MCP_SERVER_NAME must be absent for this regression test');
+					}
+					const mountModule = await import(${JSON.stringify(mountModuleUrl)});
+					const fixtures = await import(${JSON.stringify(fixtureModuleUrl)});
+					const registry = {
+						tools: [{ requiredScope: 'repositories:read' }],
+						resources: [],
+						prompts: [],
+					};
+					const oauthSeams = {
+						fetchClientIdMetadataDocument: async () => null,
+						resolveIdentityBinding: fixtures.identityContractFixture,
+						resolveUserProfile: fixtures.userProfileContractFixture,
+						handleUnauthenticatedAuthorization: fixtures.unauthenticatedAuthorizationContractFixture,
+						renderConsent: fixtures.consentContractFixture,
+						stores: fixtures.storeContractFixture,
+						scopes: fixtures.scopeContractFixture,
+						configuration: {
+							...fixtures.configurationContractFixture,
+							rateLimitStores: undefined,
+						},
+						hashCredential: (value) => value,
+						crossInstanceMessaging: fixtures.crossInstanceMessagingContractFixture,
+					};
+					const mount = await mountModule.createSvelteKitMcpMount({
+						oauthSeams,
+						discoveryConfiguration: {
+							issuer: fixtures.configurationContractFixture.issuer,
+							baseUrl: fixtures.configurationContractFixture.baseUrl,
+							resource: fixtures.configurationContractFixture.resource,
+							mcpUiExtension: fixtures.configurationContractFixture.mcpUiExtension,
+							serverName: 'mount-test',
+							mcpProtocolVersion: '2026-07-28',
+						},
+						registry,
+						identityHandleName: 'identityHandle',
+						longLivedProcess: true,
+						mcp: {
+							start: async () => console.log('MOUNT_START_INVOKED'),
+							shutdown: async () => {},
+							publishGrantRevocation: async () => {},
+							handle: async () => new Response('mcp'),
+						},
+					});
+					await mount.dispose();
+				`,
+			],
+			env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+			stdout: 'pipe',
+			stderr: 'pipe',
+		});
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			child.kill();
+		}, 5_000);
+		const [exitCode, stdout, stderr] = await Promise.all([
+			child.exited,
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+		]);
+		clearTimeout(timeout);
+		const output = `${stdout}\n${stderr}`;
+
+		expect({ exitCode, stdout, stderr, timedOut }).toMatchObject({ exitCode: 0, timedOut: false });
+		expect(stdout).toContain('MOUNT_START_INVOKED');
+		expect(output).toContain('sveltekit_mcp_mount');
+		expect(output).toContain('oauth_rate_limits');
+		expect(output).toContain(
+			'OAuth rate limits are configured without rate-limit stores; OAuth endpoint rate limiting and failed-authentication lockout are disabled.',
+		);
+	});
 
 	test('requires the named identity handle to prime every request', async () => {
 		const state = harness();

@@ -11,12 +11,22 @@ import { getSupportedScopes } from '../supported-scopes.js';
 import type { CrossInstanceMessaging } from '../oauth/index.js';
 import { GrantRevocationChannel } from './grant-revocation-channel.js';
 import { readMcpRequestAuthExtra } from './request-context.js';
-import { createMcpProtocolErrorResponse } from './responses.js';
+import { McpPayloadTooLargeError, createMcpProtocolErrorResponse } from './responses.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import { createUserServerEventBus } from './user-server-event-bus.js';
 import { inspectListenRequest } from './listen-inspection.js';
 
-class McpPayloadTooLargeError extends Error {}
+function payloadTooLargeResponse(
+	error: McpPayloadTooLargeError,
+	protocolVersion: string,
+): Response {
+	return createMcpProtocolErrorResponse({
+		status: 413,
+		error: 'payload_too_large',
+		errorDescription: error.message,
+		headers: { 'MCP-Protocol-Version': protocolVersion },
+	});
+}
 
 function boundRequestBody(request: Request, maximumBytes: number): Request {
 	const declaredLength = request.headers.get('content-length');
@@ -160,42 +170,42 @@ export function createMcpServingHandler<Scope extends string>(input: {
 				boundedRequest = boundRequestBody(request, configuration.maximumRequestBodyBytes);
 			} catch (error) {
 				if (!(error instanceof McpPayloadTooLargeError)) throw error;
-				return createMcpProtocolErrorResponse({
-					status: 413,
-					error: 'payload_too_large',
-					errorDescription: error.message,
-					headers: { 'MCP-Protocol-Version': configuration.protocolVersion },
-				});
+				return payloadTooLargeResponse(error, configuration.protocolVersion);
 			}
 			const extra = readMcpRequestAuthExtra(authInfo);
 			if (!extra) throw new Error('MCP request reached the handler without verified auth context.');
-			const inspection = await inspectListenRequest(boundedRequest.clone());
-			if (
-				inspection.isListenRequest &&
-				!areResourceSubscriptionsAuthorized(
-					inspection.requestedResourceUris,
-					extra.scopes,
-					registry,
-				)
-			) {
-				seams.recordEvent('insufficient_scope');
-				return createMcpProtocolErrorResponse({
-					status: 403,
-					error: 'forbidden',
-					errorDescription:
-						'The access token does not carry the scopes required for the requested resource subscriptions.',
-					headers: {
-						'MCP-Protocol-Version': configuration.protocolVersion,
-						'WWW-Authenticate': `Bearer error="insufficient_scope", scope="${getSupportedScopes(registry).join(' ')}"`,
-					},
-				});
+			try {
+				const inspection = await inspectListenRequest(boundedRequest.clone());
+				if (
+					inspection.isListenRequest &&
+					!areResourceSubscriptionsAuthorized(
+						inspection.requestedResourceUris,
+						extra.scopes,
+						registry,
+					)
+				) {
+					seams.recordEvent('insufficient_scope');
+					return createMcpProtocolErrorResponse({
+						status: 403,
+						error: 'forbidden',
+						errorDescription:
+							'The access token does not carry the scopes required for the requested resource subscriptions.',
+						headers: {
+							'MCP-Protocol-Version': configuration.protocolVersion,
+							'WWW-Authenticate': `Bearer error="insufficient_scope", scope="${getSupportedScopes(registry).join(' ')}"`,
+						},
+					});
+				}
+				const response = await cache.dispatch(extra.userId, (handler) =>
+					handler.fetch(boundedRequest, options),
+				);
+				return inspection.isListenRequest
+					? (seams.markServerOnlyCloseableStream?.(response) ?? response)
+					: response;
+			} catch (error) {
+				if (!(error instanceof McpPayloadTooLargeError)) throw error;
+				return payloadTooLargeResponse(error, configuration.protocolVersion);
 			}
-			const response = await cache.dispatch(extra.userId, (handler) =>
-				handler.fetch(boundedRequest, options),
-			);
-			return inspection.isListenRequest
-				? (seams.markServerOnlyCloseableStream?.(response) ?? response)
-				: response;
 		},
 		publishUserResourceUpdate(userId, uri) {
 			const existing = cache.peek(userId);

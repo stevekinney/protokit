@@ -1,4 +1,7 @@
+import { integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
+import { createPostgresOAuthSchema, createPostgresOAuthStores } from './oauth/postgres/index.js';
+import type { PostgresOAuthDatabase, PostgresOAuthSchema } from './oauth/postgres/index.js';
 import { defineScopes } from './scope-vocabulary.js';
 import type { McpRegistry } from './scope-vocabulary.js';
 
@@ -160,3 +163,200 @@ numericVocabulary.defineTool({
 	requiredScope: '123',
 	handler: noopHandler,
 });
+
+/**
+ * The Postgres OAuth factory must preserve a host-owned non-null integer user
+ * identifier through `createPostgresOAuthStores()` without a consumer cast.
+ * Test files are excluded from package typechecking, so this assertion lives
+ * in the compiled fixture beside the other consumer-facing contracts.
+ */
+const integerOAuthUsers = pgTable('type_assertion_integer_oauth_users', {
+	id: integer('id').primaryKey(),
+});
+const integerOAuthSchema = createPostgresOAuthSchema({
+	prefix: 'type_assertion_integer_oauth',
+	userId: () =>
+		integer('user_id')
+			.notNull()
+			.references(() => integerOAuthUsers.id, { onDelete: 'cascade' }),
+});
+const typeAssertionPostgresDatabase: PostgresOAuthDatabase = {
+	execute: async () => [],
+	transaction: async (callback) => callback({ execute: async () => [] }),
+};
+
+createPostgresOAuthStores(typeAssertionPostgresDatabase, integerOAuthSchema);
+
+const uuidOAuthUsers = pgTable('type_assertion_uuid_oauth_users', {
+	id: uuid('id').primaryKey(),
+});
+const uuidOAuthSchema = createPostgresOAuthSchema({
+	prefix: 'type_assertion_uuid_oauth',
+	userId: () =>
+		uuid('user_id')
+			.notNull()
+			.references(() => uuidOAuthUsers.id, { onDelete: 'cascade' }),
+});
+
+createPostgresOAuthStores(typeAssertionPostgresDatabase, uuidOAuthSchema);
+
+const manualOAuthClients = pgTable('type_assertion_manual_oauth_clients', {
+	clientId: text('client_id').primaryKey(),
+	clientSecretHash: text('client_secret_hash'),
+	clientName: text('client_name').notNull(),
+	clientType: text('client_type').notNull(),
+	tokenEndpointAuthMethod: text('token_endpoint_auth_method').notNull(),
+	applicationType: text('application_type'),
+	redirectUris: jsonb('redirect_uris').$type<string[]>().notNull(),
+	grantTypes: jsonb('grant_types').$type<string[]>().notNull(),
+	responseTypes: jsonb('response_types').$type<string[]>().notNull(),
+	clientIdMetadataUrl: text('client_id_metadata_url'),
+	clientSecretExpiresAt: timestamp('client_secret_expires_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+});
+const manualOAuthTransactions = pgTable('type_assertion_manual_oauth_transactions', {
+	transactionIdHash: text('transaction_id_hash').primaryKey(),
+	csrfTokenHash: text('csrf_token_hash').notNull(),
+	consentBindingHash: text('consent_binding_hash').notNull(),
+	userId: text('user_id').notNull(),
+	clientId: text('client_id').notNull(),
+	redirectUri: text('redirect_uri').notNull(),
+	codeChallenge: text('code_challenge').notNull(),
+	codeChallengeMethod: text('code_challenge_method').notNull(),
+	state: text('state'),
+	issuer: text('issuer').notNull(),
+	resource: text('resource').notNull(),
+	scope: text('scope').notNull(),
+	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+	consumedAt: timestamp('consumed_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+});
+const manualOAuthCodes = pgTable('type_assertion_manual_oauth_codes', {
+	codeHash: text('code_hash').primaryKey(),
+	clientId: text('client_id').notNull(),
+	userId: text('user_id').notNull(),
+	redirectUri: text('redirect_uri').notNull(),
+	codeChallenge: text('code_challenge').notNull(),
+	codeChallengeMethod: text('code_challenge_method').notNull(),
+	scope: text('scope'),
+	state: text('state'),
+	resource: text('resource').notNull(),
+	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+	usedAt: timestamp('used_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+});
+const manualOAuthAccessTokens = pgTable('type_assertion_manual_oauth_access_tokens', {
+	accessTokenHash: text('access_token_hash').primaryKey(),
+	clientId: text('client_id').notNull(),
+	userId: text('user_id').notNull(),
+	scope: text('scope'),
+	resource: text('resource').notNull(),
+	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+	revokedAt: timestamp('revoked_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+});
+const manualOAuthRefreshTokens = pgTable('type_assertion_manual_oauth_refresh_tokens', {
+	refreshTokenHash: text('refresh_token_hash').primaryKey(),
+	clientId: text('client_id').notNull(),
+	userId: text('user_id').notNull(),
+	scope: text('scope'),
+	resource: text('resource').notNull(),
+	accessTokenHash: text('access_token_hash').notNull(),
+	familyId: text('family_id').notNull(),
+	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+	revokedAt: timestamp('revoked_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+});
+
+const manualOAuthSchema: PostgresOAuthSchema = {
+	clients: manualOAuthClients,
+	transactions: manualOAuthTransactions,
+	codes: manualOAuthCodes,
+	accessTokens: manualOAuthAccessTokens,
+	refreshTokens: manualOAuthRefreshTokens,
+};
+
+createPostgresOAuthStores(typeAssertionPostgresDatabase, manualOAuthSchema);
+
+const incompleteOAuthClients = pgTable('type_assertion_incomplete_oauth_clients', {
+	clientId: text('client_id').primaryKey(),
+});
+const integerClientNameOAuthClients = pgTable('type_assertion_integer_client_name_oauth_clients', {
+	clientId: text('client_id').primaryKey(),
+	clientSecretHash: text('client_secret_hash'),
+	clientName: integer('client_name').notNull(),
+	clientType: text('client_type').notNull(),
+	tokenEndpointAuthMethod: text('token_endpoint_auth_method').notNull(),
+	applicationType: text('application_type'),
+	redirectUris: jsonb('redirect_uris').$type<string[]>().notNull(),
+	grantTypes: jsonb('grant_types').$type<string[]>().notNull(),
+	responseTypes: jsonb('response_types').$type<string[]>().notNull(),
+	clientIdMetadataUrl: text('client_id_metadata_url'),
+	clientSecretExpiresAt: timestamp('client_secret_expires_at', { withTimezone: true }),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+});
+const nullableClientNameOAuthClients = pgTable(
+	'type_assertion_nullable_client_name_oauth_clients',
+	{
+		clientId: text('client_id').primaryKey(),
+		clientSecretHash: text('client_secret_hash'),
+		clientName: text('client_name'),
+		clientType: text('client_type').notNull(),
+		tokenEndpointAuthMethod: text('token_endpoint_auth_method').notNull(),
+		applicationType: text('application_type'),
+		redirectUris: jsonb('redirect_uris').$type<string[]>().notNull(),
+		grantTypes: jsonb('grant_types').$type<string[]>().notNull(),
+		responseTypes: jsonb('response_types').$type<string[]>().notNull(),
+		clientIdMetadataUrl: text('client_id_metadata_url'),
+		clientSecretExpiresAt: timestamp('client_secret_expires_at', { withTimezone: true }),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+	},
+);
+const incompleteOAuthCodes = pgTable('type_assertion_incomplete_oauth_codes', {
+	clientId: text('client_id').notNull(),
+	userId: text('user_id').notNull(),
+});
+
+const incompleteClientsOAuthSchema: PostgresOAuthSchema = {
+	// @ts-expect-error - a client table missing store-used columns must not satisfy the OAuth schema contract.
+	clients: incompleteOAuthClients,
+	transactions: manualOAuthTransactions,
+	codes: manualOAuthCodes,
+	accessTokens: manualOAuthAccessTokens,
+	refreshTokens: manualOAuthRefreshTokens,
+};
+
+const integerClientNameOAuthSchema: PostgresOAuthSchema = {
+	// @ts-expect-error - fixed client columns must preserve the factory data type, so clientName stays text.
+	clients: integerClientNameOAuthClients,
+	transactions: manualOAuthTransactions,
+	codes: manualOAuthCodes,
+	accessTokens: manualOAuthAccessTokens,
+	refreshTokens: manualOAuthRefreshTokens,
+};
+
+const nullableClientNameOAuthSchema: PostgresOAuthSchema = {
+	// @ts-expect-error - fixed client columns must preserve the factory nullability, so clientName stays non-null.
+	clients: nullableClientNameOAuthClients,
+	transactions: manualOAuthTransactions,
+	codes: manualOAuthCodes,
+	accessTokens: manualOAuthAccessTokens,
+	refreshTokens: manualOAuthRefreshTokens,
+};
+
+const incompleteCodesOAuthSchema: PostgresOAuthSchema = {
+	clients: manualOAuthClients,
+	transactions: manualOAuthTransactions,
+	// @ts-expect-error - non-client OAuth tables must retain every store-used fixed column, not only userId/clientId.
+	codes: incompleteOAuthCodes,
+	accessTokens: manualOAuthAccessTokens,
+	refreshTokens: manualOAuthRefreshTokens,
+};
+
+void incompleteClientsOAuthSchema;
+void integerClientNameOAuthSchema;
+void nullableClientNameOAuthSchema;
+void incompleteCodesOAuthSchema;

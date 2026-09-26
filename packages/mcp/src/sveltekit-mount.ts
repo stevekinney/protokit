@@ -45,6 +45,8 @@ export type SvelteKitMcpRuntime = {
 };
 
 const primedIdentities = new WeakMap<SvelteKitLikeRequestEvent, OAuthIdentity | null>();
+const missingRateLimitStoresDiagnostic =
+	'OAuth rate limits are configured without rate-limit stores; OAuth endpoint rate limiting and failed-authentication lockout are disabled.';
 
 const requiredOauthSeamFunctions = [
 	'fetchClientIdMetadataDocument',
@@ -88,6 +90,17 @@ function assertOauthStore(
 ): void {
 	assertOauthSeamObject(stores[name], `stores.${name}`);
 	assertOauthSeamFunctions(stores[name], `stores.${name}`, requiredFunctions);
+}
+
+function warnMissingRateLimitStores(): void {
+	process.stderr.write(
+		`${JSON.stringify({
+			level: 'warn',
+			operation: 'sveltekit_mcp_mount',
+			protection: 'oauth_rate_limits',
+			message: missingRateLimitStoresDiagnostic,
+		})}\n`,
+	);
 }
 
 function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Scope>): void {
@@ -199,7 +212,7 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 	}
 	if (
 		configuration.trustedProxy.trustedProxyHeader !== undefined &&
-		!['x-forwarded-for', 'forwarded', 'cf-connecting-ip'].includes(
+		!['x-forwarded-for', 'forwarded', 'cf-connecting-ip', 'fly-client-ip'].includes(
 			configuration.trustedProxy.trustedProxyHeader as string,
 		)
 	) {
@@ -253,7 +266,9 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 			'The SvelteKit MCP mount requires the OAuth host seam "configuration.mcpUiExtension.enabled".',
 		);
 	}
-	if (configuration.rateLimitStores !== undefined) {
+	if (configuration.rateLimitStores === undefined) {
+		warnMissingRateLimitStores();
+	} else {
 		assertOauthSeamObject(configuration.rateLimitStores, 'configuration.rateLimitStores');
 		assertOauthSeamObject(
 			configuration.rateLimitStores.slidingWindow,

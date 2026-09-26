@@ -366,12 +366,11 @@ describe('handleMcpRequest', () => {
 		expect(body.error).toBe('payload_too_large');
 	});
 
-	it('fails a chunked body (no Content-Length) that overflows the limit while streaming, with a stable SDK-produced protocol error', async () => {
+	it('fails a chunked body (no Content-Length) that overflows the limit with the same stable 413 contract as a declared oversized body', async () => {
 		// No `content-length` header at all — this is the chunked-transfer
-		// case. `boundRequestBody`'s streaming cap still fires once the byte
-		// count crosses the limit; the SDK converts the resulting stream
-		// error into its own JSON-RPC parse-error response rather than ever
-		// calling the (database-touching) server factory.
+		// case. The streaming cap still fires once the byte count crosses the
+		// limit, but the serving handler now normalizes that failure to the
+		// same stable 413 response as a declared oversized body.
 		const encoder = new TextEncoder();
 		const oversizedChunk = encoder.encode(
 			`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"padding":"${'x'.repeat(2 * 1024 * 1024)}"}}`,
@@ -395,10 +394,11 @@ describe('handleMcpRequest', () => {
 			buildAuthInfo(),
 		);
 
-		expect(response.status).toBeGreaterThanOrEqual(400);
-		const body = (await response.json()) as { jsonrpc: string; error?: { code: number } };
-		expect(body.jsonrpc).toBe('2.0');
-		expect(typeof body.error).toBe('object');
+		expect(response.status).toBe(413);
+		expect(response.headers.get('MCP-Protocol-Version')).toBe('2026-07-28');
+		const body = (await response.json()) as { error: string; error_description: string };
+		expect(body.error).toBe('payload_too_large');
+		expect(body.error_description).toContain('1048576-byte limit');
 	});
 
 	// Defense in depth: `mcp-routes.ts`'s `authenticateMcpUser` always

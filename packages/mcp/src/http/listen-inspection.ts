@@ -1,3 +1,5 @@
+import { McpPayloadTooLargeError } from './responses.js';
+
 /**
  * Detects the `subscriptions/listen` request whose response the transport must
  * not force-close on graceful shutdown. Shared by the serving handler (for
@@ -34,7 +36,8 @@ export async function inspectListenRequest(request: Request): Promise<ListenInsp
 					isListenRequest: true,
 					requestedResourceUris: listens.flatMap(readRequestedResourceUris),
 				};
-	} catch {
+	} catch (error) {
+		if (error instanceof McpPayloadTooLargeError) throw error;
 		return none;
 	}
 }

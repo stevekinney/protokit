@@ -110,7 +110,9 @@ export const webServerEnvironmentSchema = {
 	// budget. See `lib/request-rate-limiter.ts`.
 	RATE_LIMIT_KEY_NAMESPACE: z.string().optional(),
 	TRUSTED_PROXY_CIDRS: z.string().min(1).optional(),
-	TRUSTED_PROXY_HEADER: z.enum(['x-forwarded-for', 'forwarded', 'cf-connecting-ip']).optional(),
+	TRUSTED_PROXY_HEADER: z
+		.enum(['x-forwarded-for', 'forwarded', 'cf-connecting-ip', 'fly-client-ip'])
+		.optional(),
 	TRUSTED_PROXY_HOP_COUNT: z.coerce.number().int().positive().optional().default(1),
 	// Round 10 review finding: `.min(1)` let an operator configure a
 	// one-character bearer key (`x`) that both environment validation and

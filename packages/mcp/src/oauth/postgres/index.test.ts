@@ -50,6 +50,10 @@ const setup = (async () => {
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_codes (code_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, redirect_uri text NOT NULL, code_challenge text NOT NULL, code_challenge_method text NOT NULL, scope text, state text, resource text NOT NULL, expires_at timestamptz NOT NULL, used_at timestamptz, created_at timestamptz NOT NULL);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_access_tokens (access_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
 		CREATE TABLE IF NOT EXISTS mcp_postgres_test_refresh_tokens (refresh_token_hash text PRIMARY KEY, client_id text NOT NULL REFERENCES mcp_postgres_test_clients(client_id) ON DELETE CASCADE, user_id text NOT NULL REFERENCES mcp_postgres_test_users(id) ON DELETE CASCADE, scope text, resource text NOT NULL, access_token_hash text NOT NULL REFERENCES mcp_postgres_test_access_tokens(access_token_hash) ON DELETE CASCADE, family_id text NOT NULL, expires_at timestamptz NOT NULL, revoked_at timestamptz, created_at timestamptz NOT NULL);
+		CREATE INDEX IF NOT EXISTS mcp_postgres_test_transactions_client_idx ON mcp_postgres_test_authorization_transactions (client_id);
+		CREATE INDEX IF NOT EXISTS mcp_postgres_test_codes_client_idx ON mcp_postgres_test_codes (client_id);
+		CREATE INDEX IF NOT EXISTS mcp_postgres_test_access_client_idx ON mcp_postgres_test_access_tokens (client_id);
+		CREATE INDEX IF NOT EXISTS mcp_postgres_test_refresh_client_idx ON mcp_postgres_test_refresh_tokens (client_id);
 	`);
 })();
 
@@ -180,6 +184,76 @@ runOAuthStoreConformance('postgres', async () => {
 		return registerClient(record);
 	};
 	return stores;
+});
+
+describe('Postgres OAuth schema indexes', () => {
+	test('indexes every client foreign key in pg_index', async () => {
+		await setup;
+		const result = await connection.query<{
+			table_name: string;
+			index_name: string;
+			columns: string[];
+		}>(
+			`
+				SELECT table_class.relname AS table_name,
+					index_class.relname AS index_name,
+					array_agg(attribute.attname::text ORDER BY indexed_column.ordinality) AS columns
+				FROM pg_index index_definition
+				JOIN pg_class table_class ON table_class.oid = index_definition.indrelid
+				JOIN pg_class index_class ON index_class.oid = index_definition.indexrelid
+				JOIN unnest(index_definition.indkey) WITH ORDINALITY AS indexed_column(attribute_number, ordinality) ON true
+				JOIN pg_attribute attribute ON attribute.attrelid = table_class.oid
+					AND attribute.attnum = indexed_column.attribute_number
+				WHERE table_class.relname = ANY($1::text[])
+					AND index_class.relname = ANY($2::text[])
+				GROUP BY table_class.relname, index_class.relname
+				ORDER BY table_class.relname, index_class.relname
+			`,
+			[
+				[
+					'mcp_postgres_test_authorization_transactions',
+					'mcp_postgres_test_codes',
+					'mcp_postgres_test_access_tokens',
+					'mcp_postgres_test_refresh_tokens',
+				],
+				[
+					'mcp_postgres_test_transactions_client_idx',
+					'mcp_postgres_test_codes_client_idx',
+					'mcp_postgres_test_access_client_idx',
+					'mcp_postgres_test_refresh_client_idx',
+				],
+			],
+		);
+
+		expect(
+			result.rows.map((row) => ({
+				tableName: row.table_name,
+				indexName: row.index_name,
+				columns: row.columns,
+			})),
+		).toEqual([
+			{
+				tableName: 'mcp_postgres_test_access_tokens',
+				indexName: 'mcp_postgres_test_access_client_idx',
+				columns: ['client_id'],
+			},
+			{
+				tableName: 'mcp_postgres_test_authorization_transactions',
+				indexName: 'mcp_postgres_test_transactions_client_idx',
+				columns: ['client_id'],
+			},
+			{
+				tableName: 'mcp_postgres_test_codes',
+				indexName: 'mcp_postgres_test_codes_client_idx',
+				columns: ['client_id'],
+			},
+			{
+				tableName: 'mcp_postgres_test_refresh_tokens',
+				indexName: 'mcp_postgres_test_refresh_client_idx',
+				columns: ['client_id'],
+			},
+		]);
+	});
 });
 
 describe('Postgres OAuth durability', () => {

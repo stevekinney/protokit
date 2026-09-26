@@ -4,6 +4,9 @@ import type { McpHttpHandler, ServerEvent } from '@modelcontextprotocol/server';
 import type { CrossInstanceMessaging } from '../oauth/index.js';
 import { templateRegistry } from '../template-registry.js';
 import { GrantRevocationChannel } from './grant-revocation-channel.js';
+import { inspectListenRequest } from './listen-inspection.js';
+import { buildMcpAuthInfo } from './request-context.js';
+import { McpPayloadTooLargeError } from './responses.js';
 import { createMcpServingHandler } from './handler.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import {
@@ -27,6 +30,66 @@ function fakeHandler(onClose: () => void = () => {}): McpHttpHandler {
 		},
 		bus: fakeBus(),
 	};
+}
+
+const authInfo = buildMcpAuthInfo({
+	accessToken: 'access-token',
+	expiresAt: new Date('2099-01-01'),
+	extra: {
+		userId: 'user-one',
+		userProfile: {
+			id: 'user-one',
+			email: 'user-one@example.com',
+			name: 'User One',
+			image: null,
+			role: 'user',
+		},
+		oauthClientId: 'client-one',
+		scopes: ['repositories:read'],
+		resource: 'https://example.com/mcp',
+	},
+});
+
+function createPayloadLimitHandler() {
+	return createMcpServingHandler({
+		registry: templateRegistry,
+		configuration: {
+			protocolVersion: '2026-07-28',
+			maximumRequestBodyBytes: 12,
+			maximumSubscriptionsPerUser: 1,
+			userHandlerSweepIntervalMilliseconds: 60_000,
+			userHandlerIdleMilliseconds: 60_000,
+			enableUiExtension: false,
+			enableConformanceMode: false,
+		},
+		seams: {
+			reportDegradation: () => {},
+			recordEvent: () => {},
+			onError: () => {},
+		},
+	});
+}
+
+function streamedRequestBody(value: string): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(new TextEncoder().encode(value));
+			controller.close();
+		},
+	});
+}
+
+function failingRequestBody(error: Error): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.error(error);
+		},
+	});
+}
+
+async function responseError(response: Response): Promise<string> {
+	const body = (await response.json()) as { error?: unknown };
+	return typeof body.error === 'string' ? body.error : '';
 }
 
 function createMessagingHub(): CrossInstanceMessaging {
@@ -113,6 +176,67 @@ describe('McpUserHandlerCache', () => {
 		await dispatch;
 		now = 4_000;
 		expect(cache.evictIdle(1_000)).toEqual(['busy']);
+	});
+});
+
+describe('MCP request body limit', () => {
+	test('listen inspection falls back to non-listen when the probe body read fails for an unrelated transport error', async () => {
+		const inspection = await inspectListenRequest(
+			new Request('https://example.com/mcp', {
+				method: 'POST',
+				body: failingRequestBody(new Error('simulated adapter read failure')),
+				duplex: 'half',
+			} as RequestInit),
+		);
+
+		expect(inspection).toEqual({ isListenRequest: false, requestedResourceUris: [] });
+	});
+
+	test('listen inspection rethrows the payload-limit sentinel so the handler can preserve the 413 contract', async () => {
+		await expect(
+			inspectListenRequest(
+				new Request('https://example.com/mcp', {
+					method: 'POST',
+					body: failingRequestBody(new McpPayloadTooLargeError('too large')),
+					duplex: 'half',
+				} as RequestInit),
+			),
+		).rejects.toBeInstanceOf(McpPayloadTooLargeError);
+	});
+
+	test('returns the same 413 protocol error for declared and streamed over-limit bodies', async () => {
+		const handler = createPayloadLimitHandler();
+		await handler.start();
+		try {
+			const declaredResponse = await handler.handle(
+				new Request('https://example.com/mcp', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', 'content-length': '999' },
+					body: '{}',
+				}),
+				authInfo,
+			);
+			const streamedResponse = await handler.handle(
+				new Request('https://example.com/mcp', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: streamedRequestBody(
+						JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'subscriptions/listen' }),
+					),
+					duplex: 'half',
+				} as RequestInit),
+				authInfo,
+			);
+
+			expect(declaredResponse.status).toBe(413);
+			expect(streamedResponse.status).toBe(413);
+			expect(declaredResponse.headers.get('MCP-Protocol-Version')).toBe('2026-07-28');
+			expect(streamedResponse.headers.get('MCP-Protocol-Version')).toBe('2026-07-28');
+			expect(await responseError(declaredResponse)).toBe('payload_too_large');
+			expect(await responseError(streamedResponse)).toBe('payload_too_large');
+		} finally {
+			await handler.shutdown();
+		}
 	});
 });
 
