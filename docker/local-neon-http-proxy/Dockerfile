@@ -21,9 +21,9 @@ RUN \
 # get and build the proxy
 RUN git clone --depth=1 --branch $NEON_RELEASE_TAG https://github.com/neondatabase/neon.git
 WORKDIR /neon
-# SQL-over-HTTP authenticates each request. Build Neon's optimized testing
-# proxy without debug symbols so local fixtures keep postgres authentication.
-RUN cargo build --profile release-no-debug --bin proxy --features "testing"
+# SQL-over-HTTP authenticates each request. Build Neon's documented testing
+# proxy fixture with postgres authentication; release optimization is not needed.
+RUN cargo build --bin proxy --features "testing"
 
 
 FROM debian:bookworm-slim
@@ -65,7 +65,7 @@ RUN openssl req -new -x509 \
   -addext "subjectAltName = DNS:*.localtest.me"
 
 # copy the proxy binary
-COPY --from=rust-builder /neon/target/release-no-debug/proxy ./neon-proxy
+COPY --from=rust-builder /neon/target/debug/proxy ./neon-proxy
 
 COPY ./Caddyfile Caddyfile
 COPY ./start.sh start.sh
