@@ -4,7 +4,9 @@ import type { McpHttpHandler, ServerEvent } from '@modelcontextprotocol/server';
 import type { CrossInstanceMessaging } from '../oauth/index.js';
 import { templateRegistry } from '../template-registry.js';
 import { GrantRevocationChannel } from './grant-revocation-channel.js';
+import { inspectListenRequest } from './listen-inspection.js';
 import { buildMcpAuthInfo } from './request-context.js';
+import { McpPayloadTooLargeError } from './responses.js';
 import { createMcpServingHandler } from './handler.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import {
@@ -73,6 +75,14 @@ function streamedRequestBody(value: string): ReadableStream<Uint8Array> {
 		start(controller) {
 			controller.enqueue(new TextEncoder().encode(value));
 			controller.close();
+		},
+	});
+}
+
+function failingRequestBody(error: Error): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.error(error);
 		},
 	});
 }
@@ -170,6 +180,30 @@ describe('McpUserHandlerCache', () => {
 });
 
 describe('MCP request body limit', () => {
+	test('listen inspection falls back to non-listen when the probe body read fails for an unrelated transport error', async () => {
+		const inspection = await inspectListenRequest(
+			new Request('https://example.com/mcp', {
+				method: 'POST',
+				body: failingRequestBody(new Error('simulated adapter read failure')),
+				duplex: 'half',
+			} as RequestInit),
+		);
+
+		expect(inspection).toEqual({ isListenRequest: false, requestedResourceUris: [] });
+	});
+
+	test('listen inspection rethrows the payload-limit sentinel so the handler can preserve the 413 contract', async () => {
+		await expect(
+			inspectListenRequest(
+				new Request('https://example.com/mcp', {
+					method: 'POST',
+					body: failingRequestBody(new McpPayloadTooLargeError('too large')),
+					duplex: 'half',
+				} as RequestInit),
+			),
+		).rejects.toBeInstanceOf(McpPayloadTooLargeError);
+	});
+
 	test('returns the same 413 protocol error for declared and streamed over-limit bodies', async () => {
 		const handler = createPayloadLimitHandler();
 		await handler.start();

@@ -1,3 +1,5 @@
+export class McpPayloadTooLargeError extends Error {}
+
 export type McpProtocolErrorCode =
 	| 'bad_request'
 	| 'unauthorized'

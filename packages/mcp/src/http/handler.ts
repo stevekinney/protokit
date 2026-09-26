@@ -11,12 +11,10 @@ import { getSupportedScopes } from '../supported-scopes.js';
 import type { CrossInstanceMessaging } from '../oauth/index.js';
 import { GrantRevocationChannel } from './grant-revocation-channel.js';
 import { readMcpRequestAuthExtra } from './request-context.js';
-import { createMcpProtocolErrorResponse } from './responses.js';
+import { McpPayloadTooLargeError, createMcpProtocolErrorResponse } from './responses.js';
 import { McpUserHandlerCache } from './user-handler-cache.js';
 import { createUserServerEventBus } from './user-server-event-bus.js';
 import { inspectListenRequest } from './listen-inspection.js';
-
-class McpPayloadTooLargeError extends Error {}
 
 function payloadTooLargeResponse(
 	error: McpPayloadTooLargeError,
