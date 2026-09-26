@@ -1,5 +1,4 @@
 import type { McpRegistry } from './scope-vocabulary.js';
-import { engineLogger } from './logger.js';
 import { getSvelteKitMountState, setSvelteKitMountState } from './sveltekit-mount-state.js';
 import { isValidCidr } from './oauth/security-utilities.js';
 import { getSupportedScopes } from './supported-scopes.js';
@@ -46,6 +45,8 @@ export type SvelteKitMcpRuntime = {
 };
 
 const primedIdentities = new WeakMap<SvelteKitLikeRequestEvent, OAuthIdentity | null>();
+const missingRateLimitStoresDiagnostic =
+	'OAuth rate limits are configured without rate-limit stores; OAuth endpoint rate limiting and failed-authentication lockout are disabled.';
 
 const requiredOauthSeamFunctions = [
 	'fetchClientIdMetadataDocument',
@@ -89,6 +90,17 @@ function assertOauthStore(
 ): void {
 	assertOauthSeamObject(stores[name], `stores.${name}`);
 	assertOauthSeamFunctions(stores[name], `stores.${name}`, requiredFunctions);
+}
+
+function warnMissingRateLimitStores(): void {
+	process.stderr.write(
+		`${JSON.stringify({
+			level: 'warn',
+			operation: 'sveltekit_mcp_mount',
+			protection: 'oauth_rate_limits',
+			message: missingRateLimitStoresDiagnostic,
+		})}\n`,
+	);
 }
 
 function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Scope>): void {
@@ -255,10 +267,7 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 		);
 	}
 	if (configuration.rateLimitStores === undefined) {
-		engineLogger.warn(
-			{ operation: 'sveltekit_mcp_mount', protection: 'oauth_rate_limits' },
-			'OAuth rate limits are configured without rate-limit stores; OAuth endpoint rate limiting and failed-authentication lockout are disabled.',
-		);
+		warnMissingRateLimitStores();
 	} else {
 		assertOauthSeamObject(configuration.rateLimitStores, 'configuration.rateLimitStores');
 		assertOauthSeamObject(
