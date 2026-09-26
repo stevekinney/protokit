@@ -4,12 +4,28 @@ import {
 	pgTable,
 	text,
 	timestamp,
+	type AnyPgTable,
 	type PgColumnBuilderBase,
 } from 'drizzle-orm/pg-core';
 
 export type PostgresOAuthSchemaOptions<TUserId extends PgColumnBuilderBase> = {
 	prefix: string;
 	userId: () => TUserId;
+};
+
+type ColumnReference = { name: string };
+type OAuthTable<TColumns extends object = object> = AnyPgTable & TColumns;
+
+export type PostgresOAuthSchema = {
+	clients: OAuthTable;
+	transactions: OAuthTable<{ userId: ColumnReference; clientId: ColumnReference }>;
+	codes: OAuthTable<{ userId: ColumnReference; clientId: ColumnReference }>;
+	accessTokens: OAuthTable<{ userId: ColumnReference; clientId: ColumnReference }>;
+	refreshTokens: OAuthTable<{
+		userId: ColumnReference;
+		clientId: ColumnReference;
+		accessTokenHash: ColumnReference;
+	}>;
 };
 
 /**
@@ -60,6 +76,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		(table) => [
 			index(`${prefix}_transactions_binding_idx`).on(table.consentBindingHash),
 			index(`${prefix}_transactions_user_idx`).on(table.userId),
+			index(`${prefix}_transactions_client_idx`).on(table.clientId),
 			index(`${prefix}_transactions_expires_idx`).on(table.expiresAt),
 		],
 	);
@@ -84,6 +101,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		},
 		(table) => [
 			index(`${prefix}_codes_user_idx`).on(table.userId),
+			index(`${prefix}_codes_client_idx`).on(table.clientId),
 			index(`${prefix}_codes_expires_idx`).on(table.expiresAt),
 		],
 	);
@@ -104,6 +122,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		},
 		(table) => [
 			index(`${prefix}_access_user_idx`).on(table.userId),
+			index(`${prefix}_access_client_idx`).on(table.clientId),
 			index(`${prefix}_access_expires_idx`).on(table.expiresAt),
 		],
 	);
@@ -128,6 +147,7 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 		},
 		(table) => [
 			index(`${prefix}_refresh_user_idx`).on(table.userId),
+			index(`${prefix}_refresh_client_idx`).on(table.clientId),
 			index(`${prefix}_refresh_family_idx`).on(table.familyId),
 			index(`${prefix}_refresh_access_idx`).on(table.accessTokenHash),
 			index(`${prefix}_refresh_expires_idx`).on(table.expiresAt),
@@ -136,5 +156,3 @@ export function createPostgresOAuthSchema<TUserId extends PgColumnBuilderBase>({
 
 	return { clients, transactions, codes, accessTokens, refreshTokens };
 }
-
-export type PostgresOAuthSchema = ReturnType<typeof createPostgresOAuthSchema>;

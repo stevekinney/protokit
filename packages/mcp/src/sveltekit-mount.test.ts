@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 
+import { engineLogger } from './logger.js';
 import type { McpRegistry } from './scope-vocabulary.js';
 import type { OAuthDiscoveryConfiguration, OAuthHostSeams } from './oauth/index.js';
 import {
@@ -17,6 +18,7 @@ import {
 	primeSvelteKitMcpIdentity,
 	type SvelteKitLikeRequestEvent,
 } from './sveltekit-mount.js';
+import { createInMemorySlidingWindowStore } from './rate-limit/index.js';
 import { resetSvelteKitMountStateForTesting } from './sveltekit-mount-state.js';
 
 const registry = {
@@ -306,6 +308,133 @@ describe('createSvelteKitMcpMount', () => {
 			expect(startCount).toBe(0);
 		},
 	);
+
+	test('uses fly-client-ip for OAuth endpoint rate limiting while preserving raw socket peers', async () => {
+		const state = harness();
+		const mount = await createSvelteKitMcpMount({
+			oauthSeams: {
+				...oauthSeams,
+				configuration: {
+					...oauthSeams.configuration,
+					trustedProxy: {
+						...oauthSeams.configuration.trustedProxy,
+						trustedProxyCidrs: ['10.0.0.0/8'],
+						trustedProxyHeader: 'fly-client-ip',
+					},
+					rateLimits: {
+						...oauthSeams.configuration.rateLimits,
+						categories: {
+							...oauthSeams.configuration.rateLimits.categories,
+							oauth_register: { maximumRequests: 1, windowSeconds: 60 },
+						},
+					},
+					rateLimitStores: {
+						...oauthSeams.configuration.rateLimitStores,
+						slidingWindow: createInMemorySlidingWindowStore(),
+					},
+				},
+			},
+			discoveryConfiguration,
+			registry,
+			identityHandleName: 'identityHandle',
+			longLivedProcess: true,
+			mcp: {
+				start: async () => {},
+				shutdown: async () => {},
+				publishGrantRevocation: async () => {},
+				handle: async (context) => {
+					state.addresses.push(context.socketAddress);
+					return new Response('mcp');
+				},
+			},
+		});
+		const firstRegistration = event('/oauth/register', '10.0.0.5');
+		firstRegistration.request = new Request(firstRegistration.url, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'fly-client-ip': '198.51.100.9' },
+			body: JSON.stringify({
+				client_name: 'First Client',
+				redirect_uris: ['https://client.example.com/first'],
+			}),
+		});
+		primeSvelteKitMcpIdentity(firstRegistration, null);
+		const secondRegistration = event('/oauth/register', '10.0.0.6');
+		secondRegistration.request = new Request(secondRegistration.url, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'fly-client-ip': '198.51.100.9' },
+			body: JSON.stringify({
+				client_name: 'Second Client',
+				redirect_uris: ['https://client.example.com/second'],
+			}),
+		});
+		primeSvelteKitMcpIdentity(secondRegistration, null);
+		const mcpEvent = event('/mcp', '10.0.0.7');
+		mcpEvent.request = new Request(mcpEvent.url, {
+			headers: { 'fly-client-ip': '198.51.100.9' },
+		});
+		primeSvelteKitMcpIdentity(mcpEvent, null);
+
+		const firstResponse = await mount.handle({
+			event: firstRegistration,
+			resolve: async () => new Response('host'),
+		});
+		const secondResponse = await mount.handle({
+			event: secondRegistration,
+			resolve: async () => new Response('host'),
+		});
+		await mount.handle({ event: mcpEvent, resolve: async () => new Response('host') });
+
+		expect(firstResponse.status).toBe(201);
+		expect(secondResponse.status).toBe(429);
+		expect(state.addresses).toEqual(['10.0.0.7']);
+		await mount.dispose();
+	});
+
+	test('warns when OAuth rate-limit categories are configured without stores', async () => {
+		const warnings: Array<{
+			bindingsOrMessage: Record<string, unknown> | string;
+			message?: string;
+		}> = [];
+		const originalWarn = engineLogger.warn;
+		engineLogger.warn = (bindingsOrMessage, message) => {
+			warnings.push({ bindingsOrMessage, message });
+		};
+		try {
+			const mount = await createSvelteKitMcpMount({
+				oauthSeams: {
+					...oauthSeams,
+					configuration: {
+						...oauthSeams.configuration,
+						rateLimitStores: undefined,
+					},
+				},
+				discoveryConfiguration,
+				registry,
+				identityHandleName: 'identityHandle',
+				longLivedProcess: true,
+				mcp: {
+					start: async () => {},
+					shutdown: async () => {},
+					publishGrantRevocation: async () => {},
+					handle: async () => new Response('mcp'),
+				},
+			});
+
+			expect(warnings).toEqual([
+				{
+					bindingsOrMessage: {
+						operation: 'sveltekit_mcp_mount',
+						protection: 'oauth_rate_limits',
+					},
+					message:
+						'OAuth rate limits are configured without rate-limit stores; OAuth endpoint rate limiting and failed-authentication lockout are disabled.',
+				},
+			]);
+			await mount.dispose();
+		} finally {
+			engineLogger.warn = originalWarn;
+		}
+	});
 
 	test('requires the named identity handle to prime every request', async () => {
 		const state = harness();

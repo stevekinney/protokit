@@ -1,4 +1,7 @@
+import { integer, pgTable } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
+import { createPostgresOAuthSchema, createPostgresOAuthStores } from './oauth/postgres/index.js';
+import type { PostgresOAuthDatabase } from './oauth/postgres/index.js';
 import { defineScopes } from './scope-vocabulary.js';
 import type { McpRegistry } from './scope-vocabulary.js';
 
@@ -160,3 +163,26 @@ numericVocabulary.defineTool({
 	requiredScope: '123',
 	handler: noopHandler,
 });
+
+/**
+ * The Postgres OAuth factory must preserve a host-owned non-null integer user
+ * identifier through `createPostgresOAuthStores()` without a consumer cast.
+ * Test files are excluded from package typechecking, so this assertion lives
+ * in the compiled fixture beside the other consumer-facing contracts.
+ */
+const integerOAuthUsers = pgTable('type_assertion_integer_oauth_users', {
+	id: integer('id').primaryKey(),
+});
+const integerOAuthSchema = createPostgresOAuthSchema({
+	prefix: 'type_assertion_integer_oauth',
+	userId: () =>
+		integer('user_id')
+			.notNull()
+			.references(() => integerOAuthUsers.id, { onDelete: 'cascade' }),
+});
+const typeAssertionPostgresDatabase: PostgresOAuthDatabase = {
+	execute: async () => [],
+	transaction: async (callback) => callback({ execute: async () => [] }),
+};
+
+createPostgresOAuthStores(typeAssertionPostgresDatabase, integerOAuthSchema);

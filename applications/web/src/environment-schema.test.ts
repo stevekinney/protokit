@@ -130,3 +130,19 @@ describe('webServerEnvironmentSchema SCHEDULED_CLEANUP_INTERVAL_SECONDS', () => 
 		).toThrow();
 	});
 });
+
+describe('webServerEnvironmentSchema TRUSTED_PROXY_HEADER', () => {
+	const schema = z.object({
+		TRUSTED_PROXY_HEADER: webServerEnvironmentSchema.TRUSTED_PROXY_HEADER,
+	});
+
+	it('accepts each supported trusted proxy header', () => {
+		for (const header of ['x-forwarded-for', 'forwarded', 'cf-connecting-ip', 'fly-client-ip']) {
+			expect(schema.parse({ TRUSTED_PROXY_HEADER: header }).TRUSTED_PROXY_HEADER).toBe(header);
+		}
+	});
+
+	it('rejects unsupported trusted proxy headers', () => {
+		expect(() => schema.parse({ TRUSTED_PROXY_HEADER: 'x-real-ip' })).toThrow();
+	});
+});

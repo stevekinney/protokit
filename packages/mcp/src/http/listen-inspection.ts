@@ -34,7 +34,8 @@ export async function inspectListenRequest(request: Request): Promise<ListenInsp
 					isListenRequest: true,
 					requestedResourceUris: listens.flatMap(readRequestedResourceUris),
 				};
-	} catch {
-		return none;
+	} catch (error) {
+		if (error instanceof SyntaxError) return none;
+		throw error;
 	}
 }

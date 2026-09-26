@@ -14,9 +14,9 @@ import type { PostgresOAuthSchema } from './schema.js';
 import { PostgresTokenStore } from './token-store.js';
 import { PostgresTransactionStore } from './transaction-store.js';
 
-export function createPostgresOAuthStores(
+export function createPostgresOAuthStores<TSchema extends PostgresOAuthSchema>(
 	database: PostgresOAuthDatabase,
-	schema: PostgresOAuthSchema,
+	schema: TSchema,
 ): OAuthStores {
 	const transactions = new PostgresTransactionStore(database, schema);
 	const codes = new PostgresCodeStore(database, schema);

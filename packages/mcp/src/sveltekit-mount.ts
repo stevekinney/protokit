@@ -1,4 +1,5 @@
 import type { McpRegistry } from './scope-vocabulary.js';
+import { engineLogger } from './logger.js';
 import { getSvelteKitMountState, setSvelteKitMountState } from './sveltekit-mount-state.js';
 import { isValidCidr } from './oauth/security-utilities.js';
 import { getSupportedScopes } from './supported-scopes.js';
@@ -199,7 +200,7 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 	}
 	if (
 		configuration.trustedProxy.trustedProxyHeader !== undefined &&
-		!['x-forwarded-for', 'forwarded', 'cf-connecting-ip'].includes(
+		!['x-forwarded-for', 'forwarded', 'cf-connecting-ip', 'fly-client-ip'].includes(
 			configuration.trustedProxy.trustedProxyHeader as string,
 		)
 	) {
@@ -253,7 +254,12 @@ function assertRequiredOauthSeams<Scope extends string>(seams: OAuthHostSeams<Sc
 			'The SvelteKit MCP mount requires the OAuth host seam "configuration.mcpUiExtension.enabled".',
 		);
 	}
-	if (configuration.rateLimitStores !== undefined) {
+	if (configuration.rateLimitStores === undefined) {
+		engineLogger.warn(
+			{ operation: 'sveltekit_mcp_mount', protection: 'oauth_rate_limits' },
+			'OAuth rate limits are configured without rate-limit stores; OAuth endpoint rate limiting and failed-authentication lockout are disabled.',
+		);
+	} else {
 		assertOauthSeamObject(configuration.rateLimitStores, 'configuration.rateLimitStores');
 		assertOauthSeamObject(
 			configuration.rateLimitStores.slidingWindow,

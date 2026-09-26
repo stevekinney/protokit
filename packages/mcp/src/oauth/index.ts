@@ -32,7 +32,8 @@ export type {
 	SafePublicHttpsFetchOptions,
 } from './client-metadata-documents.js';
 
-export type TrustedProxyHeader = 'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip';
+export type TrustedProxyHeader =
+	'x-forwarded-for' | 'forwarded' | 'cf-connecting-ip' | 'fly-client-ip';
 
 export type TrustedProxyConfiguration = {
 	/** CIDR blocks whose immediate socket peer may supply the configured forwarding header. */

@@ -173,6 +173,95 @@ describe('resolveOauthNetworkIdentity', () => {
 		expect(identity).toBe('198.51.100.9');
 	});
 
+	it('trusts fly-client-ip as a single-value header that ignores the configured hop count', () => {
+		const trustedFlyConfiguration = {
+			...trustedXffConfiguration,
+			trustedProxyHeader: 'fly-client-ip',
+			trustedProxyHopCount: 2,
+		} satisfies TrustedProxyConfiguration;
+		const identity = resolveOauthNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ 'fly-client-ip': '198.51.100.9' }),
+			configuration: trustedFlyConfiguration,
+		});
+		expect(identity).toBe('198.51.100.9');
+	});
+
+	it('normalizes valid fly-client-ip IPv4 ports, IPv4-mapped IPv6, and bracketed IPv6 ports', () => {
+		const trustedFlyConfiguration = {
+			...trustedXffConfiguration,
+			trustedProxyHeader: 'fly-client-ip',
+		} satisfies TrustedProxyConfiguration;
+		expect(
+			resolveOauthNetworkIdentity({
+				socketAddress: '10.0.0.5',
+				headers: headersOf({ 'fly-client-ip': '198.51.100.9:443' }),
+				configuration: trustedFlyConfiguration,
+			}),
+		).toBe('198.51.100.9');
+		expect(
+			resolveOauthNetworkIdentity({
+				socketAddress: '10.0.0.5',
+				headers: headersOf({ 'fly-client-ip': '::ffff:198.51.100.9' }),
+				configuration: trustedFlyConfiguration,
+			}),
+		).toBe('198.51.100.9');
+		expect(
+			resolveOauthNetworkIdentity({
+				socketAddress: '10.0.0.5',
+				headers: headersOf({ 'fly-client-ip': '[2001:db8::1]:443' }),
+				configuration: trustedFlyConfiguration,
+			}),
+		).toBe('2001:db8::1');
+	});
+
+	it('falls back to the trusted socket address when fly-client-ip is invalid text', () => {
+		const identity = resolveOauthNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ 'fly-client-ip': 'not-an-ip-address' }),
+			configuration: { ...trustedXffConfiguration, trustedProxyHeader: 'fly-client-ip' },
+		});
+		expect(identity).toBe('10.0.0.5');
+	});
+
+	it('falls back to the trusted socket address when fly-client-ip contains a comma-coalesced value', () => {
+		const identity = resolveOauthNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({ 'fly-client-ip': '198.51.100.9, 203.0.113.8' }),
+			configuration: { ...trustedXffConfiguration, trustedProxyHeader: 'fly-client-ip' },
+		});
+		expect(identity).toBe('10.0.0.5');
+	});
+
+	it('falls back to the trusted socket address when Headers.append coalesces duplicate fly-client-ip values', () => {
+		const headers = new Headers({ 'fly-client-ip': '198.51.100.9' });
+		headers.append('fly-client-ip', '203.0.113.8');
+		const identity = resolveOauthNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers,
+			configuration: { ...trustedXffConfiguration, trustedProxyHeader: 'fly-client-ip' },
+		});
+		expect(identity).toBe('10.0.0.5');
+	});
+
+	it('falls back to the trusted socket address when fly-client-ip is missing', () => {
+		const identity = resolveOauthNetworkIdentity({
+			socketAddress: '10.0.0.5',
+			headers: headersOf({}),
+			configuration: { ...trustedXffConfiguration, trustedProxyHeader: 'fly-client-ip' },
+		});
+		expect(identity).toBe('10.0.0.5');
+	});
+
+	it('ignores a forged fly-client-ip header from an untrusted peer', () => {
+		const identity = resolveOauthNetworkIdentity({
+			socketAddress: '203.0.113.7',
+			headers: headersOf({ 'fly-client-ip': '198.51.100.9' }),
+			configuration: { ...trustedXffConfiguration, trustedProxyHeader: 'fly-client-ip' },
+		});
+		expect(identity).toBe('203.0.113.7');
+	});
+
 	it('falls back to the trusted socket address when the header is absent', () => {
 		const identity = resolveOauthNetworkIdentity({
 			socketAddress: '10.0.0.5',
