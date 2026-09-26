@@ -18,22 +18,53 @@ function channelForUser(userId: string): string {
 	return `mcp:events:user:${userId}`;
 }
 
-function readServerEvent(message: string): { event: ServerEvent; sourceId?: string } | undefined {
-	const parsed: unknown = JSON.parse(message);
-	if (typeof parsed !== 'object' || parsed === null) return undefined;
-	const envelope = parsed as { event?: unknown; sourceId?: unknown; kind?: unknown };
-	if (typeof envelope.sourceId === 'string' && envelope.event) {
-		const event = envelope.event as { kind?: unknown };
-		return typeof event.kind === 'string'
-			? { event: envelope.event as ServerEvent, sourceId: envelope.sourceId }
-			: undefined;
+class ServerEventDecodeError extends Error {
+	constructor() {
+		super('Invalid MCP server event message.');
+		this.name = 'ServerEventDecodeError';
 	}
-	if (typeof envelope.kind !== 'string') return undefined;
-	const event = { ...(parsed as Record<string, unknown>) };
-	delete event.sourceId;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function decodeServerEvent(value: unknown): ServerEvent {
+	if (!isObjectRecord(value)) throw new ServerEventDecodeError();
+	switch (value.kind) {
+		case 'tools_list_changed':
+		case 'prompts_list_changed':
+		case 'resources_list_changed':
+			return { kind: value.kind };
+		case 'resource_updated':
+			if (typeof value.uri !== 'string') throw new ServerEventDecodeError();
+			return { kind: value.kind, uri: value.uri };
+		default:
+			throw new ServerEventDecodeError();
+	}
+}
+
+function parseServerEventMessage(message: string): unknown {
+	try {
+		return JSON.parse(message) as unknown;
+	} catch {
+		throw new ServerEventDecodeError();
+	}
+}
+
+function readServerEvent(message: string): { event: ServerEvent; sourceId?: string } {
+	const parsed = parseServerEventMessage(message);
+	if (!isObjectRecord(parsed)) throw new ServerEventDecodeError();
+	if ('event' in parsed) {
+		if (typeof parsed.sourceId !== 'string') throw new ServerEventDecodeError();
+		return {
+			event: decodeServerEvent(parsed.event),
+			sourceId: parsed.sourceId,
+		};
+	}
 	return {
-		event: event as ServerEvent,
-		sourceId: typeof envelope.sourceId === 'string' ? envelope.sourceId : undefined,
+		event: decodeServerEvent(parsed),
+		sourceId: typeof parsed.sourceId === 'string' ? parsed.sourceId : undefined,
 	};
 }
 

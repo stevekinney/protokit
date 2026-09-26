@@ -38,6 +38,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const packageRoot = import.meta.dir;
+const subprocessTimeoutMilliseconds = 120_000;
+const canonicalSemverPattern =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+type VerificationTarget = { mode: 'packed' } | { mode: 'registry'; version: string };
+
+function parseArguments(arguments_: readonly string[]): VerificationTarget {
+	if (arguments_.length === 0) return { mode: 'packed' };
+	if (arguments_[0] !== '--registry-version') {
+		throw new Error(`Unknown argument: ${arguments_[0]}`);
+	}
+	if (arguments_.length !== 2) {
+		throw new Error('--registry-version requires exactly one version argument.');
+	}
+	const version = arguments_[1];
+	if (!canonicalSemverPattern.test(version)) {
+		throw new Error('--registry-version must be an exact package version, such as 0.2.4.');
+	}
+	return { mode: 'registry', version };
+}
 
 /**
  * `process.env` with every npm credential and registry override removed, so an
@@ -60,15 +80,19 @@ function run(command: string[], cwd: string, env?: Record<string, string>): stri
 		cwd,
 		stdout: 'pipe',
 		stderr: 'pipe',
+		timeout: subprocessTimeoutMilliseconds,
+		killSignal: 'SIGKILL',
 		...(env ? { env } : {}),
 	});
 	const stdout = new TextDecoder().decode(result.stdout);
 	const stderr = new TextDecoder().decode(result.stderr);
 	if (result.exitCode !== 0) {
-		console.error(`\n$ ${command.join(' ')}  (in ${cwd})`);
+		console.error(`
+$ ${command.join(' ')}  (in ${cwd})`);
 		console.error(stdout);
 		console.error(stderr);
-		throw new Error(`${command[0]} failed with exit code ${result.exitCode}.`);
+		const suffix = result.signalCode ? ` after signal ${result.signalCode}` : '';
+		throw new Error(`${command[0]} failed with exit code ${result.exitCode}${suffix}.`);
 	}
 	return stdout.trim();
 }
@@ -95,15 +119,21 @@ function collectDependencyNames(tree: unknown, names = new Set<string>()): Set<s
 	return names;
 }
 
+const target = parseArguments(process.argv.slice(2));
 const consumer = await mkdtemp(join(tmpdir(), 'lostgradient-mcp-consumer-'));
 
 try {
-	run(['bun', 'run', 'build'], packageRoot);
-
-	const packed = run(['npm', 'pack', '--pack-destination', consumer, '--silent'], packageRoot)
-		.split('\n')
-		.at(-1);
-	if (!packed) throw new Error('npm pack did not report a tarball name.');
+	let installSpec: string;
+	if (target.mode === 'packed') {
+		run(['bun', 'run', 'build'], packageRoot);
+		const packed = run(['npm', 'pack', '--pack-destination', consumer, '--silent'], packageRoot)
+			.split('\n')
+			.at(-1);
+		if (!packed) throw new Error('npm pack did not report a tarball name.');
+		installSpec = join(consumer, packed);
+	} else {
+		installSpec = `@lostgradient/mcp@${target.version}`;
+	}
 
 	await writeFile(
 		join(consumer, 'package.json'),
@@ -125,7 +155,7 @@ try {
 		[
 			'npm',
 			'install',
-			join(consumer, packed),
+			installSpec,
 			'--no-audit',
 			'--no-fund',
 			'--userconfig',
@@ -162,6 +192,7 @@ try {
 		}
 	}
 
+	const expectedPackageVersion = target.mode === 'registry' ? target.version : undefined;
 	const probe = join(consumer, 'probe.mjs');
 	await writeFile(
 		probe,
@@ -174,9 +205,10 @@ import * as oauthStoresContract from '@lostgradient/mcp/oauth/stores';
 import { createInMemoryOAuthStores, InMemoryClientStore, InMemoryCodeStore, InMemoryTokenStore, InMemoryTransactionStore } from '@lostgradient/mcp/oauth/testing';
 import { createPostgresOAuthSchema, createPostgresOAuthStores, PostgresClientStore, PostgresCodeStore, PostgresTokenStore, PostgresTransactionStore } from '@lostgradient/mcp/oauth/postgres';
 import { createInMemorySlidingWindowStore, createRateLimitedResponse, RequestRateLimiter } from '@lostgradient/mcp/rate-limit';
-import { buildMcpAuthInfo, createMcpHttpServingLayer, createMcpServingHandler, McpUserHandlerCache } from '@lostgradient/mcp/http';
+import { buildMcpAuthInfo, createMcpHttpServingLayer, createMcpServingHandler, McpUserHandlerCache, createUserServerEventBus } from '@lostgradient/mcp/http';
 import * as svelteKitContract from '@lostgradient/mcp/sveltekit';
 
+const expectedPackageVersion = ${JSON.stringify(expectedPackageVersion)};
 const problems = [];
 const require = (condition, message) => { if (!condition) problems.push(message); };
 
@@ -186,6 +218,9 @@ require(typeof defineScopes === 'function', 'defineScopes is not a function');
 require(typeof runMcpConformance === 'function', 'runMcpConformance is not a function');
 require(typeof parseMcpServerEnvironment === 'function', 'parseMcpServerEnvironment is not a function');
 require(typeof PACKAGE_VERSION === 'string' && PACKAGE_VERSION.length > 0, 'PACKAGE_VERSION is missing');
+if (expectedPackageVersion !== undefined) {
+  require(PACKAGE_VERSION === expectedPackageVersion, 'PACKAGE_VERSION ' + PACKAGE_VERSION + ' did not match requested registry version ' + expectedPackageVersion);
+}
 require(typeof EXTENSION_ID === 'string' && EXTENSION_ID.length > 0, 'EXTENSION_ID lost its binding through the bundler');
 
 // Shared modules must be shared chunks, not per-entry copies.
@@ -250,6 +285,7 @@ require(typeof RequestRateLimiter === 'function', 'RequestRateLimiter is not a c
 require(typeof createMcpHttpServingLayer === 'function', '/http createMcpHttpServingLayer is not a function');
 require(typeof createMcpServingHandler === 'function', '/http createMcpServingHandler is not a function');
 require(typeof McpUserHandlerCache === 'function', '/http McpUserHandlerCache is not a constructor');
+require(typeof createUserServerEventBus === 'function', '/http createUserServerEventBus is not a function');
 require(typeof svelteKitContract.createSvelteKitMcpMount === 'function', '/sveltekit createSvelteKitMcpMount is not a function');
 require(typeof svelteKitContract.primeSvelteKitMcpIdentity === 'function', '/sveltekit primeSvelteKitMcpIdentity is not a function');
 require(!('svelteKitMountTestHooks' in svelteKitContract), '/sveltekit exposes internal test hooks');
@@ -310,6 +346,125 @@ const underScopedListenResponse = await servingHandler.handle(
 require(underScopedListenResponse.status === 403, 'library HTTP boundary did not reject an under-scoped subscription');
 require(servingEvents.includes('insufficient_scope'), 'library HTTP boundary did not record insufficient_scope');
 await servingHandler.shutdown();
+
+
+const secretPayloadMarker = 'secret-marker-never-log';
+const validEvents = [
+  { kind: 'tools_list_changed' },
+  { kind: 'prompts_list_changed' },
+  { kind: 'resources_list_changed' },
+  { kind: 'resource_updated', uri: 'user://profile' },
+];
+const createMessagingCapture = () => {
+  const listeners = new Set();
+  const publishedMessages = [];
+  return {
+    publishedMessages,
+    messaging: {
+      publish: async (_channel, message) => {
+        publishedMessages.push(message);
+        for (const listener of listeners) listener(message);
+      },
+      subscribe: async (_channel, listener) => {
+        listeners.add(listener);
+        return async () => listeners.delete(listener);
+      },
+    },
+    publish: (message) => {
+      for (const listener of listeners) listener(message);
+    },
+  };
+};
+const unsubscribeAndSettle = async (unsubscribe, bus) => {
+  unsubscribe();
+  await bus.whenSubscribed();
+};
+const assertSafeDiagnostics = (errors, expectedCount) => {
+  require(errors.length === expectedCount, 'malformed event produced ' + errors.length + ' diagnostics instead of ' + expectedCount);
+  for (const entry of errors) {
+    require(entry.operation === 'deserialize', 'malformed event reported operation ' + entry.operation);
+    require(entry.userId === 'packed-artifact-user', 'malformed event reported user ' + entry.userId);
+    const text = String(entry.error);
+    require(!text.includes('unknown_kind'), 'deserialize diagnostic leaked unknown kind');
+    require(!text.includes('user://profile'), 'deserialize diagnostic leaked URI');
+    require(!text.includes(secretPayloadMarker), 'deserialize diagnostic leaked secret payload');
+  }
+};
+const verifyEventBusMessages = async () => {
+  for (const form of ['bare', 'enveloped']) {
+    const { messaging, publish } = createMessagingCapture();
+    const bus = createUserServerEventBus({ userId: 'packed-artifact-user', messaging });
+    const received = [];
+    const unsubscribe = bus.subscribe((event) => received.push(event));
+    await bus.whenSubscribed();
+    try {
+      for (const event of validEvents) {
+        publish(JSON.stringify(form === 'bare' ? event : { event, sourceId: 'remote-source' }));
+      }
+      require(JSON.stringify(received) === JSON.stringify(validEvents), form + ' valid events were not delivered once');
+    } finally {
+      await unsubscribeAndSettle(unsubscribe, bus);
+    }
+  }
+
+  const selfEcho = createMessagingCapture();
+  const selfBus = createUserServerEventBus({ userId: 'packed-artifact-user', messaging: selfEcho.messaging });
+  const selfReceived = [];
+  const unsubscribeSelf = selfBus.subscribe((event) => selfReceived.push(event));
+  await selfBus.whenSubscribed();
+  try {
+    selfBus.publish({ kind: 'resource_updated', uri: 'user://profile' });
+    await Promise.resolve();
+    require(JSON.stringify(selfReceived) === JSON.stringify([{ kind: 'resource_updated', uri: 'user://profile' }]), 'self echo was delivered for bare publish');
+    const selfSourceId = JSON.parse(selfEcho.publishedMessages[0] ?? '{}').sourceId;
+    selfEcho.publish(JSON.stringify({ event: { kind: 'tools_list_changed' }, sourceId: selfSourceId }));
+    require(JSON.stringify(selfReceived) === JSON.stringify([{ kind: 'resource_updated', uri: 'user://profile' }]), 'self echo was delivered for enveloped publish');
+  } finally {
+    await unsubscribeAndSettle(unsubscribeSelf, selfBus);
+  }
+
+  const malformedBareMessages = [
+    '{"' + secretPayloadMarker + '":',
+    'null',
+    '42',
+    '"resource_updated"',
+    '[]',
+    JSON.stringify({}),
+    JSON.stringify({ kind: 'unknown_kind', uri: 'user://profile', secret: secretPayloadMarker }),
+    JSON.stringify({ kind: 7, uri: 'user://profile', secret: secretPayloadMarker }),
+    JSON.stringify({ kind: 'resource_updated', secret: secretPayloadMarker }),
+    JSON.stringify({ kind: 'resource_updated', uri: 7, secret: secretPayloadMarker }),
+  ];
+  const malformedEnvelopedMessages = [
+    JSON.stringify({ event: { kind: 'tools_list_changed' }, secret: secretPayloadMarker }),
+    JSON.stringify({ event: { kind: 'tools_list_changed' }, sourceId: 7, secret: secretPayloadMarker }),
+    JSON.stringify({ event: null, sourceId: 'remote-source', secret: secretPayloadMarker }),
+    JSON.stringify({ event: [], sourceId: 'remote-source', secret: secretPayloadMarker }),
+    JSON.stringify({ event: {}, sourceId: 'remote-source', secret: secretPayloadMarker }),
+    JSON.stringify({ event: { kind: 'unknown_kind', uri: 'user://profile', secret: secretPayloadMarker }, sourceId: 'remote-source' }),
+    JSON.stringify({ event: { kind: 7, uri: 'user://profile', secret: secretPayloadMarker }, sourceId: 'remote-source' }),
+    JSON.stringify({ event: { kind: 'resource_updated', secret: secretPayloadMarker }, sourceId: 'remote-source' }),
+    JSON.stringify({ event: { kind: 'resource_updated', uri: 7, secret: secretPayloadMarker }, sourceId: 'remote-source' }),
+  ];
+  for (const [label, messages] of [['bare', malformedBareMessages], ['enveloped', malformedEnvelopedMessages]]) {
+    const { messaging, publish } = createMessagingCapture();
+    const errors = [];
+    const bus = createUserServerEventBus({ userId: 'packed-artifact-user', messaging, onError: (error) => errors.push(error) });
+    const received = [];
+    const unsubscribe = bus.subscribe((event) => received.push(event));
+    await bus.whenSubscribed();
+    try {
+      for (const [index, message] of messages.entries()) {
+        publish(message);
+        require(received.length === 0, label + ' malformed event reached listener');
+        assertSafeDiagnostics(errors, index + 1);
+      }
+    } finally {
+      await unsubscribeAndSettle(unsubscribe, bus);
+    }
+  }
+};
+await verifyEventBusMessages();
 
 if (problems.length > 0) {
   console.error('Packaged artifact is not consumable:');
