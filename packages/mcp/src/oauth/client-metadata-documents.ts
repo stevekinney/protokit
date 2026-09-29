@@ -96,7 +96,15 @@ const clientMetadataDocumentSchema = z
 				'Redirect URIs must use HTTPS (or http://localhost for development)',
 			),
 		grant_types: z
-			.array(z.enum(['authorization_code', 'refresh_token']))
+			// Client metadata may advertise grants this server does not implement.
+			// The token endpoint still accepts only authorization_code and refresh_token.
+			.array(
+				z
+					.string()
+					.min(1)
+					.max(256)
+					.regex(/^[\x21-\x7e]+$/),
+			)
 			.max(oauthMaxGrantTypeCount)
 			.default(['authorization_code', 'refresh_token']),
 		response_types: z

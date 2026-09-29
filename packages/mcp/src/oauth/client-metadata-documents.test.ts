@@ -173,6 +173,38 @@ describe('fetchClientIdMetadataDocument', () => {
 		expect(result?.responseTypes).toEqual(['code']);
 	});
 
+	it('preserves an additional OAuth extension grant from hosted Claude metadata', async () => {
+		const extensionGrant = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
+		const result = await fetchClientIdMetadataDocument(validDocumentUrl, {
+			fetchImpl: async () =>
+				jsonResponse({
+					...validDocumentBody,
+					grant_types: ['authorization_code', 'refresh_token', extensionGrant],
+					response_types: ['code'],
+					token_endpoint_auth_method: 'none',
+				}),
+			lookupImpl: lookupResolvingTo(publicAddress),
+		});
+		expect(result?.grantTypes).toEqual(['authorization_code', 'refresh_token', extensionGrant]);
+	});
+
+	for (const invalidGrant of [
+		'',
+		'authorization code',
+		'authorization_code\n',
+		'x'.repeat(257),
+		42,
+	]) {
+		it(`rejects a malformed grant type ${JSON.stringify(invalidGrant)}`, async () => {
+			const result = await fetchClientIdMetadataDocument(validDocumentUrl, {
+				fetchImpl: async () =>
+					jsonResponse({ ...validDocumentBody, grant_types: ['authorization_code', invalidGrant] }),
+				lookupImpl: lookupResolvingTo(publicAddress),
+			});
+			expect(result).toBeNull();
+		});
+	}
+
 	it('rejects a document whose client_id does not match the fetch URL exactly', async () => {
 		const result = await fetchClientIdMetadataDocument(validDocumentUrl, {
 			fetchImpl: async () =>
