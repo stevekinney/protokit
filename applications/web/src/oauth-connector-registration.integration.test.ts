@@ -274,7 +274,11 @@ describeWithRedis('Client ID Metadata Document registration (requires Redis)', (
 			clientId: clientIdUrl,
 			clientName: 'CIMD Interop Test Client',
 			redirectUris: ['https://example.com/callback'],
-			grantTypes: ['authorization_code', 'refresh_token'],
+			grantTypes: [
+				'authorization_code',
+				'refresh_token',
+				'urn:ietf:params:oauth:grant-type:jwt-bearer',
+			],
 			responseTypes: ['code'],
 			applicationType: null,
 		};
@@ -302,6 +306,20 @@ describeWithRedis('Client ID Metadata Document registration (requires Redis)', (
 		expect(upsertedClient?.tokenEndpointAuthMethod).toBe('none');
 		expect(upsertedClient?.clientType).toBe('public');
 		expect(upsertedClient?.clientIdMetadataUrl).toBe(clientIdUrl);
+		expect(upsertedClient?.grantTypes).toEqual(mockCimdState.document.grantTypes);
+
+		const unsupportedGrantResponse = await fetchFromTestServer(handle, `/oauth/token`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+				client_id: clientIdUrl,
+			}).toString(),
+		});
+		expect(unsupportedGrantResponse.status).toBe(400);
+		expect(await unsupportedGrantResponse.json()).toMatchObject({
+			error: 'unsupported_grant_type',
+		});
 
 		const transactionId = extractHiddenInputValue(html, 'transaction_id');
 		const csrfToken = extractHiddenInputValue(html, 'csrf_token');
