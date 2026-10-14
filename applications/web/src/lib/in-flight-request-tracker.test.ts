@@ -116,6 +116,42 @@ describe('createInFlightRequestTracker', () => {
 		expect(tracker.activeCount).toBe(0);
 	});
 
+	it('keeps a canceled Response counted until the inner body finishes canceling', async () => {
+		const tracker = createInFlightRequestTracker();
+		const innerCancellation = Promise.withResolvers<void>();
+		const body = new ReadableStream<Uint8Array>({
+			// Stands in for a concurrency-slot body whose cancel awaits the slot release.
+			cancel: () => innerCancellation.promise,
+		});
+
+		const trackedResponse = await tracker.track(async () => new Response(body));
+		let canceled = false;
+		const cancellation = trackedResponse.body!.cancel('client disconnected').then(() => {
+			canceled = true;
+		});
+		for (let index = 0; index < 10; index++) await Promise.resolve();
+
+		expect(canceled).toBe(false);
+		expect(tracker.activeCount).toBe(1);
+
+		innerCancellation.resolve();
+		await cancellation;
+
+		expect(tracker.activeCount).toBe(0);
+	});
+
+	it('still settles a canceled Response when the inner body cancellation rejects', async () => {
+		const tracker = createInFlightRequestTracker();
+		const body = new ReadableStream<Uint8Array>({
+			cancel: () => Promise.reject(new Error('release failed')),
+		});
+
+		const trackedResponse = await tracker.track(async () => new Response(body));
+		await trackedResponse.body!.cancel('client disconnected');
+
+		expect(tracker.activeCount).toBe(0);
+	});
+
 	it('drains only once every concurrently-tracked request finishes', async () => {
 		const tracker = createInFlightRequestTracker();
 		let resolveFirst!: () => void;

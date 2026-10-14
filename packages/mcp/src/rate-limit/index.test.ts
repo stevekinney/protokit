@@ -190,6 +190,249 @@ describe('concurrency slots', () => {
 		await Promise.resolve();
 		expect(releaseCount).toBe(1);
 	});
+
+	describe('response body cancellation', () => {
+		type Deferred = {
+			promise: Promise<void>;
+			resolve: () => void;
+			reject: (error: unknown) => void;
+		};
+		const deferred = (): Deferred => {
+			let resolve!: () => void;
+			let reject!: (error: unknown) => void;
+			const promise = new Promise<void>((promiseResolve, promiseReject) => {
+				resolve = promiseResolve;
+				reject = promiseReject;
+			});
+			return { promise, resolve, reject };
+		};
+		const track = (promise: Promise<unknown>) => {
+			const state: { settled: boolean; error?: unknown; rejected: boolean } = {
+				settled: false,
+				rejected: false,
+			};
+			void promise.then(
+				() => {
+					state.settled = true;
+				},
+				(error) => {
+					state.settled = true;
+					state.rejected = true;
+					state.error = error;
+				},
+			);
+			return state;
+		};
+		const flush = async () => {
+			for (let index = 0; index < 10; index++) await Promise.resolve();
+		};
+		const createHarness = (sourceCancellation: Deferred, releaseSettlement: Deferred) => {
+			const calls = { sourceCancel: 0, release: 0 };
+			const body = new ReadableStream<Uint8Array>({
+				cancel() {
+					calls.sourceCancel++;
+					return sourceCancellation.promise;
+				},
+			});
+			const response = attachConcurrencySlotToResponseLifetime(new Response(body), {
+				allowed: true,
+				release: () => {
+					calls.release++;
+					return releaseSettlement.promise;
+				},
+				renew: async () => {},
+			});
+			return { calls, response };
+		};
+
+		it('does not resolve until slot release settles', async () => {
+			const source = deferred();
+			const release = deferred();
+			const { calls, response } = createHarness(source, release);
+			const cancellation = track(response.body!.cancel());
+			source.resolve();
+			await flush();
+			expect(calls).toEqual({ sourceCancel: 1, release: 1 });
+			expect(cancellation.settled).toBe(false);
+			release.resolve();
+			await flush();
+			expect(cancellation.settled).toBe(true);
+			expect(cancellation.rejected).toBe(false);
+		});
+
+		it('shares one pending release when a pending pull settles during cancellation', async () => {
+			const source = deferred();
+			const release = deferred();
+			const { calls, response } = createHarness(source, release);
+			const reader = response.body!.getReader();
+			const pendingRead = track(reader.read());
+			await flush();
+			const cancellation = track(reader.cancel());
+			// Cancelling the source ends its pending read; closing the already-cancelled stream
+			// then throws, so the pull's error path settles concurrently with cancellation.
+			source.resolve();
+			await flush();
+			expect(calls).toEqual({ sourceCancel: 1, release: 1 });
+			expect(pendingRead.settled).toBe(true);
+			expect(cancellation.settled).toBe(false);
+			release.resolve();
+			await flush();
+			expect(cancellation.settled).toBe(true);
+			expect(cancellation.rejected).toBe(false);
+			expect(calls.release).toBe(1);
+		});
+
+		it('does not resolve until source cancellation settles', async () => {
+			const source = deferred();
+			const release = deferred();
+			const { calls, response } = createHarness(source, release);
+			const cancellation = track(response.body!.cancel());
+			release.resolve();
+			await flush();
+			expect(calls).toEqual({ sourceCancel: 1, release: 1 });
+			expect(cancellation.settled).toBe(false);
+			source.resolve();
+			await flush();
+			expect(cancellation.settled).toBe(true);
+			expect(cancellation.rejected).toBe(false);
+		});
+
+		it('contains a source cancellation failure when release succeeds', async () => {
+			const source = deferred();
+			const release = deferred();
+			const { calls, response } = createHarness(source, release);
+			const cancellation = track(response.body!.cancel());
+			source.reject(new Error('source failed'));
+			release.resolve();
+			await flush();
+			expect(calls).toEqual({ sourceCancel: 1, release: 1 });
+			expect(cancellation.settled).toBe(true);
+			expect(cancellation.rejected).toBe(false);
+		});
+
+		it('rejects with the release error after source cancellation settles', async () => {
+			const source = deferred();
+			const release = deferred();
+			const { response } = createHarness(source, release);
+			const cancellation = track(response.body!.cancel());
+			const releaseError = new Error('release failed');
+			release.reject(releaseError);
+			await flush();
+			expect(cancellation.settled).toBe(false);
+			source.resolve();
+			await flush();
+			expect(cancellation.settled).toBe(true);
+			expect(cancellation.error).toBe(releaseError);
+		});
+
+		it('prefers the release error when both operations reject', async () => {
+			const source = deferred();
+			const release = deferred();
+			const { calls, response } = createHarness(source, release);
+			const cancellation = track(response.body!.cancel());
+			const releaseError = new Error('release failed');
+			source.reject(new Error('source failed'));
+			release.reject(releaseError);
+			await flush();
+			expect(calls).toEqual({ sourceCancel: 1, release: 1 });
+			expect(cancellation.error).toBe(releaseError);
+		});
+
+		it('releases exactly once and stops renewal when completion races cancellation', async () => {
+			let releaseCount = 0;
+			const intervals: unknown[] = [];
+			const cleared: unknown[] = [];
+			const originalSetInterval = globalThis.setInterval;
+			const originalClearInterval = globalThis.clearInterval;
+			globalThis.setInterval = ((...parameters: Parameters<typeof setInterval>) => {
+				const handle = originalSetInterval(...parameters);
+				intervals.push(handle);
+				return handle;
+			}) as typeof setInterval;
+			globalThis.clearInterval = ((handle?: Parameters<typeof clearInterval>[0]) => {
+				cleared.push(handle);
+				originalClearInterval(handle);
+			}) as typeof clearInterval;
+			try {
+				let close!: () => void;
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						close = () => controller.close();
+					},
+				});
+				const response = attachConcurrencySlotToResponseLifetime(new Response(body), {
+					allowed: true,
+					release: async () => {
+						releaseCount++;
+					},
+					renew: async () => {},
+				});
+				expect(intervals).toHaveLength(1);
+				const reader = response.body!.getReader();
+				const read = reader.read();
+				close();
+				await read;
+				await reader.cancel();
+				await flush();
+			} finally {
+				globalThis.setInterval = originalSetInterval;
+				globalThis.clearInterval = originalClearInterval;
+			}
+			expect(releaseCount).toBe(1);
+			expect(cleared).toEqual(intervals);
+		});
+
+		it('keeps platform behaviour for repeated public cancel calls', async () => {
+			let releaseCount = 0;
+			const body = new ReadableStream<Uint8Array>();
+			const response = attachConcurrencySlotToResponseLifetime(new Response(body), {
+				allowed: true,
+				release: async () => {
+					releaseCount++;
+				},
+				renew: async () => {},
+			});
+			await response.body!.cancel();
+			await response.body!.cancel();
+			expect(releaseCount).toBe(1);
+		});
+
+		it('releases when the source read fails', async () => {
+			let releaseCount = 0;
+			const body = new ReadableStream<Uint8Array>({
+				pull() {
+					throw new Error('read failed');
+				},
+			});
+			const response = attachConcurrencySlotToResponseLifetime(new Response(body), {
+				allowed: true,
+				release: async () => {
+					releaseCount++;
+				},
+				renew: async () => {},
+			});
+			await expect(response.body!.getReader().read()).rejects.toThrow('read failed');
+			await flush();
+			expect(releaseCount).toBe(1);
+		});
+
+		it('releases immediately for responses without a usable body', async () => {
+			let releaseCount = 0;
+			const slot = {
+				allowed: true,
+				release: async () => {
+					releaseCount++;
+				},
+				renew: async () => {},
+			};
+			const empty = new Response(null);
+			expect(attachConcurrencySlotToResponseLifetime(empty, slot)).toBe(empty);
+			const used = new Response('body');
+			await used.text();
+			expect(attachConcurrencySlotToResponseLifetime(used, slot)).toBe(used);
+			expect(releaseCount).toBe(2);
+		});
+	});
 });
 
 describe('rate-limit response', () => {
