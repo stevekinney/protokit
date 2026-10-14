@@ -104,10 +104,16 @@ function trackResponseBody(response: Response, onBodySettled: () => void): Respo
 	}
 
 	let settled = false;
+	// Once cancellation starts it owns settlement: cancelling the source ends any pending
+	// read, and that pull must not settle before the inner cancellation finishes.
+	let canceling = false;
 	const settleOnce = (): void => {
 		if (settled) return;
 		settled = true;
 		onBodySettled();
+	};
+	const settleFromPull = (): void => {
+		if (!canceling) settleOnce();
 	};
 
 	const sourceReader = response.body.getReader();
@@ -117,18 +123,26 @@ function trackResponseBody(response: Response, onBodySettled: () => void): Respo
 				const { done, value } = await sourceReader.read();
 				if (done) {
 					controller.close();
-					settleOnce();
+					settleFromPull();
 					return;
 				}
 				controller.enqueue(value);
 			} catch (error) {
 				controller.error(error);
-				settleOnce();
+				settleFromPull();
 			}
 		},
-		cancel(reason) {
-			sourceReader.cancel(reason).catch(() => {});
-			settleOnce();
+		async cancel(reason) {
+			canceling = true;
+			// Await the inner cancellation (which can include concurrency-slot release) so
+			// drain() cannot report this request finished while its cleanup is still running.
+			try {
+				await sourceReader.cancel(reason);
+			} catch {
+				// Cancellation failures stay contained, as before; the request is still over.
+			} finally {
+				settleOnce();
+			}
 		},
 	});
 
