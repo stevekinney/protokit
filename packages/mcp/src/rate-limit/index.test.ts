@@ -260,6 +260,28 @@ describe('concurrency slots', () => {
 			expect(cancellation.rejected).toBe(false);
 		});
 
+		it('shares one pending release when a pending pull settles during cancellation', async () => {
+			const source = deferred();
+			const release = deferred();
+			const { calls, response } = createHarness(source, release);
+			const reader = response.body!.getReader();
+			const pendingRead = track(reader.read());
+			await flush();
+			const cancellation = track(reader.cancel());
+			// Cancelling the source ends its pending read; closing the already-cancelled stream
+			// then throws, so the pull's error path settles concurrently with cancellation.
+			source.resolve();
+			await flush();
+			expect(calls).toEqual({ sourceCancel: 1, release: 1 });
+			expect(pendingRead.settled).toBe(true);
+			expect(cancellation.settled).toBe(false);
+			release.resolve();
+			await flush();
+			expect(cancellation.settled).toBe(true);
+			expect(cancellation.rejected).toBe(false);
+			expect(calls.release).toBe(1);
+		});
+
 		it('does not resolve until source cancellation settles', async () => {
 			const source = deferred();
 			const release = deferred();
