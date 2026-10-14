@@ -131,14 +131,17 @@ export function attachConcurrencySlotToResponseLifetime(
 		void slot.release();
 		return response;
 	}
-	let settled = false;
+	let releasePromise: Promise<void> | undefined;
 	const renewalTimer = setInterval(() => void slot.renew(), renewalIntervalMilliseconds);
 	renewalTimer.unref?.();
-	const settleOnce = () => {
-		if (settled) return;
-		settled = true;
-		clearInterval(renewalTimer);
-		void slot.release();
+	// Every settlement path shares one release promise so the slot is released exactly once
+	// and body cancellation can await the same release.
+	const settleOnce = (): Promise<void> => {
+		if (!releasePromise) {
+			clearInterval(renewalTimer);
+			releasePromise = (async () => slot.release())();
+		}
+		return releasePromise;
 	};
 	const sourceReader = response.body.getReader();
 	const trackedBody = new ReadableStream<Uint8Array>({
@@ -147,18 +150,21 @@ export function attachConcurrencySlotToResponseLifetime(
 				const { done, value } = await sourceReader.read();
 				if (done) {
 					controller.close();
-					settleOnce();
+					void settleOnce();
 					return;
 				}
 				controller.enqueue(value);
 			} catch (error) {
 				controller.error(error);
-				settleOnce();
+				void settleOnce();
 			}
 		},
-		cancel(reason) {
-			void sourceReader.cancel(reason).catch(() => {});
-			settleOnce();
+		async cancel(reason) {
+			// Start both operations before awaiting either so one failing cannot skip the other.
+			const sourceCancellation = (async () => sourceReader.cancel(reason))().catch(() => {});
+			const release = settleOnce();
+			const [, releaseResult] = await Promise.allSettled([sourceCancellation, release]);
+			if (releaseResult.status === 'rejected') throw releaseResult.reason;
 		},
 	});
 	return new Response(trackedBody, {
