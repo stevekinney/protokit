@@ -371,7 +371,7 @@ async function main(): Promise<void> {
 		// Pinned to a reviewed version (SUPPLY-001): an unpinned `bunx` invocation
 		// resolves whatever the registry currently tags `latest`, which is not a
 		// reviewable supply-chain input.
-		const inspectorProcess = Bun.spawn(['bunx', '@modelcontextprotocol/inspector@2.3.0'], {
+		const inspectorProcess = Bun.spawn(['bunx', '@modelcontextprotocol/inspector@2.10.1'], {
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: import.meta.dirname + '/..',
